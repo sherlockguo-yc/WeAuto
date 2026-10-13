@@ -49,6 +49,9 @@ node bin/weauto.mjs list                        # 列出任务
 node bin/weauto.mjs run v2free-checkin          # 按调度执行
 node bin/weauto.mjs run v2free-checkin --force  # 忽略调度窗口，立即执行
 node bin/weauto.mjs status                      # 查看执行记录
+
+# 5. 测试（零依赖，用 Node 内置 runner）
+npm test
 ```
 
 ---
@@ -132,6 +135,53 @@ target =  09:00 + (seed % 3000s)         → 2026-10-14 的目标时刻是 09:33
 因为任务需无人值守自动执行，解密私钥**必须**存在于运行机器上。加密保护的是
 「凭据在传输与存储链路上不被顺走」，不是「机器沦陷后仍安全」。
 
+### 私钥是唯一的单点，请单独备份
+
+`secrets.age` 丢了无所谓（Git 里有）；**私钥丢了就再也解不开**：
+
+- 它不在 Git 里，也不随 Release 分发
+- 目前只存在于两处：开发机的 `~/.age/weauto.key` 与运行机上的同名文件
+- 这两处同时损毁（换机、误删 home、磁盘故障）＝ 凭据永久丢失，只能去站点重新申请
+
+所以私钥需要一份**脱离这两台机器**的备份（密码管理器、加密 U 盘等）。
+这个动作只能由人来做 —— 交给自动化工具，只是把单点从两台机器扩散到一个脚本里。
+
+轮换凭据的完整流程：
+
+```bash
+# 1. 改明文（仅改密码的话，跳过 age-keygen）
+cp .env.local.template .env.local && $EDITOR .env.local
+
+# 2. 用公钥重新加密（公钥可从私钥导出，无需再次留存）
+age -e -r "$(age-keygen -y ~/.age/weauto.key)" -o secrets.age .env.local
+rm .env.local
+
+# 3. 提交并发版：密文走 Git → CI → 部署链路覆盖运行机上的旧密文
+git add secrets.age && git commit -m "chore: rotate v2free credentials" && git push
+```
+
+**不要直接改运行机上的 `secrets.age`** —— `rsync --delete` 会在下次部署时用仓库版本覆盖它。
+
+---
+
+## 测试
+
+```bash
+npm test        # node --test tests/*.test.mjs；零依赖，用 Node 内置 runner
+```
+
+CI 在打包之前跑测试，不过就不发 Release。覆盖三类东西：
+
+1. **纯逻辑** —— 种子化调度（落在窗口内、跨天分散）、幂等判断（任务名 + 日期 + 成功状态）、
+   进程锁的时序边界、任务定义校验、页面解析正则。
+2. **真实快照** —— `tests/fixtures/v2free-user-signed.html` 是从真实页面脱敏而来。
+   站点改版后解析会失效，这个 fixture 让「正则与真实页面脱节」在本地就能被发现。
+3. **跨仓库契约** —— `status` 取值集合、`list --json` 结构、退出码约定。
+   另一半在 WeMonitor 的 `tests/auto-contract.test.mjs`。
+
+取舍：不追覆盖率数字，只测「错了不会报错、只会静默出错」的地方 ——
+调度偏移、幂等判定、正则解析都属于这一类。
+
 ---
 
 ## 部署（N150）
@@ -165,10 +215,12 @@ src/secrets.mjs          age 解密到内存（明文不落盘）
 src/http.mjs             CookieJar + fetch 封装
 src/history.mjs          runs.jsonl 读写与幂等判断
 src/schedule.mjs         种子化随机调度
-src/registry.mjs         任务注册表（扫描 tasks/）
+src/registry.mjs         任务注册表（扫描 tasks/，加载期校验）
+src/lock.mjs             进程锁（陈旧判定 + 年龄兜底）
 src/runner.mjs           执行器：锁 → 门禁 → 幂等 → 解密 → 执行 → 记录
 tasks/v2free-checkin.mjs v2free 签到任务
 scripts/probe.mjs        接口探针（一次性验证脚本，可保留作调试）
+tests/                   node:test 单元/契约测试（fixtures/ 放真实快照）
 data/                    运行时数据（runs.jsonl / 锁文件），已 gitignore
 secrets.age              加密凭据（入 Git）
 ```

@@ -29,10 +29,12 @@ src/secrets.mjs          age 解密到内存（明文不落盘）
 src/http.mjs             CookieJar + fetch 封装（redirect: 'manual'）
 src/history.mjs          runs.jsonl 读写、成功状态集合、幂等判断
 src/schedule.mjs         种子化随机调度
-src/registry.mjs         扫描 tasks/ 加载任务定义
+src/registry.mjs         扫描 tasks/ 加载任务定义，并在加载期完成校验
+src/lock.mjs             进程锁：判定陈旧/持有，带年龄兜底
 src/runner.mjs           执行器：锁 → 门禁 → 幂等 → 解密 → 执行 → 记录
 tasks/v2free-checkin.mjs v2free 签到任务
 scripts/probe.mjs        接口探针（一次性验证脚本，保留作调试用）
+tests/                   node:test 单元测试与契约测试（fixtures/ 放真实快照）
 data/                    运行时数据（runs.jsonl、.lock），已 gitignore
 secrets.age              age 加密的凭据（入 Git，随 Release 分发）
 restart.sh               deploy-agent 部署后置脚本
@@ -45,8 +47,8 @@ restart.sh               deploy-agent 部署后置脚本
 ```
 crontab 触发（*/5 9 * * *，北京时间 09:00–09:55 共 12 次）
  └─ node bin/weauto.mjs run <task>
-     ├─ registry 扫描 tasks/*.mjs 加载任务定义
-     ├─ runner 获取进程锁 data/.lock（EEXIST 时按 PID 存活检测回收陈旧锁）
+     ├─ registry 扫描 tasks/*.mjs 加载任务定义（校验失败即报错退出）
+     ├─ runner 获取进程锁 data/.lock（已被占用则跳过；陈旧锁可回收，见 §12）
      ├─ 调度门禁（非 --force 时）
      │   ├─ 未到今日目标时刻 → 退出 0
      │   └─ 当日已有成功记录 → 退出 0
@@ -159,7 +161,10 @@ weauto|sherlockguo-yc/WeAuto|$HOME/weauto||sha|weauto.tar.gz
 ```
 
 `restart.sh` 做三件事（均为幂等）：
-1. 安装 `age` 静态二进制到 `~/.local/bin`（走 ghproxy 镜像，失败回退直连；版本由 GitHub API 查询，失败回退 `v1.2.1`）
+1. 安装 `age` 静态二进制到 `~/.local/bin`。**版本查询直连 `api.github.com`，下载走 ghproxy 镜像** ——
+   ghproxy 只代理 `github.com` 的下载资源，代理 API 会返回 403「Invalid input」，
+   而脚本里的 `|| true` 会把失败静默吞掉（此前一直如此，永远退回 `v1.2.1`）。
+   解析 JSON 用 `node -p` 而非 `jq`，因为 `jq` 在 N150 上不保证存在。
 2. 收紧权限：`data/` 700、`secrets.age` 600、私钥 600
 3. 自检：用私钥解密 `secrets.age`，失败则打印警告（不中断部署）
 
@@ -192,4 +197,46 @@ node scripts/probe.mjs                      # 接口探针（真实登录，可�
 4. **锁按 PID 判活，不跨机器** —— 单机部署下无影响。
 5. **`runs.jsonl` 不轮转** —— 每天最多 1 条业务记录，一年约 365 条，暂不需要。
 6. **未实现 TOTP** —— 当前账号未开启两步验证；如日后开启，需在任务内补约 25 行 TOTP 生成填入 `code` 字段。
-7. **`v2free-checkin` 依赖页面结构** —— 账户数据解析自页面内嵌的 `crispSessionData` 数组，站点改版会导致解析失败（表现为 `success` 但 `data.remainTraffic` 为 null）。
+7. **`v2free-checkin` 依赖页面结构** —— 账户数据解析自页面内嵌的 `crispSessionData` 数组，站点改版会导致解析失败（表现为 `success` 但 `data.remainTraffic` 为 null）。`tests/task-v2free.test.mjs` 基于真实页面快照，改版后需重新抓取 `tests/fixtures/`（见 §13）。
+
+---
+
+## 12. 进程锁
+
+`data/.lock` 是单机互斥的唯一手段。同一任务并发执行会撞站点限流，当天签到直接作废，
+所以这里的判定顺序本身就是契约（`src/lock.mjs` 的 `lockState`）：
+
+1. **年龄兜底**：锁文件 mtime 超过 `LOCK_MAX_AGE_MS`（5 分钟）即视为可回收。
+   任务硬超时只有 60s，任何合法持锁都远小于此值。
+2. **内容为空 → 视为「正被持有」**。`openSync` 建文件与写入 PID 之间存在窗口，文件此刻是 0 字节；
+   若判为陈旧锁并回收，两个进程就会同时执行。
+3. **按 PID 判活**：`kill(pid, 0)` 抛 `ESRCH` 才算持有者已消失；`EPERM` 等一律保守视为仍被持有。
+
+第 1 条同时封掉另一个死角：**PID 被系统复用给无关进程**时存活判断会失真，
+没有年龄兜底的话锁将永远无法回收，任务从此静默停摆。
+
+释放方式是 `unlink` 锁文件（不是清空内容）。
+
+---
+
+## 13. 测试
+
+```bash
+npm test        # node --test tests/*.test.mjs，零依赖，Node 内置 runner
+```
+
+CI 在打包之前执行，不过就不发 Release。
+
+| 文件 | 覆盖 |
+|---|---|
+| `tests/util.test.mjs` | dotenv 解析、日期/时区换算（输入固定 UTC 时刻，结果不随机器时区漂移） |
+| `tests/schedule.test.mjs` | 种子化调度：落在窗口内、跨天分散、已知锚点 `09:21`、边界是 `>=` |
+| `tests/history.test.mjs` | 幂等判断三要素（任务名 + 日期 + 成功状态），以及损坏行的降级 |
+| `tests/lock.test.mjs` | 锁的四类边界：空文件、死 PID、超龄、目录缺失 |
+| `tests/registry.test.mjs` | 任务定义校验（含 `HH:MM` 格式与窗口合法性） |
+| `tests/task-v2free.test.mjs` | 页面解析三个正则，基于真实页面脱敏后的 fixture |
+| `tests/contract.test.mjs` | 跨仓库契约：status 取值集合、`list --json` 结构、退出码与错误输出 |
+
+**跨仓库契约的另一半在 WeMonitor**（`tests/auto-contract.test.mjs`），它用同一份真实样本
+校验消费侧的解析。两侧同时失败才算契约破裂；只有一侧失败，说明是那一侧的实现漂移了。
+契约内容：`list --json` 的结构、`runs.jsonl` 的字段、7 个 status 取值。
