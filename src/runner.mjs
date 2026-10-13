@@ -1,11 +1,11 @@
 /**
  * 任务执行器 —— 锁 → 调度门禁 → 幂等检查 → 解密凭据 → 执行 → 落记录
  */
-import fs from 'node:fs';
 import { SUCCESS_STATUSES, appendRun, hasSuccessOn } from './history.mjs';
 import { CookieJar, request } from './http.mjs';
+import { acquireLock } from './lock.mjs';
 import { getTask } from './registry.mjs';
-import { describeWindow, shouldRunNow } from './schedule.mjs';
+import { shouldRunNow } from './schedule.mjs';
 import { SecretsError, loadSecrets } from './secrets.mjs';
 import { LOCK_FILE, dateInTZ, ensureDataDir, timestampInTZ } from './util.mjs';
 
@@ -22,50 +22,6 @@ const STATUS = {
 /** 进程内硬超时，远小于 WeMonitor cron-runner 的 10 分钟 */
 const TASK_TIMEOUT_MS = 60_000;
 
-/* ───────────────────────── 锁 ───────────────────────── */
-
-function isStaleLock() {
-  try {
-    const pid = Number(fs.readFileSync(LOCK_FILE, 'utf8').trim());
-    if (!Number.isInteger(pid) || pid <= 0) return true;
-    process.kill(pid, 0); // 进程存活则不抛错
-    return false;
-  } catch (err) {
-    // ESRCH：持有者已消失 → 锁是陈旧的，可回收
-    return err.code === 'ESRCH';
-  }
-}
-
-/** @returns {(() => void) | null} 释放函数；null 表示已被占用 */
-function acquireLock() {
-  ensureDataDir();
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = fs.openSync(LOCK_FILE, 'wx');
-      fs.writeSync(fd, String(process.pid));
-      fs.closeSync(fd);
-      return () => {
-        try {
-          fs.unlinkSync(LOCK_FILE);
-        } catch {
-          /* 已被清理 */
-        }
-      };
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      if (attempt === 0 && isStaleLock()) {
-        try {
-          fs.unlinkSync(LOCK_FILE);
-        } catch {
-          /* 竞争下忽略 */
-        }
-        continue; // 回收陈旧锁后重试一次
-      }
-      return null;
-    }
-  }
-  return null;
-}
 
 /* ───────────────────────── 执行 ───────────────────────── */
 
@@ -86,7 +42,8 @@ export async function runTask(taskName, opts = {}) {
   const { force = false, log = console.log } = opts;
 
   const task = await getTask(taskName);
-  const release = acquireLock();
+  ensureDataDir();
+  const release = acquireLock(LOCK_FILE);
   if (!release) {
     const msg = '另一个实例正在运行，本次跳过';
     log(`[skipped] ${msg}`);
