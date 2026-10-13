@@ -1,0 +1,167 @@
+# WeAuto
+
+通用自动化任务框架：**任务注册表 + age 凭据加密 + 结构化执行记录**。
+
+首个任务是 v2free 机场的每日自动签到。设计档见 [`docs/requirements/weauto.md`](docs/requirements/weauto.md)。
+
+---
+
+## 设计要点
+
+**WeAuto 不负责调度。** 调度交给 WeMonitor 已有的 crontab 管理体系（`/cron` 页面），
+WeAuto 只做被动 CLI —— 因此本仓库**没有常驻进程、没有端口、没有 systemd 服务**。
+
+```
+WeMonitor /cron ──crontab──> weauto run v2free-checkin
+                                  │
+                                  └──> data/runs.jsonl ──> WeMonitor /auto 页面展示
+```
+
+| 系统 | 职责 |
+|---|---|
+| **WeAuto** | 任务怎么执行：注册表、凭据解密、HTTP 执行、业务记录 |
+| **WeMonitor** | 何时执行 + 结果展示：crontab 调度、启停、进程级历史、业务面板 |
+
+**运行时零 npm 依赖** —— 只用 Node 原生 `fetch` / `crypto` / `fs`，外加 `age` 二进制。
+部署即解压代码，无需 `npm ci`、无需编译。
+
+---
+
+## 快速开始
+
+```bash
+# 1. 安装 age
+brew install age                       # macOS
+# Linux：见 restart.sh 中的静态二进制安装逻辑
+
+# 2. 生成密钥对（私钥永不入 Git）
+mkdir -p ~/.age && chmod 700 ~/.age
+age-keygen -o ~/.age/weauto.key        # stdout 会打印公钥
+
+# 3. 填凭据并加密
+cp .env.local.template .env.local
+$EDITOR .env.local
+age -e -r <上一步打印的公钥> -o secrets.age .env.local
+rm .env.local                          # 明文不应长期存在
+
+# 4. 使用
+node bin/weauto.mjs list                        # 列出任务
+node bin/weauto.mjs run v2free-checkin          # 按调度执行
+node bin/weauto.mjs run v2free-checkin --force  # 忽略调度窗口，立即执行
+node bin/weauto.mjs status                      # 查看执行记录
+```
+
+---
+
+## CLI
+
+| 命令 | 说明 |
+|---|---|
+| `weauto run <task> [--force]` | 执行任务。`--force` 跳过调度窗口与幂等检查 |
+| `weauto list` | 列出全部已注册任务及今日目标时刻 |
+| `weauto status [--json]` | 查看最近执行记录 |
+
+退出码：`0` = 成功或正常跳过；`1` = 失败。WeMonitor 的 cron 历史据此判断成败。
+
+---
+
+## 新增一个任务
+
+在 `tasks/` 放一个 `.mjs` 文件，导出任务对象即可，**无需改动任何框架代码**：
+
+```js
+export default {
+  name: 'my-task',
+  displayName: '我的任务',
+  requires: ['MY_TOKEN'],                        // 从 secrets 中校验的字段
+  schedule: { window: { start: '09:00', end: '09:50' } },  // 北京时间，可省略
+
+  async run({ secrets, request, CookieJar, log }) {
+    // 返回 { status, message, data }
+    // status: success | already-signed | failed | blocked | network-error
+    return { status: 'success', message: '完成', data: { foo: 'bar' } };
+  },
+};
+```
+
+然后在 WeMonitor 的 `/cron` 页面加一条 crontab 即可。
+
+---
+
+## 随机偏移是怎么做的
+
+需求是每天在 09:00 前后执行，但**每天的偏移不同**，避免固定时刻被识别为机器行为。
+
+不能在任务里 `sleep` —— WeMonitor 的 `cron-runner.js` 用 `execSync` 同步等待且**硬超时 10 分钟**，
+睡眠期间被 kill 还会丢掉当天执行。
+
+实际做法：crontab 在窗口内高频触发，任务用「任务名 + 日期」做种子的哈希算出当日固定目标时刻，
+未到点直接退出。
+
+```
+crontab:  */5 9 * * *                    → 09:00 … 09:55 共 12 次触发
+seed   =  sha256("v2free-checkin:2026-10-14")
+target =  09:00 + (seed % 3000s)         → 2026-10-14 的目标时刻是 09:33
+```
+
+特点：不阻塞进程、当天恒定（天然幂等）、被中断后下次触发可自愈、给定日期可预测（可测试）。
+
+---
+
+## 凭据安全
+
+`secrets.age` 是 age 加密的密文，**可以安全地提交进 Git**；私钥 `~/.age/weauto.key` 永不入 Git，
+需手动放到运行机器上。
+
+**必须清楚加密的防护边界**：
+
+| 威胁 | 加密是否有效 |
+|---|---|
+| 密码进入 Git 历史 / 被推送泄露 | ✅ 有效（这是加密的核心价值） |
+| 备份、rsync 快照泄露 | ✅ 有效 |
+| 有人登录机器顺手 `cat` 文件 | ✅ 有效 |
+| 机器被完整攻陷（拿到文件系统） | ❌ **无效** —— 密文与私钥在同一台机器上 |
+
+因为任务需无人值守自动执行，解密私钥**必须**存在于运行机器上。加密保护的是
+「凭据在传输与存储链路上不被顺走」，不是「机器沦陷后仍安全」。
+
+---
+
+## 部署（N150）
+
+N150 走既有的 `CI → Release → webhook → deploy-agent` 链路。因为 WeAuto 是无端口项目
+（`deploy-agent.sh` 对空 PORT 会跳过健康检查），配置只需一行：
+
+```
+# ~/.deploy-projects.conf（PORT 字段留空）
+weauto|sherlockguo-yc/WeAuto|$HOME/weauto||sha|weauto.tar.gz
+```
+
+部署后 `restart.sh` 会自动：安装 age（若缺失）、收紧 `data/` 与密钥权限、自检凭据能否解密。
+
+调度在 WeMonitor `/cron` 页面添加，命令为：
+
+```
+/usr/local/bin/node /home/sherlockguo/weauto/bin/weauto.mjs run v2free-checkin
+```
+
+推荐调度表达式：`*/5 9 * * *`（N150 系统时区为 `Asia/Shanghai`，即北京时间 09:00–09:55）。
+
+---
+
+## 目录结构
+
+```
+bin/weauto.mjs           CLI 入口
+src/util.mjs             路径常量、dotenv 解析、时区计算
+src/secrets.mjs          age 解密到内存（明文不落盘）
+src/http.mjs             CookieJar + fetch 封装
+src/history.mjs          runs.jsonl 读写与幂等判断
+src/schedule.mjs         种子化随机调度
+src/registry.mjs         任务注册表（扫描 tasks/）
+src/runner.mjs           执行器：锁 → 门禁 → 幂等 → 解密 → 执行 → 记录
+tasks/v2free-checkin.mjs v2free 签到任务
+scripts/probe.mjs        接口探针（一次性验证脚本，可保留作调试）
+data/                    运行时数据（runs.jsonl / 锁文件），已 gitignore
+secrets.age              加密凭据（入 Git）
+```
