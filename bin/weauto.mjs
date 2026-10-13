@@ -38,13 +38,28 @@ async function cmdRun(positional, flags) {
     console.error('用法：weauto run <task> [--force]');
     process.exit(1);
   }
-  const record = await runTask(taskName, { force: flags.has('--force') });
+  let record;
+  try {
+    record = await runTask(taskName, { force: flags.has('--force') });
+  } catch (err) {
+    // 未知任务、任务定义非法等加载期错误：只输出一行原因。
+    // 这是 cron 的 stdout/stderr，堆栈会原样进日志与 WeMonitor 面板。
+    console.error(`[error] ${err.message}`);
+    process.exit(1);
+  }
   const ok = isSuccess(record.status) || record.status === STATUS.SKIPPED;
   process.exit(ok ? 0 : 1);
 }
 
 async function cmdList(flags) {
-  const tasks = await loadTasks();
+  let tasks;
+  try {
+    tasks = await loadTasks();
+  } catch (err) {
+    // 不用堆栈冲刷 stderr：WeMonitor 会把这一行显示在 /auto 的警告横幅上
+    console.error(`[error] ${err.message}`);
+    process.exit(1);
+  }
   const items = [...tasks.values()].map((t) => {
     const w = t.schedule?.window;
     const d = w ? describeWindow(t.name, w) : null;

@@ -26,12 +26,20 @@ else
   log "未找到 age，开始安装静态二进制…"
   mkdir -p "$HOME/.local/bin" "$CACHE_DIR"
 
-  # 查询最新版本（走 ghproxy 镜像）；失败则退回已知可用版本
+  # 查询最新版本；失败则退回已知可用版本。两处都踩过坑（2026-10-13 实测）：
+  #
+  # 1. 必须直连 api.github.com。ghproxy 只代理 github.com 的下载资源，
+  #    代理 api.github.com 会返回 403「Invalid input」，导致这里每次都拿不到版本
+  #    而静默退回 v1.2.1 —— 部署看起来成功，实际从未跟进过新版本。
+  #    （deploy-agent.sh 与 WeMonitor 的 lib/deploy/github.js 也是直连 API。）
+  # 2. 用 node 解析 JSON 而不是 jq。jq 在 N150 上不保证存在，缺失时 `|| true`
+  #    会把失败同样静默吞掉。
   VERSION="${WEAUTO_AGE_VERSION:-}"
   if [ -z "$VERSION" ]; then
     VERSION=$(curl -fsSL --max-time 20 \
-      "https://ghproxy.net/https://api.github.com/repos/FiloSottile/age/releases/latest" \
-      2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null || true)
+      "https://api.github.com/repos/FiloSottile/age/releases/latest" \
+      2>/dev/null | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).tag_name ?? ""' \
+      2>/dev/null || true)
   fi
   VERSION="${VERSION:-v1.2.1}"
   log "目标版本：$VERSION"
