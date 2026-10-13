@@ -1,0 +1,46 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get version
+        id: ver
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      # WeAuto 是无端口被动 CLI，无需构建；只打包运行所需文件。
+      # secrets.age 刻意不打进包内：密文已在 Git 仓库中版本化，
+      # 若随包分发会被 rsync 覆盖，反而可能冲掉机器上更新的密文。
+      - name: Package
+        run: |
+          mkdir -p pkg
+          cp -r bin src tasks scripts pkg/
+          cp restart.sh package.json pkg/
+          echo "${{ steps.ver.outputs.sha }}" > pkg/.version
+          tar -czf weauto.tar.gz -C pkg .
+          ls -lh weauto.tar.gz
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.ver.outputs.sha }}
+          name: ${{ steps.ver.outputs.sha }}
+          body: "Auto build ${{ steps.ver.outputs.sha }}"
+          files: weauto.tar.gz
+          prerelease: true
+
+      - name: Notify N150
+        continue-on-error: true
+        run: |
+          curl -sS -X POST https://wemusic.sherlockguo.com/deploy \
+            -H "Content-Type: application/json" \
+            -d "{\"project\":\"weauto\",\"version\":\"${{ steps.ver.outputs.sha }}\"}" \
+            --max-time 10 --connect-timeout 5 || true
