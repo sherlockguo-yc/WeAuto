@@ -110,8 +110,15 @@ target =  09:00 + (seed % 3000s)         → 2026-10-14 的目标时刻是 09:33
 
 ## 凭据安全
 
-`secrets.age` 是 age 加密的密文，**可以安全地提交进 Git**；私钥 `~/.age/weauto.key` 永不入 Git，
-需手动放到运行机器上。
+`secrets.age` 是 age 加密的密文，**可以安全地提交进 Git，并随 Release 包分发**；
+私钥 `~/.age/weauto.key` 永不入 Git，必须手动放到运行机器上。
+
+> **为什么密文必须打进 Release 包**：deploy-agent 用
+> `rsync -a --delete --exclude 'data' --exclude '.env'` 同步部署目录，
+> **凡不在包内的文件都会被 `--delete` 清掉**（首次部署时踩过此坑，密文被删导致 `config-error`）。
+> 密文不敏感，且 Git 是它的唯一权威来源 —— 因此随包分发是最自洽的做法：
+> 若在机器上直接修改密文，下次部署会被仓库中的版本覆盖。
+> 要更新凭据，应在本地重新加密后提交，让变更走 Git → CI → 部署链路。
 
 **必须清楚加密的防护边界**：
 

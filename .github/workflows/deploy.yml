@@ -17,13 +17,16 @@ jobs:
         run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       # WeAuto 是无端口被动 CLI，无需构建；只打包运行所需文件。
-      # secrets.age 刻意不打进包内：密文已在 Git 仓库中版本化，
-      # 若随包分发会被 rsync 覆盖，反而可能冲掉机器上更新的密文。
+      #
+      # secrets.age 必须打进包：deploy-agent 用
+      #   rsync -a --delete --exclude 'data' --exclude '.env'
+      # 同步部署目录，凡不在包内的文件都会被 --delete 清掉（首次部署就踩过这个坑）。
+      # 密文本身是安全的，且 Git 是它的唯一权威来源，随包分发才自洽。
       - name: Package
         run: |
           mkdir -p pkg
           cp -r bin src tasks scripts pkg/
-          cp restart.sh package.json pkg/
+          cp restart.sh package.json secrets.age pkg/
           echo "${{ steps.ver.outputs.sha }}" > pkg/.version
           tar -czf weauto.tar.gz -C pkg .
           ls -lh weauto.tar.gz
