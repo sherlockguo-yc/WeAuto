@@ -3,7 +3,38 @@
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import { AGE_KEY_FILE, SECRETS_FILE, parseDotenv } from './util.mjs';
+
+/**
+ * 解析 age 可执行文件路径
+ *
+ * 不能只依赖 PATH：cron 与非交互式 shell 的 PATH 通常不含 ~/.local/bin，
+ * 而 restart.sh 正是把 age 装在那里（首次部署即因此报 config-error）。
+ * 故按「环境变量 → PATH → 常见安装位置」依次探测。
+ */
+function resolveAgeBin() {
+  if (process.env.WEAUTO_AGE_BIN) return process.env.WEAUTO_AGE_BIN;
+  const isFile = (p) => {
+    try {
+      return fs.statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  };
+  for (const dir of (process.env.PATH ?? '').split(':').filter(Boolean)) {
+    const candidate = path.join(dir, 'age');
+    if (isFile(candidate)) return candidate;
+  }
+  for (const candidate of [
+    path.join(process.env.HOME ?? '', '.local', 'bin', 'age'),
+    '/usr/local/bin/age',
+    '/opt/homebrew/bin/age',
+  ]) {
+    if (isFile(candidate)) return candidate;
+  }
+  return 'age'; // 兜底：交给 execFileSync 抛 ENOENT，由上层转成清晰的错误
+}
 
 export class SecretsError extends Error {
   constructor(message) {
@@ -27,7 +58,7 @@ export function loadSecrets(required = []) {
 
   let plain;
   try {
-    plain = execFileSync('age', ['-d', '-i', AGE_KEY_FILE, SECRETS_FILE], {
+    plain = execFileSync(resolveAgeBin(), ['-d', '-i', AGE_KEY_FILE, SECRETS_FILE], {
       encoding: 'utf8',
       timeout: 10_000,
       stdio: ['ignore', 'pipe', 'pipe'],
