@@ -43,23 +43,41 @@ async function cmdRun(positional, flags) {
   process.exit(ok ? 0 : 1);
 }
 
-async function cmdList() {
+async function cmdList(flags) {
   const tasks = await loadTasks();
-  if (!tasks.size) {
+  const items = [...tasks.values()].map((t) => {
+    const w = t.schedule?.window;
+    const d = w ? describeWindow(t.name, w) : null;
+    return {
+      name: t.name,
+      displayName: t.displayName ?? null,
+      requires: t.requires ?? [],
+      file: t.file ?? null,
+      window: w ? { start: w.start, end: w.end } : null,
+      target: d ? { date: d.date, targetLabel: d.targetLabel, remaining: d.remaining } : null,
+    };
+  });
+
+  if (flags.has('--json')) {
+    console.log(JSON.stringify({ tasks: items }, null, 2));
+    return;
+  }
+
+  if (!items.length) {
     console.log('（tasks/ 下没有已注册任务）');
     return;
   }
-  for (const t of tasks.values()) {
-    const w = t.schedule?.window;
+  for (const t of items) {
     console.log(`• ${t.name}`);
     console.log(`    名称 : ${t.displayName ?? '—'}`);
-    if (w) {
-      const d = describeWindow(t.name, w);
-      console.log(`    窗口 : ${w.start}–${w.end}（今日目标 ${d.targetLabel}，还有 ${d.remaining}）`);
-    } else {
-      console.log('    窗口 : 不设窗口（每次触发都执行）');
-    }
-    console.log(`    凭据 : ${(t.requires ?? []).join(', ') || '—'}`);
+    console.log(
+      `    窗口 : ${
+        t.window
+          ? `${t.window.start}–${t.window.end}（今日目标 ${t.target.targetLabel}，还有 ${t.target.remaining}）`
+          : '不设窗口（每次触发都执行）'
+      }`,
+    );
+    console.log(`    凭据 : ${t.requires.join(', ') || '—'}`);
     console.log(`    文件 : tasks/${t.file ?? '?'}`);
   }
 }
@@ -90,7 +108,7 @@ switch (cmd) {
     await cmdRun(positional, flags);
     break;
   case 'list':
-    await cmdList();
+    await cmdList(flags);
     break;
   case 'status':
     await cmdStatus(flags);
