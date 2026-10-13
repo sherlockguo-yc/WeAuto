@@ -1,0 +1,26 @@
+<!--
+  v2free 账户页「今日已签到」状态的结构快照（脱敏）
+
+  来源：2026-10-13 用 scripts/probe.mjs 抓取的真实页面（当时落在 data/probe-user.html）。
+  只保留了三个被测函数所依赖的真实标记，其余 HTML 全部剔除：
+
+    · crispSessionData 内嵌数组          → parseSessionData
+    · <b>上次签到</b>:<时间>             → parseLastCheckin（标签夹在中间，不能邻接匹配）
+    · class="btn ... disabled ...">今日已签到 → hasSignedToday
+
+  三重结构 [[[ "k","v" ], ...]] 必须原样保留 —— parseSessionData 的正则靠 `]];`
+  收尾，层数变了就测不出真实行为。
+
+  脱敏：user_id / ipv4 已替换为假值。其余字段（流量、套餐、到期时间）非敏感，
+  保留真实值以便断言。
+
+  站点改版后请重新抓取真实页面替换本文件。若本文件测试仍然通过、而线上解析失败，
+  说明快照已过时，而不是代码有问题。
+-->
+<div class="card-body">
+  <p><a class="btn btn-brand disabled btn-flat" href="#"><span class="icon">check</span>&nbsp;今日已签到</a></p>
+  <div style="font-size:14px;min-width:310px;text-align:left"><b>上次签到</b>:2026-10-13 12:18:43</div>
+</div>
+<script>
+  window.crispSessionData = [[["vip_class","0"],["node_group","999"],["traffic","485.94MB"],["traffic_main","485.94MB"],["traffic_package","0B"],["plan","无套餐"],["expire","2026-10-25 15:33:37"],["next_reset","不适用."],["last_used","2026-10-10 03:30:59"],["balance","0.00"],["user_id","0"],["ipv4","0.0.0.0"]]];
+</script>

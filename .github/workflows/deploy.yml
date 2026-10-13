@@ -12,6 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # 无 npm 依赖的纯 Node 项目，直接跑 node:test。
+      # 放在打包之前：测试不过就不发布 Release，避免坏版本流到 N150。
+      - name: Test
+        run: npm test
+
       - name: Get version
         id: ver
         run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
