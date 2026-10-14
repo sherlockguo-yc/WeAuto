@@ -52,6 +52,11 @@ jobs:
           #   · N150 在国内，现场 npm install 又慢又可能拉不到原生模块预编译包
           cd pkg && npm ci --omit=dev && cd ..
 
+          # better-sqlite3 的 deps/ 是编译期用的 SQLite 源码（约 9MB），运行时
+          # 只需要 build/Release/*.node。实测删除后加载与读写均正常（2026-10-14）。
+          # 发布包越小，N150 从镜像下载越不容易撞上 90 秒的下载超时。
+          rm -rf pkg/node_modules/better-sqlite3/deps
+
           echo "${{ steps.ver.outputs.sha }}" > pkg/.version
           tar -czf weauto.tar.gz -C pkg .
           ls -lh weauto.tar.gz
