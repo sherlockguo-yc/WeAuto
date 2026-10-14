@@ -145,11 +145,21 @@ after(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+const USER_ID = 1;
+
 let seq = 0;
-function fresh() {
+/**
+ * 默认把两个测试模板都订阅上：调度器只认「订阅 × 账号」，
+ * 没有订阅的任务根本不进入调度目标（这正是多租户后的语义）。
+ */
+function fresh(subs = [windowTask.name, everyTask.name]) {
   const db = openDb(path.join(dir, `db-${++seq}.sqlite`));
+  db.prepare(
+    'INSERT INTO users (id, username, password_hash, role, status, created_at) VALUES (?,?,?,?,?,?)',
+  ).run(USER_ID, 'tester', 'not-a-real-hash', 'admin', 'active', 1);
   openDbs.push(db);
   const store = createStore(db);
+  for (const name of subs) store.forUser(USER_ID).subscribe(name);
   return { db, store };
 }
 
@@ -158,11 +168,12 @@ function fakeExecute(store, { status = 'success', delayMs = 0 } = {}) {
   const calls = [];
   return {
     calls,
-    async execute(task, { trigger }) {
-      calls.push({ task: task.name, trigger });
+    async execute(task, { trigger, userId = USER_ID, accountKey = '' }) {
+      calls.push({ task: task.name, trigger, userId, accountKey });
       if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
-      return store.appendRun({
+      return store.forUser(userId).appendRun({
         taskName: task.name,
+        accountKey,
         date: dateInTZ(new Date(NOON)),
         ts: NOON,
         status,
@@ -181,12 +192,12 @@ describe('调度循环', () => {
     const sch = createScheduler({ store, tasks, execute, now: () => windowTargetMs + 1000 });
 
     const r = sch.tick();
-    assert.deepEqual(r.started, ['w-task']);
+    assert.deepEqual(r.started, ['w-task:']); // 格式为 `${订阅}:${账号}`，单账号模板的账号是空串
     await sch.waitForIdle();
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].trigger, 'schedule');
-    assert.equal(store.runsOfTask('w-task', 10).length, 1);
+    assert.equal(store.forUser(USER_ID).runsOfTask('w-task', { limit: 10 }).length, 1);
   });
 
   it('同一 tick 内不会重复执行，且已成功的一轮之后不再执行', async () => {
@@ -213,7 +224,7 @@ describe('调度循环', () => {
     sch.tick();
     const during = sch.tick();
     assert.deepEqual(during.started, [], '执行中不应再次启动');
-    assert.equal(sch.isRunning('w-task'), true);
+    assert.equal(sch.isRunning('w-task', USER_ID), true);
     await sch.waitForIdle();
     assert.equal(calls.length, 1);
   });
@@ -224,7 +235,7 @@ describe('调度循环', () => {
     const tasks = new Map([[windowTask.name, windowTask]]);
     const sch = createScheduler({ store, tasks, execute, now: () => windowTargetMs + 1000 });
 
-    store.setOverride('w-task', { enabled: false });
+    store.forUser(USER_ID).setSubscription('w-task', { enabled: false });
     sch.tick();
     await sch.waitForIdle();
     assert.equal(calls.length, 0);
@@ -237,10 +248,10 @@ describe('调度循环', () => {
     const sch = createScheduler({ store, tasks, execute, now: () => NOON });
 
     // 进程停了两小时，next_due_ts 停留在过去
-    store.saveState('e-task', { next_due_ts: NOON - 2 * 3600_000 });
+    store.forUser(USER_ID).saveState('e-task', '', { next_due_ts: NOON - 2 * 3600_000 });
     sch.normalizeOnStart();
 
-    assert.equal(store.stateOf('e-task').next_due_ts, NOON + 30 * 60_000);
+    assert.equal(store.forUser(USER_ID).stateOf('e-task').next_due_ts, NOON + 30 * 60_000);
 
     // 归一化之后立刻 tick，不应执行
     const r = sch.tick();
@@ -253,12 +264,12 @@ describe('调度循环', () => {
     const tasks = new Map([[everyTask.name, everyTask]]);
     const sch = createScheduler({ store, tasks, execute, now: () => NOON });
 
-    store.saveState('e-task', { next_due_ts: NOON - 1 });
+    store.forUser(USER_ID).saveState('e-task', '', { next_due_ts: NOON - 1 });
     const r = sch.tick();
-    assert.deepEqual(r.started, ['e-task']);
+    assert.deepEqual(r.started, ['e-task:']);
     await sch.waitForIdle();
     assert.equal(calls.length, 1);
-    assert.equal(store.stateOf('e-task').next_due_ts, NOON + 30 * 60_000);
+    assert.equal(store.forUser(USER_ID).stateOf('e-task').next_due_ts, NOON + 30 * 60_000);
   });
 
   it('手动触发：跳过调度判断，但依然受幂等与互斥保护', async () => {
@@ -269,7 +280,7 @@ describe('调度循环', () => {
 
     // 远未到窗口，调度器不会跑；手动可以
     assert.deepEqual(sch.tick(), { started: [] });
-    await sch.trigger('w-task');
+    await sch.trigger('w-task', { userId: USER_ID });
     await sch.waitForIdle();
     assert.equal(calls.length, 1);
     assert.equal(calls[0].trigger, 'manual');
@@ -277,8 +288,8 @@ describe('调度循环', () => {
     // 手动执行期间再点一次会被互斥挡住
     const slow = fakeExecute(store, { delayMs: 30 });
     const sch2 = createScheduler({ store, tasks, execute: slow.execute, now: () => NOON });
-    const p1 = sch2.trigger('w-task');
-    assert.equal(sch2.trigger('w-task'), null);
+    const p1 = sch2.trigger('w-task', { userId: USER_ID });
+    assert.equal(sch2.trigger('w-task', { userId: USER_ID }), null);
     await p1;
     await sch2.waitForIdle();
     assert.equal(slow.calls.length, 1);
@@ -288,7 +299,7 @@ describe('调度循环', () => {
     const { store } = fresh();
     const { execute } = fakeExecute(store);
     const sch = createScheduler({ store, tasks: new Map(), execute, now: () => NOON });
-    assert.throws(() => sch.trigger('nope'), /未知任务/);
+    assert.throws(() => sch.trigger('nope', { userId: USER_ID }), /未知任务/);
   });
 
   it('执行器抛异常不会让调度器停摆', async () => {
@@ -307,7 +318,7 @@ describe('调度循环', () => {
     sch.tick();
     await sch.waitForIdle();
     // 异常被兜住：状态里不写入 last_run_id，但调度器仍可继续工作
-    assert.equal(store.stateOf('w-task').last_run_id, null);
-    assert.equal(sch.isRunning('w-task'), false);
+    assert.equal(store.forUser(USER_ID).stateOf('w-task').last_run_id, null);
+    assert.equal(sch.isRunning('w-task', USER_ID), false);
   });
 });

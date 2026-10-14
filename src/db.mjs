@@ -105,6 +105,114 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 3,
+    description: '多租户：订阅与账号、每用户凭据、邀请码；历史数据归入首个账号',
+    up(db) {
+      db.exec(`
+        /* ───────── 新表 ───────── */
+
+        /* 邀请码：见需求文档 §6。默认单次使用，可设过期与撤销 */
+        CREATE TABLE IF NOT EXISTS invites (
+          code       TEXT PRIMARY KEY,
+          created_by INTEGER NOT NULL REFERENCES users(id),
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER,
+          max_uses   INTEGER NOT NULL DEFAULT 1,
+          used_count INTEGER NOT NULL DEFAULT 0,
+          used_by    INTEGER REFERENCES users(id),
+          revoked_at INTEGER,
+          note       TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_invites_created ON invites(created_at DESC);
+
+        /* 每用户凭据：密文格式见 src/user-secrets.mjs（AES-256-GCM） */
+        CREATE TABLE IF NOT EXISTS user_secrets (
+          user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          task_name   TEXT    NOT NULL,
+          account_key TEXT    NOT NULL DEFAULT '',
+          field       TEXT    NOT NULL,
+          value_enc   BLOB    NOT NULL,
+          updated_at  INTEGER NOT NULL,
+          PRIMARY KEY (user_id, task_name, account_key, field)
+        );
+
+        /* 订阅 = 用户 × 模板。取代全局 tasks 覆盖层（旧表保留不删，作为回退依据） */
+        CREATE TABLE IF NOT EXISTS subscriptions (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          task_name     TEXT    NOT NULL,
+          enabled       INTEGER NOT NULL DEFAULT 1,
+          schedule_json TEXT,
+          timeout_ms    INTEGER,
+          created_at    INTEGER NOT NULL,
+          updated_at    INTEGER NOT NULL,
+          UNIQUE (user_id, task_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_subs_user ON subscriptions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_subs_task ON subscriptions(task_name);
+
+        /* 订阅下的账号。accounts:false 的模板只有 account_key='' 一条 */
+        CREATE TABLE IF NOT EXISTS subscription_accounts (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+          account_key     TEXT    NOT NULL DEFAULT '',
+          label           TEXT    NOT NULL DEFAULT '',
+          enabled         INTEGER NOT NULL DEFAULT 1,
+          created_at      INTEGER NOT NULL,
+          UNIQUE (subscription_id, account_key)
+        );
+
+        /* ───────── 现有表加用户维度 ───────── */
+
+        /* SQLite 的 ADD COLUMN 不能带 REFERENCES，也不能没有默认值。
+           DEFAULT 1 正好把历史行归给首个账号——迁移时的语义就是「这些是我的」。 */
+        ALTER TABLE runs ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE runs ADD COLUMN subscription_id INTEGER;
+        CREATE INDEX IF NOT EXISTS idx_runs_user_task_ts ON runs(user_id, task_name, ts DESC);
+
+        /* 冗余 user_id 而不是 JOIN runs：保留策略要按用户清理日志，JOIN 会变成全表扫 */
+        ALTER TABLE run_logs ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1;
+        CREATE INDEX IF NOT EXISTS idx_run_logs_user_ts ON run_logs(user_id, ts);
+      `);
+
+      /* 主键变了的两张表只能重建：建新表 → 搬数据 → 删旧表 → 改名 */
+      db.exec(`
+        CREATE TABLE run_stats_daily_new (
+          user_id INTEGER NOT NULL DEFAULT 1,
+          task_name TEXT NOT NULL,
+          date TEXT NOT NULL,
+          success INTEGER NOT NULL DEFAULT 0,
+          failed INTEGER NOT NULL DEFAULT 0,
+          skipped INTEGER NOT NULL DEFAULT 0,
+          total INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (user_id, task_name, date)
+        );
+        INSERT INTO run_stats_daily_new (user_id, task_name, date, success, failed, skipped, total)
+          SELECT 1, task_name, date, success, failed, skipped, total FROM run_stats_daily;
+        DROP TABLE run_stats_daily;
+        ALTER TABLE run_stats_daily_new RENAME TO run_stats_daily;
+
+        CREATE TABLE task_state_new (
+          user_id INTEGER NOT NULL DEFAULT 1,
+          task_name TEXT NOT NULL,
+          account_key TEXT NOT NULL DEFAULT '',
+          today_date TEXT,
+          today_target_ts INTEGER,
+          next_due_ts INTEGER,
+          last_run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, task_name, account_key)
+        );
+        INSERT INTO task_state_new
+          (user_id, task_name, account_key, today_date, today_target_ts, next_due_ts, last_run_id, updated_at)
+          SELECT 1, task_name, '', today_date, today_target_ts, next_due_ts, last_run_id, updated_at
+          FROM task_state;
+        DROP TABLE task_state;
+        ALTER TABLE task_state_new RENAME TO task_state;
+      `);
+    },
+  },
 ];
 
 /** 用 meta 表记录 schema 版本（用户表之外的第一张表，永远存在） */

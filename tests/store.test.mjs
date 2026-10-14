@@ -32,11 +32,33 @@ after(() => {
 });
 
 let seq = 0;
-function fresh() {
+/**
+ * 外键是开启的，所以订阅前必须有真实存在的用户行。
+ * 顺带也是一条约束的证明：不存在「没有主人的订阅」。
+ */
+function freshDb() {
   const db = openDb(path.join(dir, `db-${++seq}.sqlite`));
+  const ins = db.prepare(
+    'INSERT INTO users (id, username, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  ins.run(USER_ID, 'user-a', 'not-a-real-hash', 'admin', 'active', 1);
+  ins.run(OTHER_USER_ID, 'user-b', 'not-a-real-hash', 'user', 'active', 1);
   openDbs.push(db);
-  return createStore(db);
+  return db;
 }
+
+/** 用户视图：绝大多数用例都在这个视角下（多租户后没有「不带用户」的入口） */
+function fresh() {
+  return createStore(freshDb()).forUser(USER_ID);
+}
+
+/** 根 store：只有跨用户的用例（遍历订阅、删号清理）才需要 */
+function freshRoot() {
+  return createStore(freshDb());
+}
+
+const USER_ID = 1;
+const OTHER_USER_ID = 2;
 
 const run = (store, over = {}) =>
   store.appendRun({
@@ -71,7 +93,7 @@ describe('执行记录', () => {
     run(store, { ts: 300 });
     run(store, { ts: 200 });
     assert.deepEqual(
-      store.runsOfTask('t', 10).map((r) => r.ts),
+      store.runsOfTask('t', { limit: 10 }).map((r) => r.ts),
       [300, 200, 100],
     );
   });
@@ -142,8 +164,8 @@ describe('调度状态', () => {
     const store = fresh();
     const r = run(store);
 
-    store.saveState('t', { today_date: '2026-10-14', today_target_ts: 111 });
-    store.saveState('t', { last_run_id: r.id });
+    store.saveState('t', '', { today_date: '2026-10-14', today_target_ts: 111 });
+    store.saveState('t', '', { last_run_id: r.id });
 
     assert.deepEqual(store.stateOf('t'), {
       today_date: '2026-10-14',
@@ -155,51 +177,147 @@ describe('调度状态', () => {
 
   it('last_run_id 必须指向真实记录（外键兜住脏数据）', () => {
     const store = fresh();
-    assert.throws(() => store.saveState('t', { last_run_id: 99999 }), /FOREIGN KEY/);
+    assert.throws(() => store.saveState('t', '', { last_run_id: 99999 }), /FOREIGN KEY/);
   });
 
   it('运行记录被保留策略删除后，状态里的引用自动置空而不是指向幽灵', () => {
     const store = fresh();
     const NOW = Date.parse('2026-10-14T12:00:00+08:00');
     const old = run(store, { date: '2026-01-01', ts: NOW - 300 * 86_400_000 });
-    store.saveState('t', { last_run_id: old.id });
+    store.saveState('t', '', { last_run_id: old.id });
 
     store.pruneTask('t', { days: 90, maxRows: 2000, logDays: 30 }, NOW);
     assert.equal(store.stateOf('t').last_run_id, null);
   });
 });
 
-describe('覆盖层（代码文件是默认值，DB 只在用户改过时才有行）', () => {
-  it('默认无覆盖：任务启用', () => {
+describe('订阅（用户 × 模板：没订阅就没有这个实例）', () => {
+  it('未订阅时没有实例，也不是启用状态', () => {
     const store = fresh();
-    assert.equal(store.getOverride('t'), null);
+    assert.equal(store.getSubscription('t'), null);
+    assert.equal(store.isEnabled('t'), false);
+  });
+
+  it('订阅后默认启用，并自动建一个默认账号', () => {
+    const store = fresh();
+    const sub = store.subscribe('t');
+    assert.equal(sub.enabled, true);
+    assert.deepEqual(sub.accounts.map((a) => a.accountKey), ['']);
     assert.equal(store.isEnabled('t'), true);
   });
 
   it('只改 enabled 不会抹掉已设置的调度', () => {
     const store = fresh();
-    store.setOverride('t', { schedule: { kind: 'every', every: { minutes: 5 } } });
-    store.setOverride('t', { enabled: false });
+    store.subscribe('t', { schedule: { kind: 'every', every: { minutes: 5 } } });
+    store.setSubscription('t', { enabled: false });
 
-    const o = store.getOverride('t');
+    const o = store.getSubscription('t');
     assert.equal(o.enabled, false);
     assert.equal(o.schedule.every.minutes, 5);
   });
 
   it('只改调度不会把 enabled 翻回默认', () => {
     const store = fresh();
-    store.setOverride('t', { enabled: false });
-    store.setOverride('t', { timeoutMs: 5000 });
-    assert.equal(store.getOverride('t').enabled, false);
+    store.subscribe('t');
+    store.setSubscription('t', { enabled: false });
+    store.setSubscription('t', { timeoutMs: 5000 });
+    assert.equal(store.getSubscription('t').enabled, false);
   });
 
-  it('清除覆盖后回到默认', () => {
+  it('取消订阅后实例消失', () => {
     const store = fresh();
-    store.setOverride('t', { enabled: false });
-    assert.equal(store.clearOverride('t'), true);
-    assert.equal(store.getOverride('t'), null);
-    assert.equal(store.isEnabled('t'), true);
-    assert.equal(store.clearOverride('t'), false); // 再清一次什么也没发生
+    store.subscribe('t', { enabled: false });
+    assert.equal(store.unsubscribe('t'), true);
+    assert.equal(store.getSubscription('t'), null);
+    assert.equal(store.isEnabled('t'), false);
+    assert.equal(store.unsubscribe('t'), false); // 再删一次什么也没发生
+  });
+});
+
+describe('多账号', () => {
+  it('同一模板下可以配多个账号，互不干扰', () => {
+    const store = fresh();
+    store.subscribe('t');
+    const k1 = store.addAccount('t', { label: '主号' });
+    const k2 = store.addAccount('t', { label: '小号' });
+    assert.notEqual(k1, k2);
+    assert.equal(store.activeAccounts('t').length, 3); // 默认账号 + 两个
+    assert.equal(store.removeAccount('t', k2), true);
+    assert.equal(store.activeAccounts('t').length, 2);
+  });
+
+  /**
+   * 这是多账号最容易踩的坑：幂等如果只按「任务 + 日期」判断，
+   * A 账号成功后 B 账号会被判「今日已完成」而跳过。
+   */
+  it('今日是否成功按账号区分：A 成功不代表 B 成功', () => {
+    const store = fresh();
+    store.subscribe('t');
+    const b = store.addAccount('t', { label: '小号' });
+    store.appendRun({ taskName: 't', accountKey: b, date: '2026-10-14', ts: 1, status: 'success' });
+
+    assert.equal(store.hasSuccessOn('t', '2026-10-14', b), true);
+    assert.equal(store.hasSuccessOn('t', '2026-10-14', ''), false);
+    assert.equal(store.hasSuccessOn('t', '2026-10-14'), false);
+  });
+
+  it('历史可以按账号筛选', () => {
+    const store = fresh();
+    store.subscribe('t');
+    const b = store.addAccount('t', { label: '小号' });
+    store.appendRun({ taskName: 't', accountKey: '', date: '2026-10-14', ts: 1, status: 'success' });
+    store.appendRun({ taskName: 't', accountKey: b, date: '2026-10-14', ts: 2, status: 'success' });
+
+    assert.equal(store.runsOfTask('t', { accountKey: b, limit: 10 }).length, 1);
+    assert.equal(store.runsOfTask('t', { limit: 10 }).length, 2); // 不传就是全部账号
+  });
+});
+
+describe('多租户隔离', () => {
+  it('两个用户的数据互不可见', () => {
+    const root = freshRoot();
+    const a = root.forUser(1);
+    const b = root.forUser(2);
+    a.subscribe('t');
+    b.subscribe('t');
+    a.appendRun({ taskName: 't', date: '2026-10-14', ts: 1, status: 'success', message: 'a' });
+    b.appendRun({ taskName: 't', date: '2026-10-14', ts: 2, status: 'failed', message: 'b' });
+
+    assert.deepEqual(a.recentRuns(10).map((r) => r.message), ['a']);
+    assert.deepEqual(b.recentRuns(10).map((r) => r.message), ['b']);
+    assert.equal(a.runsOfTask('t', { limit: 10 }).length, 1);
+  });
+
+  it('调度状态也按用户 × 账号分开', () => {
+    const root = freshRoot();
+    root.forUser(1).subscribe('t');
+    root.forUser(2).subscribe('t');
+    root.forUser(1).saveState('t', '', { today_target_ts: 111 });
+    root.forUser(2).saveState('t', '', { today_target_ts: 222 });
+
+    assert.equal(root.forUser(1).stateOf('t').today_target_ts, 111);
+    assert.equal(root.forUser(2).stateOf('t').today_target_ts, 222);
+  });
+
+  it('调度器能跨用户遍历全部订阅', () => {
+    const root = freshRoot();
+    root.forUser(1).subscribe('t');
+    root.forUser(2).subscribe('u');
+    const subs = root.allSubscriptions();
+    assert.equal(subs.length, 2);
+    assert.deepEqual([...new Set(subs.map((s) => s.userId))].sort(), [1, 2]);
+  });
+
+  it('删号清理只影响那个人', () => {
+    const root = freshRoot();
+    root.forUser(1).subscribe('t');
+    root.forUser(2).subscribe('t');
+    root.forUser(1).appendRun({ taskName: 't', date: '2026-10-14', ts: 1, status: 'success' });
+    root.forUser(2).appendRun({ taskName: 't', date: '2026-10-14', ts: 2, status: 'success' });
+
+    root.purgeUser(1);
+    assert.equal(root.forUser(2).recentRuns(10).length, 1, '另一个用户的数据不受影响');
+    assert.deepEqual(root.allUserIds(), [2]);
   });
 });
 
@@ -217,10 +335,11 @@ describe('保留策略：先聚合、再删明细', () => {
     const res = store.pruneTask('t', { days: 90, maxRows: 2000, logDays: 30 }, NOW);
 
     assert.equal(res.dropped, 3);
-    assert.equal(store.runsOfTask('t', 10).length, 1);
+    assert.equal(store.runsOfTask('t', { limit: 10 }).length, 1);
 
     const stats = Object.fromEntries(store.statsOfTask('t').map((s) => [s.date, s]));
     assert.deepEqual(stats['2026-01-01'], {
+      user_id: USER_ID, // 统计也是按用户分开的
       task_name: 't',
       date: '2026-01-01',
       success: 1,
@@ -250,10 +369,10 @@ describe('保留策略：先聚合、再删明细', () => {
     const res = store.pruneTask('t', { days: 90, maxRows: 2, logDays: 30 }, NOW);
 
     assert.equal(res.dropped, 3);
-    assert.equal(store.runsOfTask('t', 10).length, 2);
+    assert.equal(store.runsOfTask('t', { limit: 10 }).length, 2);
     // 保留的是最新的那两条
     assert.deepEqual(
-      store.runsOfTask('t', 10).map((r) => r.ts),
+      store.runsOfTask('t', { limit: 10 }).map((r) => r.ts),
       [NOW, NOW - 1],
     );
   });

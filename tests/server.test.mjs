@@ -58,13 +58,24 @@ after(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+const USER_ID = 1;
+
 let seq = 0;
-async function startServer({ execute } = {}) {
+/**
+ * @param {boolean} [seedUser] 默认预建一个 admin（id=1）并订阅演示模板。
+ *   多租户后「看得到任务」的前提是「订阅了它」，不预置就什么都看不到。
+ *   测「首次初始化」的用例要传 false。
+ */
+async function startServer({ execute, seedUser = true } = {}) {
   const db = openDb(path.join(dir, `db-${++seq}.sqlite`));
   dbs.push(db);
   const store = createStore(db);
   const tasks = new Map([[DEMO_TASK.name, { ...DEMO_TASK }]]);
   const auth = createAuth({ db, jwtSecret: 'test-secret' });
+  if (seedUser) {
+    auth.register({ username: 'tester', password: 'pass-word-1', role: 'admin' });
+    store.forUser(USER_ID).subscribe(DEMO_TASK.name);
+  }
   const scheduler = createScheduler({
     store,
     tasks,
@@ -81,9 +92,12 @@ async function startServer({ execute } = {}) {
   return { base: `http://127.0.0.1:${server.address().port}`, store, auth, scheduler };
 }
 
-/** 走完「首次初始化 → 拿到会话 cookie」这条路 */
-async function login(base) {
-  const res = await fetch(`${base}/setup`, {
+/**
+ * 拿到会话 cookie。
+ * 默认走 `/login`（账号由 startServer 预建）；`viaSetup` 走「首次初始化创建管理员」这条路。
+ */
+async function login(base, { viaSetup = false } = {}) {
+  const res = await fetch(`${base}${viaSetup ? '/setup' : '/login'}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ username: 'tester', password: 'pass-word-1' }),
@@ -100,7 +114,7 @@ describe('未登录时的边界', () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.ok, true);
-    assert.equal(body.tasks, 1);
+    assert.equal(body.templates, 1); // 不鉴权的接口只能报平台级信息
   });
 
   it('页面跳转到登录页，接口返回 401', async () => {
@@ -115,7 +129,7 @@ describe('未登录时的边界', () => {
   });
 
   it('首次访问登录页时给出「创建管理员」而不是登录表单', async () => {
-    const { base } = await startServer();
+    const { base } = await startServer({ seedUser: false });
     const html = await (await fetch(`${base}/login`)).text();
     assert.match(html, /创建管理员/);
   });
@@ -123,8 +137,8 @@ describe('未登录时的边界', () => {
 
 describe('初始化与登录', () => {
   it('创建管理员后即可访问页面，且登录页变成普通登录', async () => {
-    const { base } = await startServer();
-    const cookie = await login(base);
+    const { base } = await startServer({ seedUser: false });
+    const cookie = await login(base, { viaSetup: true });
     assert.ok(cookie.includes('wa_session'));
 
     const res = await fetch(`${base}/tasks`, { headers: { cookie } });
@@ -161,7 +175,7 @@ describe('页面渲染与转义', () => {
     const { base, store } = await startServer();
     const cookie = await login(base);
 
-    store.appendRun({
+    store.forUser(USER_ID).appendRun({
       taskName: 'demo-task',
       date: '2026-10-14',
       ts: NOW,
@@ -188,7 +202,7 @@ describe('接口行为', () => {
     const { base, store } = await startServer({
       execute: async (task, { trigger }) => {
         await gate;
-        return store.appendRun({
+        return store.forUser(USER_ID).appendRun({
           taskName: task.name,
           date: '2026-10-14',
           ts: NOW,
@@ -220,7 +234,7 @@ describe('接口行为', () => {
     );
   });
 
-  it('启停任务写入覆盖层，且状态随之变化', async () => {
+  it('启停任务写入订阅，取消订阅后任务不再是启用状态', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
@@ -238,7 +252,8 @@ describe('接口行为', () => {
     const cleared = await fetch(`${base}/api/tasks/demo-task/override`, { method: 'DELETE', headers: { cookie } });
     assert.deepEqual(await cleared.json(), { ok: true, cleared: true });
     const after = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
-    assert.equal(after.tasks[0].enabled, true);
+    // 取消订阅 = 不再有这个实例，所以是 disabled 而不是「回到模板默认」
+    assert.equal(after.tasks[0].enabled, false);
   });
 
   it('凭据接口只返回字段名与是否已设置，绝不返回值', async () => {
@@ -255,8 +270,8 @@ describe('执行历史默认隐藏跳过记录', () => {
   it('skipped 默认不出现，加 ?all=1 才显示', async () => {
     const { base, store } = await startServer();
     const cookie = await login(base);
-    store.appendRun({ taskName: 'demo-task', date: '2026-10-14', ts: NOW, status: 'success', message: '一次成功的执行' });
-    store.appendRun({
+    store.forUser(USER_ID).appendRun({ taskName: 'demo-task', date: '2026-10-14', ts: NOW, status: 'success', message: '一次成功的执行' });
+    store.forUser(USER_ID).appendRun({
       taskName: 'demo-task',
       date: '2026-10-14',
       ts: NOW - 1000,

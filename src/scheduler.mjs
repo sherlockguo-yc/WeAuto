@@ -116,15 +116,19 @@ export function planTask({
   return { due: true, reason: `到达计划时刻 ${sch.once.atLabel}`, nextState: {} };
 }
 
+/** 全局并发上限：N 个用户同时到期时不能一次打出 N 路请求（需求文档 §4.4） */
+export const MAX_CONCURRENT_RUNS = 4;
+
 /**
  * @param {object} deps
- * @param {ReturnType<import('./store.mjs').createStore>} deps.store
- * @param {Map<string, object>} deps.tasks 已规范化的任务（registry.loadTasks 的结果）
- * @param {(task: object, opts: {trigger: string}) => Promise<object|null>} deps.execute
+ * @param {ReturnType<import('./store.mjs').createStore>} deps.store **根 store**（需要跨用户遍历订阅）
+ * @param {Map<string, object>} deps.tasks 已规范化的模板（registry.loadTasks 的结果）
+ * @param {(task: object, opts: {trigger: string, userId: number, accountKey: string}) => Promise<object|null>} deps.execute
  * @param {() => number} [deps.now] 便于测试注入
  * @param {number} [deps.tickMs]
  * @param {(msg: string) => void} [deps.log]
  * @param {() => number} [deps.random]
+ * @param {number} [deps.maxConcurrent]
  */
 export function createScheduler({
   store,
@@ -134,10 +138,32 @@ export function createScheduler({
   tickMs = TICK_MS,
   log = () => {},
   random = Math.random,
+  maxConcurrent = MAX_CONCURRENT_RUNS,
 }) {
-  const inFlight = new Map(); // taskName → promise
+  /** key = `${subscriptionId}:${accountKey}` —— 同一个订阅的两个账号互不影响 */
+  const inFlight = new Map();
   let timer = null;
   let ticking = false;
+
+  /**
+   * 待调度的目标 = 订阅 × 启用中的账号。
+   *
+   * 模板已下线（代码里删了文件）时 `tasks.get()` 拿不到定义，直接跳过——
+   * 没有定义就没有 schedule，留着只会每 30 秒打一条找不到任务的日志。
+   */
+  function targets() {
+    const out = [];
+    for (const sub of store.allSubscriptions()) {
+      if (!sub.enabled) continue;
+      const task = tasks.get(sub.taskName);
+      if (!task) continue;
+      for (const acc of sub.accounts) {
+        if (!acc.enabled) continue;
+        out.push({ sub, task, acc, key: `${sub.id}:${acc.accountKey}` });
+      }
+    }
+    return out;
+  }
 
   /**
    * 启动时归一化「间隔类」的下次到期时刻。
@@ -148,69 +174,76 @@ export function createScheduler({
    */
   function normalizeOnStart() {
     const nowMs = now();
-    for (const task of tasks.values()) {
+    for (const { sub, task, acc } of targets()) {
       if (task.schedule?.kind !== 'every') continue;
+      const mine = store.forUser(sub.userId);
       const intervalMs = task.schedule.every.minutes * 60_000;
-      const next = store.stateOf(task.name).next_due_ts ?? null;
+      const next = mine.stateOf(sub.taskName, acc.accountKey).next_due_ts ?? null;
       if (next == null || next < nowMs) {
-        store.saveState(task.name, { next_due_ts: nowMs + intervalMs });
+        mine.saveState(sub.taskName, acc.accountKey, { next_due_ts: nowMs + intervalMs });
         if (next != null) {
-          log(`[scheduler] ${task.name} 休息期间错过了 ${Math.round((nowMs - next) / 1000)}s，跳过本轮，重新计时`);
+          log(`[scheduler] ${sub.taskName}/${acc.accountKey} 休息期间错过了 ${Math.round((nowMs - next) / 1000)}s，跳过本轮，重新计时`);
         }
       }
     }
   }
 
-  /** 启动/手动触发的执行入口：处理互斥、异常兜底与状态回写 */
-  function runNow(task, trigger) {
-    if (inFlight.has(task.name)) return null;
+  /** 启动/手动触发的执行入口：处理互斥、并发闸门、异常兜底与状态回写 */
+  function runNow({ sub, task, acc, key }, trigger) {
+    if (inFlight.has(key)) return null;
+    if (inFlight.size >= maxConcurrent) return null;
 
+    const mine = store.forUser(sub.userId);
     const promise = (async () => {
       try {
-        const record = await execute(task, { trigger });
-        if (record?.id) store.saveState(task.name, { last_run_id: record.id });
+        const record = await execute(task, { trigger, userId: sub.userId, accountKey: acc.accountKey });
+        if (record?.id) mine.saveState(sub.taskName, acc.accountKey, { last_run_id: record.id });
         return record;
       } catch (err) {
         // 执行器内部已兜住任务异常；能到这里说明是框架层的意外，绝不能让调度器停摆
-        log(`[error] ${task.name} 执行时抛出异常：${err.message}`);
+        log(`[error] ${sub.taskName} 执行时抛出异常：${err.message}`);
         return null;
       } finally {
-        inFlight.delete(task.name);
+        inFlight.delete(key);
       }
     })();
 
-    inFlight.set(task.name, promise);
+    inFlight.set(key, promise);
     return promise;
   }
 
-  /** 走一遍全部任务。不做等待：任务之间是并行的，慢任务不应拖住别的任务 */
+  /** 走一遍全部目标。不做等待：任务之间是并行的，慢任务不应拖住别的任务 */
   function tick() {
     if (ticking) return { skipped: '上一轮 tick 尚未结束', started: [] };
     ticking = true;
     const started = [];
     try {
       const nowMs = now();
-      for (const task of tasks.values()) {
-        if (!store.isEnabled(task.name)) continue;
-        if (inFlight.has(task.name)) continue;
+      const today = dateInTZ(new Date(nowMs));
+      for (const target of targets()) {
+        const { sub, task, acc, key } = target;
+        if (inFlight.has(key)) continue;
+        if (inFlight.size >= maxConcurrent) break;
 
-        const state = store.stateOf(task.name);
+        const mine = store.forUser(sub.userId);
         const plan = planTask({
           task,
-          state,
+          state: mine.stateOf(sub.taskName, acc.accountKey),
           nowMs,
           hasSuccessToday: task.schedule?.kind === 'window'
-            ? store.hasSuccessOn(task.name, dateInTZ(new Date(nowMs)))
+            ? mine.hasSuccessOn(sub.taskName, today, acc.accountKey)
             : false,
           hasScheduledRun:
-            task.schedule?.kind === 'once' ? store.hasScheduledRun(task.name) : false,
+            task.schedule?.kind === 'once' ? mine.hasScheduledRun(sub.taskName, acc.accountKey) : false,
           random,
         });
 
-        if (Object.keys(plan.nextState).length) store.saveState(task.name, plan.nextState);
+        if (Object.keys(plan.nextState).length) {
+          mine.saveState(sub.taskName, acc.accountKey, plan.nextState);
+        }
         if (!plan.due) continue;
 
-        if (runNow(task, 'schedule')) started.push(task.name);
+        if (runNow(target, 'schedule')) started.push(`${sub.taskName}:${acc.accountKey}`);
       }
       return { started };
     } finally {
@@ -226,7 +259,7 @@ export function createScheduler({
       timer = setInterval(() => tick(), tickMs);
       // 常驻进程不该被这个定时器拖住退出
       if (typeof timer.unref === 'function') timer.unref();
-      log(`[scheduler] 已启动，每 ${Math.round(tickMs / 1000)}s 检查一次（${tasks.size} 个任务）`);
+      log(`[scheduler] 已启动，每 ${Math.round(tickMs / 1000)}s 检查一次（${targets().length} 个调度目标，并发上限 ${maxConcurrent}）`);
     },
 
     stop() {
@@ -239,15 +272,26 @@ export function createScheduler({
     tick,
     normalizeOnStart,
 
-    /** 手动触发：跳过调度判断，但仍然受幂等与锁保护（除非 force） */
-    trigger(taskName, { force = true } = {}) {
+    /**
+     * 手动触发：跳过调度判断，但仍然受幂等与锁保护（除非 force）。
+     * 必须带 userId——「跑谁的那个账号」在多租户下不能靠猜。
+     */
+    trigger(taskName, { userId, accountKey = '', force = true } = {}) {
       const task = tasks.get(taskName);
       if (!task) throw new Error(`未知任务 "${taskName}"`);
-      if (inFlight.has(taskName)) return null;
-      return runNow(task, 'manual');
+      const sub = store.forUser(userId).getSubscription(taskName);
+      if (!sub) throw new Error(`用户 ${userId} 还没有订阅 "${taskName}"`);
+      const acc = sub.accounts.find((a) => a.accountKey === accountKey)
+        ?? (accountKey === '' ? sub.accounts[0] : null);
+      if (!acc) throw new Error(`账号 "${accountKey}" 不存在`);
+      return runNow({ sub, task, acc, key: `${sub.id}:${acc.accountKey}` }, 'manual');
     },
 
-    isRunning: (taskName) => inFlight.has(taskName),
+    isRunning: (taskName, userId, accountKey = '') => {
+      if (userId == null) return false;
+      const sub = store.forUser(userId).getSubscription(taskName);
+      return sub ? inFlight.has(`${sub.id}:${accountKey}`) : false;
+    },
     /** 供测试与优雅退出使用 */
     waitForIdle: () => Promise.allSettled([...inFlight.values()]),
   };

@@ -28,24 +28,44 @@ function withTimeout(promise, ms, label) {
 }
 
 /**
+ * 取这个用户的 store 视图。
+ *
+ * 兼容两种传法（过渡期，P2 收尾后可只留第一种）：
+ *   · 传根 store + userId → 走 `store.forUser(userId)`
+ *   · 传已绑定的用户视图 + 不传 userId → 直接用
+ * 这样现有的测试与 CLI 调用点不必一次性改完。
+ */
+function userStore(store, userId) {
+  if (userId == null) return store;
+  return typeof store.forUser === 'function' ? store.forUser(userId) : store;
+}
+
+/**
  * @param {object} deps
- * @param {object} deps.store
- * @param {(keys: string[]) => Record<string,string>} [deps.secretsLoader] 便于测试注入
+ * @param {object} deps.store 根 store（或已绑定的用户视图）
+ * @param {(args: {userId: number|null, taskName: string, accountKey: string, requires: string[]}) => Record<string,string>} [deps.secretsLoader]
+ *        默认取全站凭据（单租户遗留路径）；多租户下应注入每用户凭据，见需求文档 §4.5
  * @param {() => number} [deps.now]
  * @param {(msg: string) => void} [deps.log]
  */
-export function createExecutor({ store, secretsLoader = loadSecrets, now = () => Date.now(), log = () => {} }) {
+export function createExecutor({
+  store,
+  secretsLoader = ({ requires }) => loadSecrets(requires),
+  now = () => Date.now(),
+  log = () => {},
+}) {
   /**
    * @param {object} task 已规范化任务
-   * @param {{trigger?: 'schedule'|'manual'}} [opts]
+   * @param {{trigger?: 'schedule'|'manual', userId?: number, accountKey?: string}} [opts]
    * @returns {Promise<object|null>} null 表示「这次不需要执行」
    */
-  return async function execute(task, { trigger = 'schedule' } = {}) {
+  return async function execute(task, { trigger = 'schedule', userId = null, accountKey = '' } = {}) {
+    const mine = userStore(store, userId);
     const startedAt = now();
     const date = dateInTZ(new Date(startedAt));
 
-    // 幂等：调度触发时当天已成功就跳过。手动触发不拦（用户就是想再跑一次）
-    if (trigger === 'schedule' && store.hasSuccessOn(task.name, date)) {
+    // 幂等：调度触发时「该账号」当天已成功就跳过。手动触发不拦（用户就是想再跑一次）
+    if (trigger === 'schedule' && mine.hasSuccessOn(task.name, date, accountKey)) {
       log(`[skip] ${task.name} 今日已完成，不再执行`);
       return null;
     }
@@ -57,7 +77,8 @@ export function createExecutor({ store, secretsLoader = loadSecrets, now = () =>
 
     const ctx = {
       secrets: {},
-      account: null, // 多账号预留在契约里，当前恒为 null
+      /** 多账号：契约里预留的 account 现在有了真实取值（单账号模板仍为 null） */
+      account: accountKey ? { key: accountKey } : null,
       request,
       CookieJar,
       log: record,
@@ -66,7 +87,9 @@ export function createExecutor({ store, secretsLoader = loadSecrets, now = () =>
 
     let result;
     try {
-      ctx.secrets = task.requires.length ? secretsLoader(task.requires) : {};
+      ctx.secrets = task.requires.length
+        ? secretsLoader({ userId, taskName: task.name, accountKey, requires: task.requires })
+        : {};
       record(`开始执行 ${task.displayName}（${trigger === 'manual' ? '手动' : '调度'}）`);
       result = await withTimeout(task.run(ctx), task.timeoutMs, task.name);
     } catch (err) {
@@ -77,8 +100,9 @@ export function createExecutor({ store, secretsLoader = loadSecrets, now = () =>
           : { status: STATUS.NETWORK, message: err.message };
     }
 
-    const saved = store.appendRun({
+    const saved = mine.appendRun({
       taskName: task.name,
+      accountKey,
       date,
       ts: startedAt,
       status: result?.status ?? STATUS.FAILED,
@@ -88,7 +112,7 @@ export function createExecutor({ store, secretsLoader = loadSecrets, now = () =>
       trigger,
     });
 
-    if (lines.length) store.appendLogs(saved.id, task.name, lines, startedAt);
+    if (lines.length) mine.appendLogs(saved.id, task.name, lines, startedAt);
 
     log(`[${saved.status}] ${saved.message}`);
     return saved;

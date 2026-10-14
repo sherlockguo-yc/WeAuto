@@ -147,6 +147,12 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
     return res.status(403).json({ error: '需要管理员权限' });
   };
 
+  /**
+   * 每个请求都先绑定用户：多租户下所有数据访问都要经过它。
+   * 不提供「不带用户的 store」，是为了让「忘了过滤 user_id」在结构上不可能发生。
+   */
+  const mine = (req) => store.forUser(req.user.id);
+
   /* ───────── 登录 / 首次初始化 ───────── */
   app.get('/login', (req, res) => {
     if (req.user) return res.redirect('/');
@@ -198,12 +204,12 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
 
   /* ───────── 页面 ───────── */
   app.get('/', requireLogin, (req, res) => {
-    const data = summarizeAll({ tasks, store, nowMs: now() });
+    const data = summarizeAll({ tasks, store: mine(req), nowMs: now() });
     res.type('html').send(render.layout({ title: '概览', active: 'home', body: render.pageOverview(data), user: req.user }));
   });
 
   app.get('/tasks', requireLogin, (req, res) => {
-    const data = summarizeAll({ tasks, store, nowMs: now() });
+    const data = summarizeAll({ tasks, store: mine(req), nowMs: now() });
     res.type('html').send(
       render.layout({
         title: '任务',
@@ -214,11 +220,12 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
     );
   });
 
-  function detailOf(taskName, { includeSkipped = false } = {}) {
+  function detailOf(taskName, { includeSkipped = false, userId } = {}) {
     const task = tasks.get(taskName);
     if (!task) return null;
-    const summary = summarizeTask({ task, store, nowMs: now() });
-    const all = store.runsOfTask(taskName, 50);
+    const mine = store.forUser(userId);
+    const summary = summarizeTask({ task, store: mine, nowMs: now() });
+    const all = mine.runsOfTask(taskName, { limit: 50 });
     // 历史默认隐藏 skipped：间隔类任务跑顺之后，跳过记录会把有用的行挤下去
     const runs = includeSkipped ? all : all.filter((r) => r.status !== 'skipped');
     const lastCompleted = all.find((r) => r.status !== 'skipped') ?? null;
@@ -234,7 +241,7 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   }
 
   app.get('/tasks/:name', requireLogin, (req, res) => {
-    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1' });
+    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1', userId: req.user.id });
     if (!d) return res.status(404).type('html').send(render.layout({ title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>', user: req.user }));
     res.type('html').send(
       render.layout({
@@ -246,7 +253,7 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
           runs: d.runs,
           hiddenSkipped: d.hiddenSkipped,
           includeSkipped: d.includeSkipped,
-          canRun: !scheduler.isRunning(d.task.name),
+          canRun: !scheduler.isRunning(d.task.name, req.user.id),
         }),
         user: req.user,
       }),
@@ -256,7 +263,7 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   app.get('/tasks/:name/config', requireLogin, (req, res) => {
     const task = tasks.get(req.params.name);
     if (!task) return res.status(404).type('html').send(render.layout({ title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>', user: req.user }));
-    const summary = summarizeTask({ task, store, nowMs: now() });
+    const summary = summarizeTask({ task, store: mine(req), nowMs: now() });
     res.type('html').send(
       render.layout({
         title: `${task.displayName} · 配置`,
@@ -291,7 +298,7 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   });
 
   app.get('/settings', requireLogin, (req, res) => {
-    const data = summarizeAll({ tasks, store, nowMs: now() });
+    const data = summarizeAll({ tasks, store: mine(req), nowMs: now() });
     res.type('html').send(
       render.layout({
         title: '设置',
@@ -315,41 +322,47 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
 
   /* ───────── JSON 接口（页面与将来的移动端共用） ───────── */
   app.get('/healthz', (req, res) => {
-    const data = summarizeAll({ tasks, store, nowMs: now() });
+    // 这个接口不鉴权（给探活用），所以只能报平台级信息，不能带任何用户数据。
+    // 多租户后「有几个任务需要注意」是 per-user 的，在这里算不出来也不该算。
     res.json({
       ok: true,
       version: process.env.WEAUTO_VERSION || 'dev',
-      tasks: data.items.length,
-      attention: data.attention.length,
+      templates: tasks.size,
       time: new Date(now()).toISOString(),
     });
   });
 
   app.get('/api/overview', requireLogin, (req, res) =>
-    res.json(summarizeAll({ tasks, store, nowMs: now() })),
+    res.json(summarizeAll({ tasks, store: mine(req), nowMs: now() })),
   );
 
   app.get('/api/tasks', requireLogin, (req, res) =>
-    res.json({ tasks: summarizeAll({ tasks, store, nowMs: now() }).items }),
+    res.json({ tasks: summarizeAll({ tasks, store: mine(req), nowMs: now() }).items }),
   );
 
   app.get('/api/tasks/:name', requireLogin, (req, res) => {
-    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1' });
+    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1', userId: req.user.id });
     if (!d) return res.status(404).json({ error: '没有这个任务' });
     res.json({
       task: d.summary,
       view: d.view,
       runs: d.runs,
       hiddenSkipped: d.hiddenSkipped,
-      running: scheduler.isRunning(d.task.name),
+      running: scheduler.isRunning(d.task.name, req.user.id),
     });
   });
 
   app.post('/api/tasks/:name/run', requireLogin, (req, res) => {
     const name = req.params.name;
     if (!tasks.has(name)) return res.status(404).json({ error: '没有这个任务' });
-    if (scheduler.isRunning(name)) return res.status(409).json({ error: '该任务正在执行中' });
-    scheduler.trigger(name); // 不 await：任务可能跑几十秒，让前端轮询结果
+    if (scheduler.isRunning(name, req.user.id)) return res.status(409).json({ error: '该任务正在执行中' });
+    try {
+      // 不 await：任务可能跑几十秒，让前端轮询结果
+      scheduler.trigger(name, { userId: req.user.id });
+    } catch (err) {
+      // 没订阅就触发是常见误操作（比如在模板市场点了运行），给 400 而不是 500
+      return res.status(400).json({ error: err.message });
+    }
     res.json({ started: true });
   });
 
@@ -367,13 +380,16 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
     }
     if (!Object.keys(patch).length) return res.status(400).json({ error: '没有可更新的字段' });
 
-    store.setOverride(name, patch);
-    res.json({ ok: true, override: store.getOverride(name) });
+    // 没有订阅就先建一个：admin 在「模板」视角下改配置是常见路径
+    if (!mine(req).getSubscription(name)) mine(req).subscribe(name);
+    mine(req).setSubscription(name, patch);
+    res.json({ ok: true, subscription: mine(req).getSubscription(name) });
   });
 
+  /** 取消订阅（原「清掉覆盖层」）。多租户下没有「回到全局默认」这回事了 */
   app.delete('/api/tasks/:name/override', requireLogin, requireAdmin, (req, res) => {
     if (!tasks.has(req.params.name)) return res.status(404).json({ error: '没有这个任务' });
-    res.json({ ok: true, cleared: store.clearOverride(req.params.name) });
+    res.json({ ok: true, cleared: mine(req).unsubscribe(req.params.name) });
   });
 
   /**
@@ -400,7 +416,7 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   app.get('/api/runs', requireLogin, (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
     res.json({
-      runs: store.recentRuns(limit, { includeSkipped: req.query.includeSkipped === '1' }),
+      runs: mine(req).recentRuns(limit, { includeSkipped: req.query.includeSkipped === '1' }),
     });
   });
 

@@ -38,27 +38,33 @@ export function describeSchedule(schedule) {
 
 /**
  * 单个任务的当前状态
+ *
+ * 传入的 `store` 必须是**用户视图**（`store.forUser(userId)` 的结果），
+ * 这样「某人的任务状态」不会读到别人的记录——是本模块唯一的前提。
+ *
+ * @param {string} [accountKey] 多账号模板要按账号分别统计；单账号模板用 ''
  * @returns {object} 供 API 与页面直接使用
  */
-export function summarizeTask({ task, store, nowMs, random = Math.random }) {
+export function summarizeTask({ task, store, nowMs, random = Math.random, accountKey = '' }) {
   const override = store.getOverride(task.name);
-  const enabled = override?.enabled ?? true;
+  // 未订阅 = 不存在这个实例，界面上就是「未启用」（不再是旧的「默认启用」）
+  const enabled = override?.enabled ?? false;
   const { schedule, overrideInvalid } = effectiveSchedule(task, override);
   const effectiveTask = { ...task, schedule };
 
   const today = dateInTZ(new Date(nowMs));
-  const hasSuccessToday = store.hasSuccessOn(task.name, today);
+  const hasSuccessToday = store.hasSuccessOn(task.name, today, accountKey);
   const plan = planTask({
     task: effectiveTask,
-    state: store.stateOf(task.name),
+    state: store.stateOf(task.name, accountKey),
     nowMs,
     hasSuccessToday,
-    hasScheduledRun: schedule?.kind === 'once' ? store.hasScheduledRun(task.name) : false,
+    hasScheduledRun: schedule?.kind === 'once' ? store.hasScheduledRun(task.name, accountKey) : false,
     random,
   });
 
-  const [lastRun] = store.runsOfTask(task.name, 1);
-  const lastSuccess = store.lastSuccess(task.name);
+  const [lastRun] = store.runsOfTask(task.name, { accountKey, limit: 1 });
+  const lastSuccess = store.lastSuccess(task.name, accountKey);
 
   // 今日状态：先看记录，再看计划。记录优先，因为它是发生过的事实
   let todayStatus;
@@ -81,6 +87,7 @@ export function summarizeTask({ task, store, nowMs, random = Math.random }) {
     view: task.view,
     file: task.file,
     enabled,
+    subscribed: !!override,
     overrideInvalid,
     hasOverride: !!override,
     schedule,

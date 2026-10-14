@@ -16,9 +16,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, parseDotenv } from './util.mjs';
+import { KEY_LEN, generateMasterKey } from './user-secrets.mjs';
 
 export const ENV_FILE = path.join(DATA_DIR, '.env');
 export const SECRET_FILE = path.join(DATA_DIR, 'jwt-secret');
+export const MASTER_KEY_FILE = path.join(DATA_DIR, 'master-key');
 
 export const DEFAULT_PORT = 18991;
 
@@ -52,6 +54,44 @@ export function loadJwtSecret({ env = process.env, file = SECRET_FILE } = {}) {
 }
 
 /**
+ * 取凭据主密钥：环境变量（base64）> 文件（base64）> 首次生成。
+ *
+ * 与 JWT secret 的区别在于**丢了会怎样**：
+ *   · JWT secret 丢了 → 所有人重新登录，无持久损失
+ *   · 主密钥丢了 → 所有用户的凭据永久解不开，只能让他们重填
+ * 所以它和 data/ 一起受 rsync --exclude 保护，且权限 600。
+ */
+export function loadMasterKey({ env = process.env, file = MASTER_KEY_FILE } = {}) {
+  const fromEnv = env.WEAUTO_MASTER_KEY;
+  if (fromEnv) {
+    const buf = Buffer.from(fromEnv, 'base64');
+    if (buf.length !== KEY_LEN) {
+      throw new Error(`WEAUTO_MASTER_KEY 必须是 ${KEY_LEN} 字节的 base64`);
+    }
+    return buf;
+  }
+
+  try {
+    const existing = fs.readFileSync(file, 'utf8').trim();
+    if (existing) {
+      const buf = Buffer.from(existing, 'base64');
+      if (buf.length !== KEY_LEN) {
+        throw new Error(`${file} 内容不是 ${KEY_LEN} 字节的 base64`);
+      }
+      return buf;
+    }
+  } catch (err) {
+    // 文件不存在是正常情况（首次启动）；内容不合法必须炸掉，不能静默换新密钥
+    if (err instanceof Error && !['ENOENT'].includes(err.code)) throw err;
+  }
+
+  const key = generateMasterKey();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${key.toString('base64')}\n`, { mode: 0o600 });
+  return key;
+}
+
+/**
  * 登录限速参数。登录口是公网可达的，必须有兜底。
  * 内存实现即可：常驻单进程，重启后计数清零是可以接受的代价。
  */
@@ -71,6 +111,7 @@ export function loadConfig({ env = process.env } = {}) {
     port,
     host: pick('WEAUTO_HOST', '0.0.0.0'),
     jwtSecret: loadJwtSecret({ env }),
+    masterKey: loadMasterKey({ env }),
     tokenTtl: pick('WEAUTO_TOKEN_TTL', '7d'),
     /** 是否只在 HTTPS 下带 cookie。经 Cloudflare Tunnel 时由代理头判断 */
     trustProxy: true,
