@@ -40,7 +40,9 @@ jobs:
       - name: Package
         run: |
           mkdir -p pkg
-          cp -r bin src tasks scripts pkg/
+          # public/ 必须打进包：页面依赖它（样式 + 前端脚本）。漏掉的表现是页面能打开但
+          # 完全没有样式、按钮也不工作 —— 2026-10-14 首次部署就漏过一次。
+          cp -r bin src tasks scripts public pkg/
           cp restart.sh package.json package-lock.json secrets.age pkg/
 
           # 运行时依赖必须打进包，且在 CI 里装好：
