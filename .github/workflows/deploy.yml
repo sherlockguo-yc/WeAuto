@@ -12,7 +12,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # 无 npm 依赖的纯 Node 项目，直接跑 node:test。
+      # 服务化之后有了运行时依赖（better-sqlite3 / bcryptjs / jsonwebtoken）。
+      # node-version 必须与 N150 的 node 大版本一致：better-sqlite3 是原生模块，
+      # 在 CI 里编译出来的二进制只认同一个 Node ABI。
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
       # 放在打包之前：测试不过就不发布 Release，避免坏版本流到 N150。
       - name: Test
         run: npm test
@@ -31,7 +41,15 @@ jobs:
         run: |
           mkdir -p pkg
           cp -r bin src tasks scripts pkg/
-          cp restart.sh package.json secrets.age pkg/
+          cp restart.sh package.json package-lock.json secrets.age pkg/
+
+          # 运行时依赖必须打进包，且在 CI 里装好：
+          #   · deploy-agent 用 rsync -a --delete 同步部署目录，凡不在包内的文件
+          #     都会被 --delete 清掉 —— node_modules 同理，不放进去就会被删掉，
+          #     服务下次重启直接 MODULE_NOT_FOUND
+          #   · N150 在国内，现场 npm install 又慢又可能拉不到原生模块预编译包
+          cd pkg && npm ci --omit=dev && cd ..
+
           echo "${{ steps.ver.outputs.sha }}" > pkg/.version
           tar -czf weauto.tar.gz -C pkg .
           ls -lh weauto.tar.gz
