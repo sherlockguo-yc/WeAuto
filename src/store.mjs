@@ -93,9 +93,29 @@ function rowToAccount(row) {
   };
 }
 
-export function createStore(db) {
+export function createStore(db, { limits = {} } = {}) {
   const successList = [...SUCCESS_STATUSES];
   const inClause = successList.map(() => '?').join(',');
+
+  /* 上限由装配层注入（config.TENANT_LIMITS），本模块不读环境变量 */
+  const maxSubscriptions = limits.maxSubscriptions ?? Infinity;
+  const minIntervalMinutes = limits.minIntervalMinutes ?? 0;
+
+  /** 间隔下限：防止有人配成 1 分钟一次，把目标站和 N150 的出口 IP 一起拖垮 */
+  function assertScheduleAllowed(schedule) {
+    if (schedule?.kind !== 'every') return;
+    const minutes = Number(schedule.every?.minutes);
+    if (!Number.isFinite(minutes) || minutes < minIntervalMinutes) {
+      throw new Error(`间隔不能小于 ${minIntervalMinutes} 分钟`);
+    }
+  }
+
+  function assertSubscriptionAllowed(userId, taskName) {
+    if (s.subOf.get(userId, taskName)) return; // 已订阅 → 是更新，不占新名额
+    if (s.subsOfUser.all(userId).length >= maxSubscriptions) {
+      throw new Error(`订阅数已达上限（${maxSubscriptions} 个）`);
+    }
+  }
 
   const s = {
     /* ───────── 订阅 ───────── */
@@ -162,6 +182,10 @@ export function createStore(db) {
     ),
     deleteRun: db.prepare('DELETE FROM runs WHERE id = ?'),
     deleteRunsOfUser: db.prepare('DELETE FROM runs WHERE user_id = ?'),
+    // 配额计数：skipped 不计入，它代表「没真的发出请求」
+    countRunsToday: db.prepare(
+      `SELECT COUNT(*) AS n FROM runs WHERE user_id = ? AND date = ? AND status <> 'skipped'`,
+    ),
 
     /* ───────── 日志 ───────── */
     insertLog: db.prepare(
@@ -223,6 +247,8 @@ export function createStore(db) {
      * 否则用户还得先「添加账号」才能填凭据，多一步没必要的操作。
      */
     function subscribe(taskName, { enabled = true, schedule = null, timeoutMs = null } = {}) {
+      assertSubscriptionAllowed(userId, taskName);
+      assertScheduleAllowed(schedule);
       const prev = s.subOf.get(userId, taskName);
       s.insertSub.run({
         user_id: userId,
@@ -300,6 +326,7 @@ export function createStore(db) {
     function setSubscription(taskName, { enabled, schedule, timeoutMs } = {}) {
       const prev = s.subOf.get(userId, taskName);
       if (!prev) return null;
+      assertScheduleAllowed(schedule);
       const prevSchedule = prev.schedule_json ? JSON.parse(prev.schedule_json) : null;
       s.insertSub.run({
         user_id: userId,
@@ -476,6 +503,8 @@ export function createStore(db) {
       lastSuccess,
       hasSuccessOn,
       hasScheduledRun,
+      /** 今日已执行次数（配额用） */
+      countRunsToday: (date) => s.countRunsToday.get(userId, date).n,
       appendLogs,
       logsOfRun: (runId) => s.logsOfRun.all(runId),
       getRun: (id) => rowToRun(s.runById.get(id)),

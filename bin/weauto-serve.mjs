@@ -9,7 +9,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig } from '../src/config.mjs';
+import { TENANT_LIMITS, loadConfig } from '../src/config.mjs';
 import { DB_FILE, openDb } from '../src/db.mjs';
 import { bootstrapTenancy, pickOwnerId } from '../src/bootstrap.mjs';
 import { createExecutor } from '../src/executor.mjs';
@@ -17,7 +17,7 @@ import { loadTasks } from '../src/registry.mjs';
 import { createScheduler } from '../src/scheduler.mjs';
 import { createServer } from '../src/server.mjs';
 import { createStore } from '../src/store.mjs';
-import { createUserSecrets } from '../src/user-secrets.mjs';
+import { createUserSecrets, secretsLoaderFor } from '../src/user-secrets.mjs';
 import { createAuth } from '../src/auth/index.mjs';
 import { DATA_DIR, ROOT } from '../src/util.mjs';
 
@@ -52,7 +52,7 @@ async function main() {
 
   const config = loadConfig();
   const db = openDb();
-  const store = createStore(db);
+  const store = createStore(db, { limits: TENANT_LIMITS });
   const tasks = await loadTasks();
 
   const auth = createAuth({ db, jwtSecret: config.jwtSecret, tokenTtl: config.tokenTtl });
@@ -79,7 +79,14 @@ async function main() {
   const scheduler = createScheduler({
     store,
     tasks,
-    execute: createExecutor({ store, log: (m) => console.log(m) }),
+    execute: createExecutor({
+      store,
+      // 每用户凭据：只给这个用户这个账号、且只给任务声明过的字段
+      secretsLoader: secretsLoaderFor(userSecrets),
+      quotaPerDay: TENANT_LIMITS.quotaPerDay,
+      log: (m) => console.log(m),
+    }),
+    maxConcurrent: TENANT_LIMITS.maxConcurrent,
     log: (m) => console.log(m),
   });
   const app = createServer({ store, auth, tasks, scheduler, config });

@@ -10,19 +10,9 @@
  *
  * API 与页面共用这里的函数，避免两边对「今天的口径」理解不一致。
  */
-import { normalizeSchedule } from './task-contract.mjs';
+import { effectiveSchedule } from './schedule.mjs';
 import { planTask } from './scheduler.mjs';
 import { dateInTZ } from './util.mjs';
-
-/** 覆盖层里的调度声明如果坏了，退回代码文件的默认值，但**明确标出来** */
-function effectiveSchedule(task, override) {
-  if (!override?.schedule) return { schedule: task.schedule, overrideInvalid: false };
-  try {
-    return { schedule: normalizeSchedule(task.name, override.schedule), overrideInvalid: false };
-  } catch {
-    return { schedule: task.schedule, overrideInvalid: true };
-  }
-}
 
 /** 调度声明的人话描述 */
 export function describeSchedule(schedule) {

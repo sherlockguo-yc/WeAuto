@@ -10,6 +10,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { pickOwnerId } from '../src/bootstrap.mjs';
 import { openDb } from '../src/db.mjs';
 import { createStore } from '../src/store.mjs';
 import { RUNS_FILE } from '../src/util.mjs';
@@ -37,6 +38,15 @@ function readJsonl(file) {
 
 const db = openDb();
 const store = createStore(db);
+
+// 多租户后每条记录都必须有归属，历史的归属就是第一个账号
+const ownerId = Number(process.env.WEAUTO_OWNER_ID) || pickOwnerId(db);
+if (!ownerId) {
+  console.error('库里还没有任何账号：请先创建管理员，或用 WEAUTO_OWNER_ID 指定归属');
+  process.exit(1);
+}
+const mine = store.forUser(ownerId);
+console.log(`历史记录将归入账号 ${ownerId}`);
 
 const rows = readJsonl(RUNS_FILE);
 if (!rows.length) {
@@ -77,7 +87,7 @@ if (!apply) {
 // 先把库里已有的「任务+时间戳」收集起来，避免重复导入
 const seen = new Set();
 for (const name of new Set(records.map((r) => r.taskName))) {
-  for (const r of store.runsOfTask(name, 100000)) seen.add(`${r.task}@${r.ts}`);
+  for (const r of mine.runsOfTask(name, { limit: 100000 })) seen.add(`${r.task}@${r.ts}`);
 }
 
 let inserted = 0;
@@ -88,7 +98,13 @@ for (const rec of records) {
     skipped += 1;
     continue;
   }
-  store.appendRun(rec);
+  // 有历史就说明用过这个任务，顺带把实例建出来；建不了（比如超上限）不影响导入
+  try {
+    if (!mine.getSubscription(rec.taskName)) mine.subscribe(rec.taskName);
+  } catch (err) {
+    console.warn(`[warn] 无法为 ${rec.taskName} 建立订阅：${err.message}`);
+  }
+  mine.appendRun(rec);
   seen.add(key);
   inserted += 1;
 }

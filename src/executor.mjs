@@ -51,6 +51,7 @@ function userStore(store, userId) {
 export function createExecutor({
   store,
   secretsLoader = ({ requires }) => loadSecrets(requires),
+  quotaPerDay = 0,
   now = () => Date.now(),
   log = () => {},
 }) {
@@ -68,6 +69,24 @@ export function createExecutor({
     if (trigger === 'schedule' && mine.hasSuccessOn(task.name, date, accountKey)) {
       log(`[skip] ${task.name} 今日已完成，不再执行`);
       return null;
+    }
+
+    // 配额：手动触发也算，否则「手动连点 200 次」就能绕过去
+    if (quotaPerDay > 0 && userId != null && typeof mine.countRunsToday === 'function') {
+      const used = mine.countRunsToday(date);
+      if (used >= quotaPerDay) {
+        log(`[quota] 用户 ${userId} 今日已执行 ${used} 次，达到上限 ${quotaPerDay}`);
+        return mine.appendRun({
+          taskName: task.name,
+          accountKey,
+          date,
+          ts: startedAt,
+          status: STATUS.SKIPPED,
+          message: `已达今日配额上限（${quotaPerDay} 次）`,
+          dur: 0,
+          trigger,
+        });
+      }
     }
 
     const lines = [];

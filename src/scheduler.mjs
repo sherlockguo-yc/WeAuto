@@ -16,7 +16,7 @@
  * 页面上的「今日未执行 / 已错过」由「计划 + 实际记录」推导，而不是靠冗余记录。
  */
 import { dateInTZ, hhmmToSeconds, secondsToHHMM, startOfDayBeijingMs } from './util.mjs';
-import { targetSecondsOfDay } from './schedule.mjs';
+import { effectiveSchedule, targetSecondsOfDay } from './schedule.mjs';
 
 export const TICK_MS = 30_000;
 
@@ -142,6 +142,8 @@ export function createScheduler({
 }) {
   /** key = `${subscriptionId}:${accountKey}` —— 同一个订阅的两个账号互不影响 */
   const inFlight = new Map();
+  /** 同一用户最多一个在飞：不希望一个人把自己的两个账号同时打向同一个站点 */
+  const runningUsers = new Set();
   let timer = null;
   let ticking = false;
 
@@ -157,9 +159,12 @@ export function createScheduler({
       if (!sub.enabled) continue;
       const task = tasks.get(sub.taskName);
       if (!task) continue;
+      // 用户在订阅里改过的调度与超时优先于模板默认值——不然「配自己的时间」没有意义
+      const { schedule } = effectiveSchedule(task, { schedule: sub.schedule });
+      const effectiveTask = { ...task, schedule, timeoutMs: sub.timeoutMs ?? task.timeoutMs };
       for (const acc of sub.accounts) {
         if (!acc.enabled) continue;
-        out.push({ sub, task, acc, key: `${sub.id}:${acc.accountKey}` });
+        out.push({ sub, task: effectiveTask, acc, key: `${sub.id}:${acc.accountKey}` });
       }
     }
     return out;
@@ -192,6 +197,7 @@ export function createScheduler({
   function runNow({ sub, task, acc, key }, trigger) {
     if (inFlight.has(key)) return null;
     if (inFlight.size >= maxConcurrent) return null;
+    if (runningUsers.has(sub.userId)) return null;
 
     const mine = store.forUser(sub.userId);
     const promise = (async () => {
@@ -205,10 +211,12 @@ export function createScheduler({
         return null;
       } finally {
         inFlight.delete(key);
+        runningUsers.delete(sub.userId);
       }
     })();
 
     inFlight.set(key, promise);
+    runningUsers.add(sub.userId);
     return promise;
   }
 
@@ -284,7 +292,16 @@ export function createScheduler({
       const acc = sub.accounts.find((a) => a.accountKey === accountKey)
         ?? (accountKey === '' ? sub.accounts[0] : null);
       if (!acc) throw new Error(`账号 "${accountKey}" 不存在`);
-      return runNow({ sub, task, acc, key: `${sub.id}:${acc.accountKey}` }, 'manual');
+      const { schedule } = effectiveSchedule(task, { schedule: sub.schedule });
+      return runNow(
+        {
+          sub,
+          task: { ...task, schedule, timeoutMs: sub.timeoutMs ?? task.timeoutMs },
+          acc,
+          key: `${sub.id}:${acc.accountKey}`,
+        },
+        'manual',
+      );
     },
 
     isRunning: (taskName, userId, accountKey = '') => {

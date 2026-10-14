@@ -97,6 +97,24 @@ export function loadMasterKey({ env = process.env, file = MASTER_KEY_FILE } = {}
  */
 export const LOGIN_RATE_LIMIT = { windowMs: 15 * 60_000, maxFailures: 10 };
 
+/**
+ * 多租户下的资源上限（需求文档 §4.4，宽松档）。
+ *
+ * 存在这里的理由：这些是「运营参数」而不是「代码常量」，将来要调只需要改一处。
+ * 由装配层（bin/weauto-serve.mjs）注入给 store / executor / scheduler，
+ * 各模块自己不读环境变量。
+ */
+export const TENANT_LIMITS = {
+  /** 每用户每天的执行次数上限（手动触发也算） */
+  quotaPerDay: 100,
+  /** 间隔任务的最小间隔，低于这个值拒绝保存 */
+  minIntervalMinutes: 5,
+  /** 每用户可订阅的模板数上限 */
+  maxSubscriptions: 20,
+  /** 全平台同时执行的任务数上限（保护 N150 出口 IP 不被一次打出几十路请求） */
+  maxConcurrent: 4,
+};
+
 export function loadConfig({ env = process.env } = {}) {
   const fileEnv = readEnvFile(env.WEAUTO_ENV_FILE || ENV_FILE);
   const pick = (key, fallback) => env[key] ?? fileEnv[key] ?? fallback;

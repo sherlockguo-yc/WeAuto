@@ -321,4 +321,47 @@ describe('调度循环', () => {
     assert.equal(store.forUser(USER_ID).stateOf('w-task').last_run_id, null);
     assert.equal(sch.isRunning('w-task', USER_ID), false);
   });
+
+  it('订阅里配的调度覆盖模板默认（否则「配自己的时间」形同虚设）', async () => {
+    const { store } = fresh();
+    // 模板是 every 30 分钟，用户在订阅里改成 10 分钟
+    store.forUser(USER_ID).setSubscription('e-task', {
+      schedule: { kind: 'every', every: { minutes: 10 } },
+    });
+    store.forUser(USER_ID).saveState('e-task', '', { next_due_ts: NOON - 1 });
+
+    const { execute, calls } = fakeExecute(store);
+    const sch = createScheduler({
+      store,
+      tasks: new Map([[everyTask.name, everyTask]]),
+      execute,
+      now: () => NOON,
+    });
+
+    const r = sch.tick();
+    assert.deepEqual(r.started, ['e-task:']);
+    await sch.waitForIdle();
+    assert.equal(calls.length, 1);
+    // 下一次到期按 10 分钟算，不是模板的 30 分钟
+    assert.equal(store.forUser(USER_ID).stateOf('e-task').next_due_ts, NOON + 10 * 60_000);
+  });
+
+  it('同一用户串行：两个账号不会同时打出去', async () => {
+    const { store } = fresh();
+    const extra = store.forUser(USER_ID).addAccount('w-task', { label: '小号' });
+    assert.ok(extra);
+
+    const { execute, calls } = fakeExecute(store, { delayMs: 40 });
+    const sch = createScheduler({
+      store,
+      tasks: new Map([[windowTask.name, windowTask]]),
+      execute,
+      now: () => windowTargetMs + 1000,
+    });
+
+    const r = sch.tick();
+    await sch.waitForIdle();
+    assert.equal(r.started.length, 1, '同一时刻只启动一个，另一个留给下一轮');
+    assert.equal(calls.length, 1);
+  });
 });

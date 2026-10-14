@@ -52,9 +52,9 @@ function fresh() {
   return createStore(freshDb()).forUser(USER_ID);
 }
 
-/** 根 store：只有跨用户的用例（遍历订阅、删号清理）才需要 */
-function freshRoot() {
-  return createStore(freshDb());
+/** 根 store：只有跨用户的用例（遍历订阅、删号清理、上限校验）才需要 */
+function freshRoot(limits) {
+  return createStore(freshDb(), { limits });
 }
 
 const USER_ID = 1;
@@ -318,6 +318,42 @@ describe('多租户隔离', () => {
     root.purgeUser(1);
     assert.equal(root.forUser(2).recentRuns(10).length, 1, '另一个用户的数据不受影响');
     assert.deepEqual(root.allUserIds(), [2]);
+  });
+});
+
+describe('资源上限（由装配层注入，本模块不读环境变量）', () => {
+  it('订阅数达到上限后拒绝', () => {
+    const root = freshRoot({ maxSubscriptions: 2 });
+    const mine = root.forUser(USER_ID);
+    mine.subscribe('a');
+    mine.subscribe('b');
+    assert.throws(() => mine.subscribe('c'), /上限/);
+    // 已订阅的是更新，不该被名额挡住
+    assert.equal(mine.subscribe('a', { enabled: false }).enabled, false);
+  });
+
+  it('间隔低于下限直接拒绝保存', () => {
+    const root = freshRoot({ minIntervalMinutes: 5 });
+    const mine = root.forUser(USER_ID);
+    assert.throws(
+      () => mine.subscribe('t', { schedule: { kind: 'every', every: { minutes: 1 } } }),
+      /不能小于 5 分钟/,
+    );
+    const ok = mine.subscribe('t', { schedule: { kind: 'every', every: { minutes: 10 } } });
+    assert.equal(ok.schedule.every.minutes, 10);
+    assert.throws(
+      () => mine.setSubscription('t', { schedule: { kind: 'every', every: { minutes: 1 } } }),
+      /不能小于 5 分钟/,
+    );
+  });
+
+  it('countRunsToday 不计入 skipped（它不代表真的发出过请求）', () => {
+    const store = fresh();
+    run(store, { date: '2026-10-14', ts: 1, status: 'success' });
+    run(store, { date: '2026-10-14', ts: 2, status: 'skipped' });
+    run(store, { date: '2026-10-15', ts: 3, status: 'success' });
+    assert.equal(store.countRunsToday('2026-10-14'), 1);
+    assert.equal(store.countRunsToday('2026-10-15'), 1);
   });
 });
 

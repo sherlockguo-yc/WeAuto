@@ -16,6 +16,7 @@
  *   每次写入都用新的随机 iv，所以同一个值存两次密文也不同。
  */
 import crypto from 'node:crypto';
+import { SecretsError } from './secrets.mjs';
 
 const ALGO = 'aes-256-gcm';
 const IV_LEN = 12;
@@ -71,6 +72,26 @@ export function decryptValue(blob, key) {
  * @param {import('better-sqlite3').Database} db 已迁移到 v3 的库
  * @param {Buffer} masterKey 32 字节
  */
+/**
+ * 执行器要的凭据加载器（需求文档 §4.5 的注入接缝）。
+ *
+ * 只把任务声明过的字段交出去，缺字段抛 `SecretsError`——执行器会把它转成
+ * CONFIG 状态显示在页面上，比「执行到一半才发现没密码」好排查得多。
+ */
+export function secretsLoaderFor(userSecrets) {
+  return function loadUserSecrets({ userId, taskName, accountKey = '', requires = [] } = {}) {
+    if (!requires.length) return {};
+    const found = userSecrets.get(userId, taskName, accountKey);
+    const missing = requires.filter((k) => !found[k]);
+    if (missing.length) {
+      throw new SecretsError(
+        `缺少凭据字段：${missing.join('、')}（账号「${accountKey || '默认'}」）`,
+      );
+    }
+    return Object.fromEntries(requires.map((k) => [k, found[k]]));
+  };
+}
+
 export function createUserSecrets(db, masterKey) {
   assertKey(masterKey);
 
