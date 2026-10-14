@@ -31,7 +31,16 @@ jobs:
         id: ver
         run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      # WeAuto 是无端口被动 CLI，无需构建；只打包运行所需文件。
+      # WeAuto 是常驻服务，只打包源码；运行时依赖由 N150 的 restart.sh 现场安装。
+      #
+      # 依赖为什么不再进包（2026-10-14 实测）：
+      #   · 带 node_modules 的包有 7.1MB，而 N150 在大陆出境到 GitHub 只剩约
+      #     3.5KB/s（ghproxy 镜像已废、直连不通），7MB 要 30 分钟以上；
+      #     deploy-agent 每轮只有 90s×4 次的预算，永远下不完 → 部署无限重试。
+      #   · 改由 N150 从 npmmirror 安装（实测 3.5MB/s）：首次约 2 分钟，之后
+      #     package-lock.json 未变则 0.3 秒跳过。包瘦到约 106KB，跨境不再是瓶颈。
+      #   · 依赖装在 ~/weauto-deps（部署目录之外），绕开 rsync --delete；
+      #     restart.sh 再用软链接把 node_modules 接回部署目录。
       #
       # secrets.age 必须打进包：deploy-agent 用
       #   rsync -a --delete --exclude 'data' --exclude '.env'
@@ -43,19 +52,8 @@ jobs:
           # public/ 必须打进包：页面依赖它（样式 + 前端脚本）。漏掉的表现是页面能打开但
           # 完全没有样式、按钮也不工作 —— 2026-10-14 首次部署就漏过一次。
           cp -r bin src tasks scripts public pkg/
+          # package.json + package-lock.json 也要带上：restart.sh 靠它们装依赖
           cp restart.sh package.json package-lock.json secrets.age pkg/
-
-          # 运行时依赖必须打进包，且在 CI 里装好：
-          #   · deploy-agent 用 rsync -a --delete 同步部署目录，凡不在包内的文件
-          #     都会被 --delete 清掉 —— node_modules 同理，不放进去就会被删掉，
-          #     服务下次重启直接 MODULE_NOT_FOUND
-          #   · N150 在国内，现场 npm install 又慢又可能拉不到原生模块预编译包
-          cd pkg && npm ci --omit=dev && cd ..
-
-          # better-sqlite3 的 deps/ 是编译期用的 SQLite 源码（约 9MB），运行时
-          # 只需要 build/Release/*.node。实测删除后加载与读写均正常（2026-10-14）。
-          # 发布包越小，N150 从镜像下载越不容易撞上 90 秒的下载超时。
-          rm -rf pkg/node_modules/better-sqlite3/deps
 
           echo "${{ steps.ver.outputs.sha }}" > pkg/.version
           tar -czf weauto.tar.gz -C pkg .

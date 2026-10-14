@@ -533,9 +533,16 @@ we-auth 已完成并测试过的代码（用户库、密码校验、JWT、40 个
 
 1. CI 增加 `actions/setup-node@v7`，**`node-version: '20'`** —— 必须与 N150 的 node 大版本一致，因为 better-sqlite3 是原生模块，CI 里编译出的二进制只认一个 Node ABI
 2. CI 增加 `npm ci`
-3. 打包步骤改为：带上 `package-lock.json` → `cd pkg && npm ci --omit=dev` → 再打包
-   - **`node_modules` 必须进包**：deploy-agent 用 `rsync -a --delete` 同步部署目录，不在包内的文件会被 `--delete` 清掉，服务下次重启就是 `MODULE_NOT_FOUND`
-   - 顺带避免 N150 现场 `npm install`（国内网络 + 原生模块预编译包）
+3. 打包步骤带上 `package-lock.json`（N150 靠它装依赖）
+
+> **2026-10-14 变更：依赖不再进包，改由 N150 现场安装。**
+> 带 `node_modules` 的包有 7.1MB，而 N150 在大陆出境到 GitHub 只剩约 3.5KB/s
+> （ghproxy 镜像已废、直连不通），7MB 要 30 分钟以上；deploy-agent 每轮只有
+> 90s×4 次预算，永远下不完 → 部署无限重试。
+> 现在：包只含源码（约 106KB），依赖由 `restart.sh` 装到 **`~/weauto-deps`**
+> （部署目录之外，`rsync --delete` 管不到），再用软链接把 `node_modules`
+> 接回部署目录。走 npmmirror（实测 3.5MB/s），首次约 2 分钟，
+> `package-lock.json` 未变则 0.3 秒跳过。
 
 ### 14.4 auth 代码的去向（§13.4 的落地）
 
