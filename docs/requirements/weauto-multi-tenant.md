@@ -172,10 +172,11 @@ CREATE TABLE IF NOT EXISTS subscription_accounts (
 - `planTask()` 是纯函数，**签名不变**；变的只是喂给它的参数来源：
   - `store.stateOf(task.name)` → `store.stateOf(userId, taskName, accountKey)`
   - `hasSuccessOn` / `hasScheduledRun` 同样增加维度
-- **全局并发闸门**：`MAX_CONCURRENT_RUNS`（建议 4）——20 个用户同时到期时不能打出 20 路请求
+- **全局并发闸门**：`MAX_CONCURRENT_RUNS = 4`——20 个用户同时到期时不能打出 20 路请求
 - **单用户串行**：同一用户最多 1 个在飞，避免自己打自己
-- **配额**：`QUOTA_PER_USER_DAY`（建议 50 次/天/用户），超限写 `skipped` 并记明原因
+- **配额（已定，宽松档）**：`QUOTA_PER_USER_DAY = 100`（每日每用户 100 次执行）、`MIN_INTERVAL_MINUTES = 5`（interval 下限，低于此值拒绝保存）、`MAX_SUBSCRIPTIONS_PER_USER = 20`。超限写 `skipped` 并记明原因
 - 用户 `status='disabled'` → 其所有订阅跳过
+- **幂等必须按账号维度**：`hasSuccessOn` 要带上 `account_key`。否则同一用户下 A 账号签到成功后，B 账号会被判「今日已完成」而跳过——这正是多账号最容易踩的坑
 
 ### 4.5 执行链路（低风险接缝，本次改造的关键）
 

@@ -440,7 +440,6 @@ export function pageSettings({ users, canCreateUser, system }) {
 
 <section class="card">
   <h2>账号</h2>
-  <p class="sub">WeAuto 的账号与 WeMusic / WeMonitor 完全独立。</p>
   ${list}
 </section>
 
