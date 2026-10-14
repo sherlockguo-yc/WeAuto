@@ -564,3 +564,36 @@ const DUMMY_HASH = '$2a$12$invalidhashforlengthpadding00000000000000000000000000
 ### 14.6 本机运行约束
 
 与 WeMusic 相同：`node_modules` 里的 better-sqlite3 按某个 Node ABI 编译。本机默认 Node 24 与 N150 的 Node 20 不同，**跑测试前要让当前 Node 与部署目标一致（Node 20）**，否则加载原生模块会直接失败。CI 固定用 Node 20 验证。
+
+---
+
+## 15. 附带发现：WeMusic 存在同类缺陷（超出本项目范围，待你决定）
+
+### 15.1 事实
+
+`WeMusic/server/routes/auth.js` 的登录接口用**同一个无效字符串**作陪跑哈希：
+
+```js
+const dummyHash = '$2a$12$invalidhashforlengthpadding000000000000000000000000000000';
+const valid = user
+  ? bcrypt.compareSync(String(password), user.password_hash)
+  : (bcrypt.compareSync(String(password), dummyHash), false);
+```
+
+因此 WeMusic 的登录接口在「用户不存在」与「密码错误」之间存在可测量的响应时间差（约 1ms vs 200ms 量级）。
+
+### 15.2 影响评估
+
+| 项 | 结论 |
+|---|---|
+| 性质 | 用户名枚举（timing side channel）：可据响应时间判断某用户名是否存在 |
+| 前提 | 能访问登录接口（WeMusic 公网可达）并多次采样 |
+| 严重度 | **低-中**。只泄漏「某用户名是否存在」，不泄漏密码 |
+| 增量信息 | 有限——WeMusic 的用户名在站点内本就可见（分享/列表页）。真实价值主要是「批量扫出哪些账号存在」 |
+| 附带事实 | WeMusic 已经记录了 `[auth] 登录失败 user=… 原因=…`，即服务端本来就知道答案，只是响应时间也顺带告诉了客户端 |
+
+### 15.3 修复与状态
+
+修复是一行（改为 cost 相同的**真实** bcrypt 哈希作陪跑值，与 §14.5 的修法一致），代价是进程启动时多算一次哈希。
+
+**未执行。** WeMusic 是有 15 个真实用户（含手机端）的线上服务，改动会经 CI → Release → 自动部署，需要你明确决定是否现在改。本文件只记录发现，不擅自跨项目变更。
