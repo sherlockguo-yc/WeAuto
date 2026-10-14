@@ -110,9 +110,51 @@ describe('调度声明', () => {
     assert.throws(() => norm({ schedule: { cron: '*/5 * * * *' } }), /schedule 含未知字段/);
   });
 
-  it('已规划但未支持的 once / every 明确报错，不静默忽略', () => {
-    assert.throws(() => norm({ schedule: { once: '2026-11-01T09:00:00+08:00' } }), /尚未支持/);
-    assert.throws(() => norm({ schedule: { every: { minutes: 30 } } }), /尚未支持/);
+  it('空对象报错，而不是静默变成「不调度」', () => {
+    assert.throws(() => norm({ schedule: {} }), /空对象/);
+  });
+
+  it('同时声明两种调度方式必须报错', () => {
+    assert.throws(
+      () =>
+        norm({
+          schedule: {
+            window: { start: '09:00', end: '09:50' },
+            every: { minutes: 30 },
+          },
+        }),
+      /只能选一种/,
+    );
+  });
+
+  it('every：按分钟间隔，抖动必须小于间隔', () => {
+    assert.deepEqual(norm({ schedule: { every: { minutes: 30 } } }).schedule, {
+      kind: 'every',
+      every: { minutes: 30, jitterSec: 0 },
+    });
+    assert.equal(norm({ schedule: { every: { minutes: 5, jitterSec: 60 } } }).schedule.every.jitterSec, 60);
+
+    assert.throws(() => norm({ schedule: { every: { minutes: 0 } } }), /minutes/);
+    assert.throws(() => norm({ schedule: { every: { minutes: 1.5 } } }), /minutes/);
+    assert.throws(() => norm({ schedule: { every: { minutes: 5, jitterSec: 300 } } }), /小于间隔/);
+    assert.throws(() => norm({ schedule: { every: { minutes: 5, hours: 1 } } }), /未知字段/);
+  });
+
+  it('once：把「北京时间字符串」解析成绝对时刻，并在加载期就报格式错误', () => {
+    const s = norm({ schedule: { once: { at: '2026-11-01 09:00' } } }).schedule;
+    assert.equal(s.kind, 'once');
+    // 2026-11-01 09:00 北京时间 == 01:00 UTC
+    assert.equal(new Date(s.once.atMs).toISOString(), '2026-11-01T01:00:00.000Z');
+    assert.equal(s.once.atLabel, '2026-11-01 09:00:00');
+
+    // 带显式时区则按其解释
+    const iso = norm({ schedule: { once: { at: '2026-11-01T09:00:00Z' } } }).schedule;
+    assert.equal(new Date(iso.once.atMs).toISOString(), '2026-11-01T09:00:00.000Z');
+
+    for (const bad of ['2026/11/01 09:00', '2026-11-01', '', null, 123]) {
+      assert.throws(() => norm({ schedule: { once: { at: bad } } }), /时间/, `应拒绝 ${bad}`);
+    }
+    assert.throws(() => norm({ schedule: { once: { at: '2026-11-01 09:00', tz: 'UTC' } } }), /未知字段/);
   });
 });
 

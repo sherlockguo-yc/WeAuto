@@ -13,7 +13,7 @@
  *   2. **未知语义保守降级**：框架不认识的 view type 不报错、不崩，交给渲染层
  *      按 text 兜底，并把原值放进「原始数据」区。这样新增类型不要求框架先升级。
  */
-import { hhmmToSeconds } from './util.mjs';
+import { hhmmToSeconds, parseScheduleTime, timestampInTZ } from './util.mjs';
 
 /* ─────────────────── 状态 ─────────────────── */
 
@@ -144,6 +144,54 @@ function normalizeSchedule(taskName, schedule) {
     );
   }
 
+  const present = allowed.filter((k) => schedule[k] !== undefined);
+  if (present.length === 0) {
+    bad(`任务 ${taskName} 的 schedule 是空对象：要么去掉它（= 只能手动触发），要么声明一种调度方式`);
+  }
+  if (present.length > 1) {
+    bad(`任务 ${taskName} 的 schedule 同时声明了 ${present.join(' / ')}：只能选一种`);
+  }
+
+  if (schedule.every !== undefined) {
+    const e = schedule.every;
+    if (!e || typeof e !== 'object' || Array.isArray(e)) {
+      bad(`任务 ${taskName} 的 schedule.every 必须是对象 { minutes }`);
+    }
+    const extra = Object.keys(e).filter((k) => !['minutes', 'jitterSec'].includes(k));
+    if (extra.length) {
+      bad(`任务 ${taskName} 的 schedule.every 含未知字段：${extra.join(', ')}`);
+    }
+    if (!Number.isInteger(e.minutes) || e.minutes < 1) {
+      bad(`任务 ${taskName} 的 schedule.every.minutes 必须是不小于 1 的整数`);
+    }
+    let jitterSec = 0;
+    if (e.jitterSec !== undefined) {
+      if (!Number.isInteger(e.jitterSec) || e.jitterSec < 0) {
+        bad(`任务 ${taskName} 的 schedule.every.jitterSec 必须是非负整数`);
+      }
+      // 抖动必须小于间隔本身，否则触发时刻会漂到「上一轮」之后，间隔名不副实
+      if (e.jitterSec >= e.minutes * 60) {
+        bad(`任务 ${taskName} 的 schedule.every.jitterSec 必须小于间隔本身（${e.minutes * 60}s）`);
+      }
+      jitterSec = e.jitterSec;
+    }
+    return { kind: 'every', every: { minutes: e.minutes, jitterSec } };
+  }
+
+  if (schedule.once !== undefined) {
+    const o = schedule.once;
+    if (!o || typeof o !== 'object' || Array.isArray(o)) {
+      bad(`任务 ${taskName} 的 schedule.once 必须是对象 { at }`);
+    }
+    const extra = Object.keys(o).filter((k) => k !== 'at');
+    if (extra.length) {
+      bad(`任务 ${taskName} 的 schedule.once 含未知字段：${extra.join(', ')}`);
+    }
+    // 解析期就失败，不要等到调度时才发现写错
+    const atMs = parseScheduleTime(o.at);
+    return { kind: 'once', once: { atMs, atLabel: timestampInTZ(new Date(atMs)) } };
+  }
+
   const window = schedule.window;
   if (window) {
     if (typeof window !== 'object' || Array.isArray(window)) {
@@ -163,15 +211,10 @@ function normalizeSchedule(taskName, schedule) {
     return { kind: 'window', window: { start: window.start, end: window.end } };
   }
 
-  // once / every 是契约里已规划、但调度器尚未支持的两种类型。
-  // **明确报错而不是静默忽略**：静默忽略会让任务「看起来配好了却永远不执行」，
-  // 这是最难排查的一类故障。
-  for (const kind of ['once', 'every']) {
-    if (schedule[kind] !== undefined) {
-      bad(`任务 ${taskName} 使用了尚未支持的调度类型 ${kind}（当前仅支持 window）`);
-    }
-  }
-  return null;
+  // present.length === 1 已保证三种类型必有其一，且 every / once 都已提前返回，
+  // 所以正常情况到不了这里。保留显式报错（而不是 return null）：将来新增调度类型时
+  // 若漏改分支，会立刻炸出来，而不是静默变成「永远不执行」。
+  bad(`任务 ${taskName} 的 schedule 无法识别：${JSON.stringify(schedule)}`);
 }
 
 /**

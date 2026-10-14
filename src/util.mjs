@@ -98,6 +98,51 @@ export function secondsToHHMM(sec) {
   return `${h}:${m}`;
 }
 
+/**
+ * 'YYYY-MM-DD'（北京时间）当日 00:00 的 epoch ms
+ * 用来把「当天的第几秒」换算成绝对时刻。
+ */
+export function startOfDayBeijingMs(date) {
+  const t = Date.parse(`${date}T00:00:00+08:00`);
+  if (Number.isNaN(t)) throw new Error(`非法日期：${date}`);
+  return t;
+}
+
+/**
+ * 解析调度用的时刻。
+ *
+ * 接受两种写法，**都不产生歧义**：
+ *   · `YYYY-MM-DD HH:MM[:SS]` → 按北京时间（UTC+8）解释，与本项目的时区口径一致
+ *   · 带显式时区的 ISO 字符串（结尾是 Z 或 ±HH:MM）→ 按写明的时区解释
+ *
+ * 刻意不接受「只有年月日」或「斜杠分隔」的写法：调度时刻写错会导致任务在
+ * 意料之外的时间执行，宁可让它在这里报错。
+ *
+ * @returns {number} epoch ms
+ */
+export function parseScheduleTime(input) {
+  if (typeof input !== 'string' || !input.trim()) {
+    throw new Error(`时间必须是字符串，当前是 ${JSON.stringify(input)}`);
+  }
+  const s = input.trim();
+
+  if (/([zZ]|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const t = Date.parse(s);
+    if (Number.isNaN(t)) throw new Error(`无法解析时间：${input}`);
+    return t;
+  }
+
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+  if (!m) {
+    throw new Error(
+      `时间格式应为「YYYY-MM-DD HH:MM」（北京时间）或带时区的 ISO 字符串，当前是：${input}`,
+    );
+  }
+  const t = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] ?? '00'}+08:00`);
+  if (Number.isNaN(t)) throw new Error(`无法解析时间：${input}`);
+  return t;
+}
+
 /** 人类可读的时长 */
 export function humanDuration(ms) {
   if (ms < 1000) return `${ms}ms`;
