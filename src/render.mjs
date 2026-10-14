@@ -35,6 +35,27 @@ export function statusBadge(status) {
   return `<span class="badge badge-${s.tone}">${esc(s.text)}</span>`;
 }
 
+/**
+ * 单条执行记录的文案。
+ *
+ * 与「今日状态」分开是必要的：同一条 `success`，在概览里该说「今日已成功」，
+ * 在历史列表里只能说「成功」——把「今日」两个字贴到昨天的记录上就是错的。
+ */
+const RUN_LABEL = {
+  success: { text: '成功', tone: 'ok' },
+  'already-signed': { text: '已完成', tone: 'ok' },
+  skipped: { text: '已跳过', tone: 'off' },
+  failed: { text: '失败', tone: 'bad' },
+  blocked: { text: '被拦截', tone: 'bad' },
+  'network-error': { text: '网络错误', tone: 'bad' },
+  'config-error': { text: '配置错误', tone: 'bad' },
+};
+
+export function runBadge(status) {
+  const s = RUN_LABEL[status] ?? { text: status ?? '未知', tone: 'off' };
+  return `<span class="badge badge-${s.tone}">${esc(s.text)}</span>`;
+}
+
 const NAV = [
   { href: '/', label: '概览', key: 'home' },
   { href: '/tasks', label: '任务', key: 'tasks' },
@@ -143,7 +164,7 @@ export function pageOverview(data) {
         .map(
           (r) => `<div class="row row-plain">
             <span class="row-main">${esc(r.task)}</span>
-            ${statusBadge(r.status)}
+            ${runBadge(r.status)}
             <span class="row-sub">${esc(r.message)}</span>
           </div>`,
         )
@@ -199,7 +220,7 @@ export function pageTasks({ items, groups }) {
 
 /* ─────────────────── 任务详情 ─────────────────── */
 
-export function pageTaskDetail({ task, view, runs, canRun }) {
+export function pageTaskDetail({ task, view, runs, canRun, hiddenSkipped = 0, includeSkipped = false }) {
   const result = view.rows.length
     ? `<dl class="kv">${view.rows
         .map(
@@ -222,7 +243,7 @@ export function pageTaskDetail({ task, view, runs, canRun }) {
         .map(
           (r) => `<div class="row row-plain">
             <span class="row-main">${esc(r.time ?? '')}</span>
-            ${statusBadge(r.status)}
+            ${runBadge(r.status)}
             <span class="row-sub">${esc(r.message)}${
               r.dur ? ` · ${Math.round(r.dur / 1000)}s` : ''
             }${r.trigger === 'manual' ? ' · 手动' : ''}</span>
@@ -257,6 +278,13 @@ export function pageTaskDetail({ task, view, runs, canRun }) {
 <section class="card">
   <h2>执行历史</h2>
   ${history}
+  ${
+    hiddenSkipped
+      ? `<p class="hint"><a href="?all=1">显示另外 ${hiddenSkipped} 条已跳过的记录</a></p>`
+      : includeSkipped
+        ? '<p class="hint"><a href="?">隐藏已跳过的记录</a></p>'
+        : ''
+  }
 </section>`;
 }
 

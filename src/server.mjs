@@ -213,23 +213,27 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
     );
   });
 
-  function detailOf(taskName) {
+  function detailOf(taskName, { includeSkipped = false } = {}) {
     const task = tasks.get(taskName);
     if (!task) return null;
     const summary = summarizeTask({ task, store, nowMs: now() });
-    const runs = store.runsOfTask(taskName, 50);
-    const lastCompleted = runs.find((r) => r.status !== 'skipped') ?? null;
+    const all = store.runsOfTask(taskName, 50);
+    // 历史默认隐藏 skipped：间隔类任务跑顺之后，跳过记录会把有用的行挤下去
+    const runs = includeSkipped ? all : all.filter((r) => r.status !== 'skipped');
+    const lastCompleted = all.find((r) => r.status !== 'skipped') ?? null;
     return {
       task,
       summary,
       view: renderView(summary.view, lastCompleted?.data ?? {}),
       runs,
+      hiddenSkipped: all.length - runs.length,
+      includeSkipped,
       lastCompleted,
     };
   }
 
   app.get('/tasks/:name', requireLogin, (req, res) => {
-    const d = detailOf(req.params.name);
+    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1' });
     if (!d) return res.status(404).type('html').send(render.layout({ title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>', user: req.user }));
     res.type('html').send(
       render.layout({
@@ -239,6 +243,8 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
           task: d.summary,
           view: d.view,
           runs: d.runs,
+          hiddenSkipped: d.hiddenSkipped,
+          includeSkipped: d.includeSkipped,
           canRun: !scheduler.isRunning(d.task.name),
         }),
         user: req.user,
@@ -323,12 +329,13 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   );
 
   app.get('/api/tasks/:name', requireLogin, (req, res) => {
-    const d = detailOf(req.params.name);
+    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1' });
     if (!d) return res.status(404).json({ error: '没有这个任务' });
     res.json({
       task: d.summary,
       view: d.view,
       runs: d.runs,
+      hiddenSkipped: d.hiddenSkipped,
       running: scheduler.isRunning(d.task.name),
     });
   });

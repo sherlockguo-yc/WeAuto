@@ -251,6 +251,33 @@ describe('接口行为', () => {
   });
 });
 
+describe('执行历史默认隐藏跳过记录', () => {
+  it('skipped 默认不出现，加 ?all=1 才显示', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    store.appendRun({ taskName: 'demo-task', date: '2026-10-14', ts: NOW, status: 'success', message: '一次成功的执行' });
+    store.appendRun({
+      taskName: 'demo-task',
+      date: '2026-10-14',
+      ts: NOW - 1000,
+      status: 'skipped',
+      message: '一条被跳过的记录',
+    });
+
+    const def = await (await fetch(`${base}/tasks/demo-task`, { headers: { cookie } })).text();
+    assert.equal(def.includes('一条被跳过的记录'), false);
+    assert.match(def, /显示另外 1 条已跳过/);
+
+    const all = await (await fetch(`${base}/tasks/demo-task?all=1`, { headers: { cookie } })).text();
+    assert.match(all, /一条被跳过的记录/);
+
+    // 接口口径一致
+    const api = await (await fetch(`${base}/api/tasks/demo-task`, { headers: { cookie } })).json();
+    assert.equal(api.hiddenSkipped, 1);
+    assert.deepEqual(api.runs.map((r) => r.status), ['success']);
+  });
+});
+
 describe('CSRF', () => {
   it('跨站来源的写操作被拒绝', async () => {
     const { base } = await startServer();
