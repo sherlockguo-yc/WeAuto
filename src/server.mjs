@@ -16,6 +16,7 @@ import * as render from './render.mjs';
 import { SecretsError } from './secrets.mjs';
 import { listFieldNames, writeSecrets } from './credentials.mjs';
 import { summarizeAll, summarizeTask } from './status.mjs';
+import { normalizeSchedule } from './task-contract.mjs';
 import { DB_FILE } from './db.mjs';
 import { DATA_DIR, ROOT, humanDuration } from './util.mjs';
 
@@ -366,7 +367,12 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
     res.json({ started: true });
   });
 
-  /** 覆盖层：只允许改启停与超时；调度时间留到下一批（要配套的表单与校验） */
+  /**
+   * 改订阅配置：启停、超时、调度时间。
+   *
+   * 调度时间是「每个用户配自己的」，所以必须能在这里写——调度器会优先用订阅里的值
+   * （见 scheduler.mjs 的 targets()），写不进去就等于这个功能是假的。
+   */
   app.patch('/api/tasks/:name', requireLogin, requireAdmin, (req, res) => {
     const name = req.params.name;
     if (!tasks.has(name)) return res.status(404).json({ error: '没有这个任务' });
@@ -378,11 +384,34 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
       if (!Number.isInteger(t) || t <= 0) return res.status(400).json({ error: 'timeoutMs 必须是正整数' });
       patch.timeoutMs = t;
     }
+    if (req.body.schedule !== undefined) {
+      // null 表示「回到模板默认」
+      if (req.body.schedule === null || req.body.schedule === '') {
+        patch.schedule = null;
+      } else {
+        try {
+          // 前端可能传原始声明（只有 window/once/every），也可能传规范化后的值（带 kind）
+          const { kind, ...declared } = req.body.schedule;
+          const normalized = normalizeSchedule(name, declared);
+          if (kind && normalized && normalized.kind !== kind) {
+            return res.status(400).json({ error: '调度配置自相矛盾：kind 与内容不一致' });
+          }
+          patch.schedule = normalized;
+        } catch (err) {
+          return res.status(400).json({ error: `调度配置无效：${err.message}` });
+        }
+      }
+    }
     if (!Object.keys(patch).length) return res.status(400).json({ error: '没有可更新的字段' });
 
-    // 没有订阅就先建一个：admin 在「模板」视角下改配置是常见路径
-    if (!mine(req).getSubscription(name)) mine(req).subscribe(name);
-    mine(req).setSubscription(name, patch);
+    try {
+      // 没有订阅就先建一个：admin 在「模板」视角下改配置是常见路径
+      if (!mine(req).getSubscription(name)) mine(req).subscribe(name);
+      mine(req).setSubscription(name, patch);
+    } catch (err) {
+      // 间隔下限、订阅上限这类限制都在 store 里，转成 400 让界面直接显示原因
+      return res.status(400).json({ error: err.message });
+    }
     res.json({ ok: true, subscription: mine(req).getSubscription(name) });
   });
 

@@ -66,10 +66,10 @@ let seq = 0;
  *   多租户后「看得到任务」的前提是「订阅了它」，不预置就什么都看不到。
  *   测「首次初始化」的用例要传 false。
  */
-async function startServer({ execute, seedUser = true } = {}) {
+async function startServer({ execute, seedUser = true, limits } = {}) {
   const db = openDb(path.join(dir, `db-${++seq}.sqlite`));
   dbs.push(db);
-  const store = createStore(db);
+  const store = createStore(db, { limits });
   const tasks = new Map([[DEMO_TASK.name, { ...DEMO_TASK }]]);
   const auth = createAuth({ db, jwtSecret: 'test-secret' });
   if (seedUser) {
@@ -263,6 +263,70 @@ describe('接口行为', () => {
     assert.match(html, /DEMO_TOKEN/);
     // 本机没有 age 私钥/密文，页面应给出可读的原因而不是崩掉
     assert.match(html, /凭据不可用|已设置|缺失/);
+  });
+});
+
+describe('调度配置（用户配自己的时间必须生效）', () => {
+  it('网页改的调度能存进订阅，调度器读到的就是它', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+
+    const res = await fetch(`${base}/api/tasks/demo-task`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule: { every: { minutes: 10 } } }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.subscription.schedule.kind, 'every');
+    assert.equal(body.subscription.schedule.every.minutes, 10);
+
+    // 模板本身是 window，但订阅里是 every —— 调度器必须认订阅里的
+    assert.equal(store.forUser(USER_ID).getSubscription('demo-task').schedule.every.minutes, 10);
+  });
+
+  it('非法调度返回 400，而不是被静默忽略', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const res = await fetch(`${base}/api/tasks/demo-task`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule: { every: { minutes: 0 } } }),
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /调度配置无效/);
+  });
+
+  it('低于间隔下限返回 400', async () => {
+    const { base } = await startServer({ limits: { minIntervalMinutes: 5 } });
+    const cookie = await login(base);
+
+    const res = await fetch(`${base}/api/tasks/demo-task`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule: { every: { minutes: 1 } } }),
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /不能小于 5 分钟/);
+  });
+
+  it('传 null 回到模板默认', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+
+    await fetch(`${base}/api/tasks/demo-task`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule: { every: { minutes: 10 } } }),
+    });
+    const back = await fetch(`${base}/api/tasks/demo-task`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule: null }),
+    });
+    assert.equal(back.status, 200);
+    assert.equal(store.forUser(USER_ID).getSubscription('demo-task').schedule, null);
   });
 });
 
