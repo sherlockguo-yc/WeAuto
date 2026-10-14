@@ -10,13 +10,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { RUNS_FILE } from './util.mjs';
+import { isSuccess } from './task-contract.mjs';
 
-/** 视为「今天这件事已经办成了」的状态 */
-export const SUCCESS_STATUSES = new Set(['success', 'already-signed']);
-
-export function isSuccess(status) {
-  return SUCCESS_STATUSES.has(status);
-}
+// 状态口径的唯一权威在契约模块；这里转发，避免出现两份定义悄悄漂移
+export { SUCCESS_STATUSES, isSuccess } from './task-contract.mjs';
 
 function ensureDirOf(file) {
   fs.mkdirSync(path.dirname(file), { recursive: true });

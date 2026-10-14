@@ -74,6 +74,44 @@ describe('openDb', () => {
     assert.ok(db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0);
   });
 
+  it('服务化后的表齐全（表名写错会静默变成「表不存在」）', () => {
+    const db = openDb(freshPath());
+    openDbs.push(db);
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .all()
+      .map((r) => r.name);
+    for (const t of ['users', 'meta', 'tasks', 'runs', 'run_logs', 'task_state', 'run_stats_daily']) {
+      assert.ok(tables.includes(t), `缺少表 ${t}`);
+    }
+  });
+
+  it('runs 已为多账号预留 account_key（后加列便宜，后改契约要动每个任务）', () => {
+    const db = openDb(freshPath());
+    openDbs.push(db);
+    const cols = db.prepare('PRAGMA table_info(runs)').all().map((c) => c.name);
+    assert.ok(cols.includes('account_key'), 'runs 表缺少 account_key 列');
+  });
+
+  it('删 runs 时 run_logs 级联删除（否则日志会变成孤儿数据永久堆积）', () => {
+    const db = openDb(freshPath());
+    openDbs.push(db);
+    const runId = db
+      .prepare(
+        `INSERT INTO runs (task_name, date, ts, status) VALUES ('t', '2026-10-14', 1, 'success')`,
+      )
+      .run().lastInsertRowid;
+    db.prepare('INSERT INTO run_logs (run_id, task_name, ts, line) VALUES (?, ?, ?, ?)').run(
+      runId,
+      't',
+      1,
+      'hello',
+    );
+
+    db.prepare('DELETE FROM runs WHERE id = ?').run(runId);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM run_logs').get().n, 0);
+  });
+
   it('user 表字段与登录模块的期望一致（列名写错会静默变成 undefined）', () => {
     const db = openDb(freshPath());
     openDbs.push(db);

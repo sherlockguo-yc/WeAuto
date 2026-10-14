@@ -77,7 +77,7 @@ export default {
 
 | 字段 | 约束 |
 |---|---|
-| `status` | 枚举之一：`success` `already-done` `skipped` `failed` `blocked` `network-error` `config-error`。**`success` / `already-done` 视为「今天这件事办成了」**（幂等判断依据） |
+| `status` | 枚举之一，**必须与已上线的取值一致**（改名会同时打断正在跑的 CLI 记录与 WeMonitor 面板）：`success` `already-signed` `skipped` `failed` `blocked` `network-error` `config-error`。**`success` / `already-signed` 视为「今天这件事办成了」**（幂等判断依据）。<br>`already-signed` 是站点特定措辞，等 P4 删掉 WeMonitor 面板后再改成中性的 `already-done` |
 | `message` | 一句话，给人看。失败时必须说明原因，不要只说「失败」 |
 | `data` | 任意 JSON。展示由 `view` 决定；未在 `view` 里声明的字段仍出现在「原始数据」折叠区，不会丢 |
 
@@ -205,8 +205,12 @@ UI 上「改回默认」= 删除该字段的覆盖，而不是把默认值抄一
 
 ---
 
-## 9. 需要确认的两点
+## 9. 确认记录（2026-10-14）
 
-1. **`view` 声明式契约**（§3.2）是否认可？它决定**每个任务文件的写法**，事后改要动所有任务文件。
-2. **多账号**：现在就把 `accounts` 字段与 `runs.account_key` 列留出来（推荐，成本接近零），
-   还是明确不做、需要时再加？
+| # | 待确认 | 结论 |
+|---|---|---|
+| 1 | `view` 声明式契约（§3.2）：任务自己声明结果字段，界面照着渲染 | ✅ **采纳**。目标：以后加新任务，界面自动能显示，不必改界面代码 |
+| 2 | 多账号：同一任务将来是否会有多个账号 | ✅ **会有**。现在只预留 `accounts` 字段与 `runs.account_key` 列（可空），功能以后需要时再做 |
+
+本文自此冻结程度与主文档一致：**只追加章节，不改已发布字段的语义**。
+实现完成后，「现在怎么工作」的描述迁移到 `docs/功能规格/`。

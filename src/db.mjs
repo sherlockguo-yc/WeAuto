@@ -39,6 +39,72 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 2,
+    description: '服务化：任务覆盖层、执行记录、运行日志、调度状态、每日统计',
+    up(db) {
+      db.exec(`
+        /* UI 覆盖层：只在用户显式改过某个任务的某项配置时才有行。
+           代码文件始终是默认值来源，见 docs/requirements/weauto-contract.md §4 */
+        CREATE TABLE IF NOT EXISTS tasks (
+          task_name     TEXT PRIMARY KEY,
+          enabled       INTEGER NOT NULL DEFAULT 1,
+          schedule_json TEXT,
+          timeout_ms    INTEGER,
+          updated_at    INTEGER NOT NULL
+        );
+
+        /* 每次执行一行。account_key 为多账号预留（当前恒为 NULL） */
+        CREATE TABLE IF NOT EXISTS runs (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_name   TEXT    NOT NULL,
+          account_key TEXT,
+          date        TEXT    NOT NULL,
+          ts          INTEGER NOT NULL,
+          status      TEXT    NOT NULL,
+          message     TEXT    NOT NULL DEFAULT '',
+          data_json   TEXT,
+          dur         INTEGER NOT NULL DEFAULT 0,
+          trigger     TEXT    NOT NULL DEFAULT 'schedule'
+        );
+        CREATE INDEX IF NOT EXISTS idx_runs_task_ts ON runs(task_name, ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_runs_task_date ON runs(task_name, date);
+        CREATE INDEX IF NOT EXISTS idx_runs_ts ON runs(ts);
+
+        /* ctx.log() 的输出。随 runs 一起被保留策略清理（ON DELETE CASCADE） */
+        CREATE TABLE IF NOT EXISTS run_logs (
+          id        INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id    INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+          task_name TEXT    NOT NULL,
+          ts        INTEGER NOT NULL,
+          line      TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_run_logs_run ON run_logs(run_id);
+        CREATE INDEX IF NOT EXISTS idx_run_logs_ts ON run_logs(ts);
+
+        /* 调度器的当日状态：目标时刻落库，进程重启后目标不变（天然幂等） */
+        CREATE TABLE IF NOT EXISTS task_state (
+          task_name       TEXT PRIMARY KEY,
+          today_date      TEXT,
+          today_target_ts INTEGER,
+          next_due_ts     INTEGER,
+          last_run_id     INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+          updated_at      INTEGER NOT NULL
+        );
+
+        /* 清理明细前的聚合：删掉明细后「每天成功几次」的趋势仍可查 */
+        CREATE TABLE IF NOT EXISTS run_stats_daily (
+          task_name TEXT    NOT NULL,
+          date      TEXT    NOT NULL,
+          success   INTEGER NOT NULL DEFAULT 0,
+          failed    INTEGER NOT NULL DEFAULT 0,
+          skipped   INTEGER NOT NULL DEFAULT 0,
+          total     INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (task_name, date)
+        );
+      `);
+    },
+  },
 ];
 
 /** 用 meta 表记录 schema 版本（用户表之外的第一张表，永远存在） */

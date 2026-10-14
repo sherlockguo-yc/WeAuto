@@ -1,23 +1,15 @@
 /**
  * 任务执行器 —— 锁 → 调度门禁 → 幂等检查 → 解密凭据 → 执行 → 落记录
  */
-import { SUCCESS_STATUSES, appendRun, hasSuccessOn } from './history.mjs';
+import { appendRun, hasSuccessOn } from './history.mjs';
 import { CookieJar, request } from './http.mjs';
 import { acquireLock } from './lock.mjs';
 import { getTask } from './registry.mjs';
 import { shouldRunNow } from './schedule.mjs';
 import { SecretsError, loadSecrets } from './secrets.mjs';
+// 状态枚举的唯一权威在契约模块；文件末尾照旧转发，兼容既有调用点
+import { STATUS } from './task-contract.mjs';
 import { LOCK_FILE, dateInTZ, ensureDataDir, timestampInTZ } from './util.mjs';
-
-const STATUS = {
-  SUCCESS: 'success',
-  ALREADY: 'already-signed',
-  SKIPPED: 'skipped',
-  FAILED: 'failed',
-  BLOCKED: 'blocked',
-  NETWORK: 'network-error',
-  CONFIG: 'config-error',
-};
 
 /** 进程内硬超时，远小于 WeMonitor cron-runner 的 10 分钟 */
 const TASK_TIMEOUT_MS = 60_000;

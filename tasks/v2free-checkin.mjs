@@ -55,10 +55,28 @@ export function hasSignedToday(html) {
 export default {
   name: 'v2free-checkin',
   displayName: 'v2free 机场每日签到',
+  description: '登录 v2free 领取当日免费流量',
+  group: '签到',
+  tags: ['签到', '机场'],
   requires: ['V2FREE_EMAIL', 'V2FREE_PASSWORD'],
 
   /** 北京时间窗口；实际执行时刻由种子化随机决定，每天不同 */
   schedule: { window: { start: '09:00', end: '09:50' } },
+
+  /** 登录 + 读两次账户页 + 签到，实测数秒内完成 */
+  timeoutMs: 30_000,
+
+  /**
+   * 结果字段声明 —— 界面照这个渲染，**因此以后再加任务不需要改界面代码**。
+   * 未声明的字段（trafficMain / trafficPackage / balance / lastUsed）仍会出现在
+   * 「原始数据」折叠区，不会丢。
+   */
+  view: [
+    { key: 'remainTraffic', label: '剩余流量', type: 'bytes' },
+    { key: 'expire', label: '到期时间', type: 'date' },
+    { key: 'plan', label: '套餐', type: 'text' },
+    { key: 'lastCheckin', label: '上次签到', type: 'datetime' },
+  ],
 
   async run({ secrets, log }) {
     const jar = new CookieJar();
