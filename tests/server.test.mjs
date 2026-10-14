@@ -278,6 +278,50 @@ describe('执行历史默认隐藏跳过记录', () => {
   });
 });
 
+describe('凭据接口', () => {
+  it('普通账号不能改凭据', async () => {
+    const { base, auth } = await startServer();
+    const adminCookie = await login(base);
+
+    auth.register({ username: 'plain', password: 'pass-word-1', role: 'user', status: 'active' });
+    const res = await fetch(`${base}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'plain', password: 'pass-word-1' }),
+      redirect: 'manual',
+    });
+    const cookies = res.headers.getSetCookie?.() ?? [res.headers.get('set-cookie')];
+    const plainCookie = cookies.filter(Boolean).map((c) => c.split(';')[0]).join('; ');
+
+    const denied = await fetch(`${base}/api/credentials`, {
+      method: 'POST',
+      headers: { cookie: plainCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: { A: '1' } }),
+    });
+    assert.equal(denied.status, 403);
+
+    // 管理员请求本身能走到业务层（本机没配 age 私钥时会是 400/500，总之不是 403）
+    const asAdmin = await fetch(`${base}/api/credentials`, {
+      method: 'POST',
+      headers: { cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: { A: '1' } }),
+    });
+    assert.notEqual(asAdmin.status, 403);
+  });
+
+  it('字段值必须是字符串（对象/数组说明客户端写错了）', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    const res = await fetch(`${base}/api/credentials`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: { A: { nested: 1 } } }),
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /必须是字符串/);
+  });
+});
+
 describe('CSRF', () => {
   it('跨站来源的写操作被拒绝', async () => {
     const { base } = await startServer();

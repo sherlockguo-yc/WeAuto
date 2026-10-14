@@ -326,10 +326,8 @@ export function pageTaskConfig({ task }) {
 
 /* ─────────────────── 凭据 ─────────────────── */
 
-export function pageCredentials({ groups, secretsError }) {
-  const bannerHtml = secretsError
-    ? banner(`凭据不可用：${secretsError}`, 'bad')
-    : '';
+export function pageCredentials({ groups, secretsError, canEdit = false }) {
+  const bannerHtml = secretsError ? banner(`凭据不可用：${secretsError}`, 'bad') : '';
 
   const body = groups.length
     ? groups
@@ -342,14 +340,31 @@ export function pageCredentials({ groups, secretsError }) {
         <div class="cred-title">${esc(t.displayName)}</div>
         ${
           t.requires.length
-            ? `<ul class="fields">${t.requires
-                .map(
-                  (f) =>
-                    `<li class="${t.present[f] ? 'ok' : 'missing'}">${esc(f)} <span>${
-                      t.present[f] ? '已设置' : '缺失'
-                    }</span></li>`,
-                )
-                .join('')}</ul>`
+            ? `${
+                canEdit && !secretsError
+                  ? `<form class="inline-form cred-form" data-action="save-credentials">
+                       ${t.requires
+                         .map(
+                           (f) =>
+                             `<label>${esc(f)}<input type="password" name="${esc(
+                               f,
+                             )}" autocomplete="new-password" placeholder="${
+                               t.present[f] ? '已设置，留空表示不修改' : '未设置'
+                             }"></label>`,
+                         )
+                         .join('')}
+                       <button type="submit">保存</button>
+                     </form>`
+                  : ''
+              }
+                <ul class="fields">${t.requires
+                  .map(
+                    (f) =>
+                      `<li class="${t.present[f] ? 'ok' : 'missing'}">${esc(f)} <span>${
+                        t.present[f] ? '已设置' : '缺失'
+                      }</span></li>`,
+                  )
+                  .join('')}</ul>`
             : '<p class="hint">这个任务不需要凭据</p>'
         }
       </div>`,
@@ -362,9 +377,13 @@ export function pageCredentials({ groups, secretsError }) {
 
   return `${bannerHtml}
 <section class="card">
-  <h2>凭据状态</h2>
-  <p class="sub">这里只显示字段名与是否已设置。凭据值永远不会出现在网页上。</p>
-  <p class="hint">在网页上修改凭据将在下一批支持；当前请按 README 用 age 加密后更新 <code>secrets.age</code>。</p>
+  <h2>凭据</h2>
+  <p class="sub">只显示字段名与是否已设置，<b>凭据值永远不会出现在网页上</b>。</p>
+  <p class="hint">${
+    canEdit
+      ? '留空表示不修改；填新值即覆盖。写入后仍以 age 密文落盘，明文不进数据库。'
+      : '只有管理员可以修改凭据。'
+  }</p>
 </section>
 ${body}`;
 }

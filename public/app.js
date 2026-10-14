@@ -84,6 +84,31 @@
   });
 
   document.addEventListener('submit', async function (e) {
+    // 凭据表单：留空的字段直接不提交，避免把已有凭据清掉
+    var credForm = e.target.closest('[data-action="save-credentials"]');
+    if (credForm) {
+      e.preventDefault();
+      var fd = new FormData(credForm);
+      var fields = {};
+      fd.forEach(function (v, k) {
+        if (typeof v === 'string' && v.length) fields[k] = v;
+      });
+      if (!Object.keys(fields).length) {
+        hint('没有填任何新值', 'error');
+        return;
+      }
+      var credBtn = credForm.querySelector('button[type="submit"]');
+      if (credBtn) credBtn.disabled = true;
+      try {
+        await api('POST', '/api/credentials', { fields: fields });
+        location.reload();
+      } catch (err) {
+        hint(err.message, 'error');
+        if (credBtn) credBtn.disabled = false;
+      }
+      return;
+    }
+
     var form = e.target.closest('[data-action="create-user"]');
     if (!form) return;
     e.preventDefault();

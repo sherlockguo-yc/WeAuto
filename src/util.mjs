@@ -9,7 +9,25 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const DATA_DIR = path.join(ROOT, 'data');
 export const RUNS_FILE = path.join(DATA_DIR, 'runs.jsonl');
 export const LOCK_FILE = path.join(DATA_DIR, '.lock');
-export const SECRETS_FILE = path.join(ROOT, 'secrets.age');
+/**
+ * 凭据密文的当前位置。
+ *
+ * 权威位置是 `data/secrets.age`：data/ 被 rsync 排除，部署不会覆盖它，
+ * 所以在网页上改过的凭据不会被下一次部署冲掉。
+ *
+ * 仓库根目录的 `secrets.age` 退化为**种子**：只有 data/ 里还没有密文时才读它
+ * （首次部署就靠它让任务跑起来）。一旦在网页上写过一次，data/ 里的就成为权威。
+ */
+export function resolveSecretsFile() {
+  if (process.env.WEAUTO_SECRETS) return process.env.WEAUTO_SECRETS;
+  const runtime = path.join(DATA_DIR, 'secrets.age');
+  if (fs.existsSync(runtime)) return runtime;
+  if (fs.existsSync(path.join(ROOT, 'secrets.age'))) return path.join(ROOT, 'secrets.age');
+  return runtime;
+}
+
+export const SECRETS_FILE = path.join(DATA_DIR, 'secrets.age');
+export const SECRETS_SEED_FILE = path.join(ROOT, 'secrets.age');
 
 /**
  * 统一用北京时间判断调度窗口。

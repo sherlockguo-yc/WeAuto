@@ -13,7 +13,8 @@ import express from 'express';
 import { LOGIN_RATE_LIMIT } from './config.mjs';
 import { renderView } from './format.mjs';
 import * as render from './render.mjs';
-import { SecretsError, loadSecrets } from './secrets.mjs';
+import { SecretsError } from './secrets.mjs';
+import { listFieldNames, writeSecrets } from './credentials.mjs';
 import { summarizeAll, summarizeTask } from './status.mjs';
 import { DB_FILE } from './db.mjs';
 import { DATA_DIR, ROOT, humanDuration } from './util.mjs';
@@ -33,9 +34,9 @@ function parseCookies(header) {
 /** 当前可用凭据的字段名（**只返回名字**）；解密失败时返回原因 */
 function credentialFields() {
   try {
-    return { keys: Object.keys(loadSecrets()), error: null };
+    return { keys: listFieldNames(), error: null };
   } catch (err) {
-    return { keys: [], error: err instanceof SecretsError ? err.message : String(err.message) };
+    return { keys: [], error: err instanceof SecretsError ? err.message : String(err?.message ?? err) };
   }
 }
 
@@ -279,7 +280,11 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
       render.layout({
         title: '凭据',
         active: 'creds',
-        body: render.pageCredentials({ groups: [{ name: '按任务', tasks: grouped }], secretsError: error }),
+        body: render.pageCredentials({
+          groups: [{ name: '按任务', tasks: grouped }],
+          secretsError: error,
+          canEdit: req.user.role === 'admin',
+        }),
         user: req.user,
       }),
     );
@@ -369,6 +374,27 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   app.delete('/api/tasks/:name/override', requireLogin, requireAdmin, (req, res) => {
     if (!tasks.has(req.params.name)) return res.status(404).json({ error: '没有这个任务' });
     res.json({ ok: true, cleared: store.clearOverride(req.params.name) });
+  });
+
+  /**
+   * 写入凭据字段。**留空表示不修改** —— 界面上不会因为一个空输入框就把已有凭据清掉。
+   * 只接受字符串值：非字符串（对象、数组）说明是客户端写错了，直接拒绝。
+   */
+  app.post('/api/credentials', requireLogin, requireAdmin, (req, res) => {
+    const fields = req.body?.fields;
+    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+      return res.status(400).json({ error: '缺少 fields 对象' });
+    }
+    const keys = Object.keys(fields);
+    if (!keys.length) return res.status(400).json({ error: '没有要修改的字段' });
+    const bad = keys.find((k) => typeof fields[k] !== 'string');
+    if (bad) return res.status(400).json({ error: `字段 ${bad} 的值必须是字符串` });
+
+    try {
+      res.json({ ok: true, keys: writeSecrets(fields) });
+    } catch (err) {
+      res.status(err instanceof SecretsError ? 400 : 500).json({ error: err.message });
+    }
   });
 
   app.get('/api/runs', requireLogin, (req, res) => {

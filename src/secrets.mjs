@@ -4,7 +4,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { AGE_KEY_FILE, SECRETS_FILE, parseDotenv } from './util.mjs';
+import { AGE_KEY_FILE, parseDotenv, resolveSecretsFile } from './util.mjs';
 
 /**
  * 解析 age 可执行文件路径
@@ -13,7 +13,7 @@ import { AGE_KEY_FILE, SECRETS_FILE, parseDotenv } from './util.mjs';
  * 而 restart.sh 正是把 age 装在那里（首次部署即因此报 config-error）。
  * 故按「环境变量 → PATH → 常见安装位置」依次探测。
  */
-function resolveAgeBin() {
+export function resolveAgeBin() {
   if (process.env.WEAUTO_AGE_BIN) return process.env.WEAUTO_AGE_BIN;
   const isFile = (p) => {
     try {
@@ -49,8 +49,10 @@ export class SecretsError extends Error {
  * @returns {Record<string, string>}
  */
 export function loadSecrets(required = []) {
-  if (!fs.existsSync(SECRETS_FILE)) {
-    throw new SecretsError(`找不到密文文件 ${SECRETS_FILE}（请先执行 age 加密流程）`);
+  // 权威在 data/，仓库根目录那份只是首次部署的种子（详见 util.resolveSecretsFile）
+  const secretsFile = resolveSecretsFile();
+  if (!fs.existsSync(secretsFile)) {
+    throw new SecretsError(`找不到密文文件 ${secretsFile}（请先执行 age 加密流程）`);
   }
   if (!fs.existsSync(AGE_KEY_FILE)) {
     throw new SecretsError(`找不到 age 私钥 ${AGE_KEY_FILE}`);
@@ -58,7 +60,7 @@ export function loadSecrets(required = []) {
 
   let plain;
   try {
-    plain = execFileSync(resolveAgeBin(), ['-d', '-i', AGE_KEY_FILE, SECRETS_FILE], {
+    plain = execFileSync(resolveAgeBin(), ['-d', '-i', AGE_KEY_FILE, secretsFile], {
       encoding: 'utf8',
       timeout: 10_000,
       stdio: ['ignore', 'pipe', 'pipe'],
