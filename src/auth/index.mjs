@@ -74,7 +74,12 @@ export function createAuth({ db, jwtSecret, tokenTtl = DEFAULT_TTL } = {}) {
       const user = { id: row.id, username: row.username, role: row.role, status: row.status };
       return {
         ok: true,
-        token: sign({ id: row.id, username: row.username, role: row.role }, jwtSecret, tokenTtl),
+        // se = 会话版本号，注销/改密时 +1，用来让旧 token 失效
+        token: sign(
+          { id: row.id, username: row.username, role: row.role, se: row.session_epoch ?? 0 },
+          jwtSecret,
+          tokenTtl,
+        ),
         user,
       };
     },
@@ -111,8 +116,13 @@ export function createAuth({ db, jwtSecret, tokenTtl = DEFAULT_TTL } = {}) {
       }
       if (String(newPassword).length > PASSWORD_MAX) return { ok: false, error: '密码过长' };
       store.setPasswordHash(id, hashPassword(newPassword));
+      // 改密后旧会话必须失效：不改的话，偷到旧 token 的人照样能进来
+      store.bumpSessionEpoch(id);
       return { ok: true };
     },
+
+    /** 注销用：让这个账号之前签发的 token 全部作废 */
+    bumpSessionEpoch: (id) => store.bumpSessionEpoch(id),
   };
 }
 

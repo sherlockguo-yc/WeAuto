@@ -99,6 +99,7 @@ export function createStore(db, { limits = {} } = {}) {
 
   /* 上限由装配层注入（config.TENANT_LIMITS），本模块不读环境变量 */
   const maxSubscriptions = limits.maxSubscriptions ?? Infinity;
+  const maxAccounts = limits.maxAccountsPerSubscription ?? Infinity;
   const minIntervalMinutes = limits.minIntervalMinutes ?? 0;
 
   /** 间隔下限：防止有人配成 1 分钟一次，把目标站和 N150 的出口 IP 一起拖垮 */
@@ -122,6 +123,13 @@ export function createStore(db, { limits = {} } = {}) {
     subOf: db.prepare('SELECT * FROM subscriptions WHERE user_id = ? AND task_name = ?'),
     subsOfUser: db.prepare('SELECT * FROM subscriptions WHERE user_id = ? ORDER BY task_name'),
     allSubs: db.prepare('SELECT * FROM subscriptions ORDER BY user_id, task_name'),
+    // 调度器用：停用的账号不该继续往目标站点发请求
+    allSubsActive: db.prepare(
+      `SELECT s.* FROM subscriptions s
+       JOIN users u ON u.id = s.user_id
+       WHERE u.status = 'active'
+       ORDER BY s.user_id, s.task_name`,
+    ),
     insertSub: db.prepare(
       `INSERT INTO subscriptions (user_id, task_name, enabled, schedule_json, timeout_ms, created_at, updated_at)
        VALUES (@user_id, @task_name, @enabled, @schedule_json, @timeout_ms, @created_at, @updated_at)
@@ -288,6 +296,10 @@ export function createStore(db, { limits = {} } = {}) {
     function addAccount(taskName, { label = '', accountKey = null } = {}) {
       const row = s.subOf.get(userId, taskName);
       if (!row) throw new Error(`还没有订阅 "${taskName}"，无法添加账号`);
+      const existing = s.accountsOfSub.all(row.id);
+      if (existing.length >= maxAccounts) {
+        throw new Error(`这个模板最多配 ${maxAccounts} 个账号`);
+      }
       const key = accountKey ?? newAccountKey();
       s.insertAccount.run({
         subscription_id: row.id,
@@ -519,9 +531,13 @@ export function createStore(db, { limits = {} } = {}) {
     /** 唯一的用户级入口。页面与执行路径都从这里拿 store */
     forUser: makeUserStore,
 
-    /** 调度器用：全部订阅及其账号（含停用信息，由调用方决定是否跳过） */
-    allSubscriptions() {
-      return s.allSubs.all().map((row) => {
+    /**
+     * 全部订阅及其账号。
+     * @param {boolean} [onlyActiveUsers] 调度器要传 true：停用的账号不应继续被调度
+     */
+    allSubscriptions({ onlyActiveUsers = false } = {}) {
+      const rows = onlyActiveUsers ? s.allSubsActive.all() : s.allSubs.all();
+      return rows.map((row) => {
         const sub = rowToSubscription(row);
         sub.accounts = s.accountsOfSub.all(row.id).map(rowToAccount);
         return sub;
@@ -532,10 +548,6 @@ export function createStore(db, { limits = {} } = {}) {
     allUserIds() {
       return [...new Set(s.allSubs.all().map((r) => r.user_id))];
     },
-
-    /** 调度器需要跨用户读写状态时用这个（用户视图的 stateOf 绑定了 userId） */
-    stateOfFor: (userId, taskName, accountKey = '') =>
-      makeUserStore(userId).stateOf(taskName, accountKey),
 
     /**
      * 删号清理：订阅与账号靠 ON DELETE CASCADE，这里清掉没有外键兜底的历史数据。

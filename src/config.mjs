@@ -111,6 +111,8 @@ export const TENANT_LIMITS = {
   minIntervalMinutes: 5,
   /** 每用户可订阅的模板数上限 */
   maxSubscriptions: 20,
+  /** 一个订阅下最多配几个账号。不加的话一个人能建几百个账号，每次 tick 都轮一遍 */
+  maxAccountsPerSubscription: 10,
   /** 全平台同时执行的任务数上限（保护 N150 出口 IP 不被一次打出几十路请求） */
   maxConcurrent: 4,
 };

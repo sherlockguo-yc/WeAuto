@@ -114,13 +114,16 @@ export function summarizeAll({ tasks, store, nowMs = Date.now(), random = Math.r
     failed: 0,
     blocked: 0,
   };
-  for (const it of items) {
+  // 没启用的模板不参与统计：多租户下「未订阅」也是 disabled，
+  // 算进来的话新用户登录后首页会显示一堆他根本没启用的东西。
+  const mine = items.filter((it) => it.subscribed);
+  for (const it of mine) {
     if (it.todayStatus in byStatus) byStatus[it.todayStatus] += 1;
     else byStatus.failed += 1; // 其它非成功状态一律计入「需要注意」
   }
 
   // 「今天出事了」的清单：失败/被拦/已错过/停用，首页只关心这些
-  const attention = items.filter((it) =>
+  const attention = mine.filter((it) =>
     ['failed', 'blocked', 'network-error', 'config-error', 'missed', 'disabled'].includes(it.todayStatus),
   );
 

@@ -155,7 +155,8 @@ export function createScheduler({
    */
   function targets() {
     const out = [];
-    for (const sub of store.allSubscriptions()) {
+    // 停用的账号不参与调度：不然「停用」只是页面上的开关，请求照样在发
+    for (const sub of store.allSubscriptions({ onlyActiveUsers: true })) {
       if (!sub.enabled) continue;
       const task = tasks.get(sub.taskName);
       if (!task) continue;
@@ -281,10 +282,10 @@ export function createScheduler({
     normalizeOnStart,
 
     /**
-     * 手动触发：跳过调度判断，但仍然受幂等与锁保护（除非 force）。
+     * 手动触发：跳过调度判断，但仍然受幂等、互斥与配额保护。
      * 必须带 userId——「跑谁的那个账号」在多租户下不能靠猜。
      */
-    trigger(taskName, { userId, accountKey = '', force = true } = {}) {
+    trigger(taskName, { userId, accountKey = '' } = {}) {
       const task = tasks.get(taskName);
       if (!task) throw new Error(`未知任务 "${taskName}"`);
       const sub = store.forUser(userId).getSubscription(taskName);

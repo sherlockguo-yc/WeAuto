@@ -194,12 +194,6 @@ export function createUserSecrets(db, masterKey) {
 
   return {
     get,
-    get raw() {
-      return {
-        encrypt: (v) => encryptValue(v, masterKey),
-        decrypt: (b) => decryptValue(b, masterKey),
-      };
-    },
     fieldNames,
     fieldStatus,
     missing,

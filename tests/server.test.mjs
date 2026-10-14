@@ -419,6 +419,55 @@ describe('执行历史默认隐藏跳过记录', () => {
   });
 });
 
+describe('停用要即时生效', () => {
+  it('账号被停用后，已经签发的会话立刻失效', async () => {
+    const { base, auth } = await startServer();
+    const cookie = await login(base);
+    assert.equal((await fetch(`${base}/api/tasks`, { headers: { cookie } })).status, 200);
+
+    const me = auth.listUsers().find((u) => u.username === 'tester');
+    auth.setStatus(me.id, 'disabled');
+
+    // token 本身没过期，但账号状态变了 —— 不能让他继续用 7 天
+    assert.equal((await fetch(`${base}/api/tasks`, { headers: { cookie } })).status, 401);
+    const page = await fetch(`${base}/tasks`, { headers: { cookie }, redirect: 'manual' });
+    assert.equal(page.status, 302);
+  });
+});
+
+describe('概览统计', () => {
+  it('未启用的模板不计入统计，也不出现在「需要注意」里', async () => {
+    const { base } = await startServer({ seedSubscription: false });
+    const cookie = await login(base);
+    const data = await (await fetch(`${base}/api/overview`, { headers: { cookie } })).json();
+
+    assert.equal(data.items.length, 1, '列表里仍然要能看到它（供启用）');
+    assert.equal(data.byStatus.disabled, 0, '没启用不该被算成「停用」');
+    assert.equal(data.attention.length, 0, '没启用不该出现在需要注意里');
+  });
+});
+
+describe('注销与改密', () => {
+  it('退出登录后，那份 cookie 立刻失效', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    assert.equal((await fetch(`${base}/api/tasks`, { headers: { cookie } })).status, 200);
+
+    await fetch(`${base}/logout`, { method: 'POST', headers: { cookie }, redirect: 'manual' });
+    // 只清浏览器 cookie 的话，这份值在 7 天内仍然有效——必须服务端也作废
+    assert.equal((await fetch(`${base}/api/tasks`, { headers: { cookie } })).status, 401);
+  });
+
+  it('改密码后旧会话失效', async () => {
+    const { base, auth } = await startServer();
+    const cookie = await login(base);
+    const me = auth.listUsers().find((u) => u.username === 'tester');
+
+    auth.setPassword(me.id, 'another-pass-1');
+    assert.equal((await fetch(`${base}/api/tasks`, { headers: { cookie } })).status, 401);
+  });
+});
+
 describe('邀请注册', () => {
   async function makeInvite(base, cookie, opts = {}) {
     const res = await fetch(`${base}/api/invites`, {

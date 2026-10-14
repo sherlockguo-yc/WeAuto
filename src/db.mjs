@@ -213,6 +213,19 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 4,
+    description: '会话版本号：注销或改密后，之前签发的 token 立即失效',
+    up(db) {
+      db.exec(`
+        /* JWT 是无状态的，签出去就收不回来。
+           加一个版本号写进 token，注销/改密时 +1，校验时比对 ——
+           不这样的话，「退出登录」只是清了浏览器 cookie，
+           那个 cookie 的副本在 7 天内照样能用。 */
+        ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0;
+      `);
+    },
+  },
 ];
 
 /** 用 meta 表记录 schema 版本（用户表之外的第一张表，永远存在） */

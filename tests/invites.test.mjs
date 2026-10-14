@@ -11,7 +11,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { openDb } from '../src/db.mjs';
-import { DEFAULT_EXPIRE_DAYS, createInvites, newInviteCode } from '../src/invites.mjs';
+import {
+  DEFAULT_EXPIRE_DAYS,
+  MAX_EXPIRE_DAYS,
+  MAX_USES,
+  createInvites,
+  newInviteCode,
+} from '../src/invites.mjs';
 
 const OWNER = 1;
 const DAY = 86_400_000;
@@ -62,6 +68,15 @@ describe('生成', () => {
     const long = invites.create({ createdBy: OWNER, expiresInDays: 0, maxUses: 5 });
     assert.equal(long.expires_at, null);
     assert.equal(long.max_uses, 5);
+  });
+
+  it('次数与有效期被夹在合理区间（否则一个码就是永久凭证）', () => {
+    const { invites } = fresh();
+    const many = invites.create({ createdBy: OWNER, maxUses: 999999 });
+    assert.equal(many.max_uses, MAX_USES);
+
+    const long = invites.create({ createdBy: OWNER, expiresInDays: 9999 });
+    assert.ok(long.expires_at - long.created_at <= MAX_EXPIRE_DAYS * DAY + 1000);
   });
 
   it('两个码互不相同', () => {

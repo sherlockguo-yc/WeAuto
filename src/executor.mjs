@@ -30,14 +30,17 @@ function withTimeout(promise, ms, label) {
 /**
  * 取这个用户的 store 视图。
  *
- * 兼容两种传法（过渡期，P2 收尾后可只留第一种）：
- *   · 传根 store + userId → 走 `store.forUser(userId)`
- *   · 传已绑定的用户视图 + 不传 userId → 直接用
- * 这样现有的测试与 CLI 调用点不必一次性改完。
+ * 两种传法：
+ *   · 根 store + userId → `store.forUser(userId)`
+ *   · 已绑定的用户视图 → 直接用
+ *
+ * 根 store 却不带 userId 时**直接报错**而不是退回根 store：
+ * 那样只会在后面 appendRun 时抛「方法不存在」，离真正的错因太远，很难查。
  */
 function userStore(store, userId) {
-  if (userId == null) return store;
-  return typeof store.forUser === 'function' ? store.forUser(userId) : store;
+  if (typeof store.forUser !== 'function') return store; // 已经是用户视图
+  if (userId == null) throw new Error('执行任务必须指定 userId（多租户下没有「不指定用户」的执行）');
+  return store.forUser(userId);
 }
 
 /**

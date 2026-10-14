@@ -44,6 +44,8 @@ export function toPublic(row) {
     status: row.status,
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at || null,
+    /** 会话版本号。注销 / 改密时 +1，用于让之前的 token 失效 */
+    sessionEpoch: row.session_epoch ?? 0,
   };
 }
 
@@ -62,6 +64,9 @@ export function createUserStore(db) {
     setPassword: db.prepare('UPDATE users SET password_hash = ? WHERE id = ?'),
     touchLogin: db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?'),
     remove: db.prepare('DELETE FROM users WHERE id = ?'),
+    bumpEpoch: db.prepare(
+      'UPDATE users SET session_epoch = session_epoch + 1 WHERE id = ?',
+    ),
   };
 
   return {
@@ -94,6 +99,12 @@ export function createUserStore(db) {
 
     touchLogin(id, at = Date.now()) {
       sel.touchLogin.run(at, id);
+    },
+
+    /** 让这个账号之前签发的全部 token 失效。返回新的版本号 */
+    bumpSessionEpoch(id) {
+      sel.bumpEpoch.run(id);
+      return sel.byId.get(id)?.session_epoch ?? 0;
     },
 
     remove(id) {

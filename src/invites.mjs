@@ -14,6 +14,9 @@
 import crypto from 'node:crypto';
 
 export const DEFAULT_EXPIRE_DAYS = 7;
+/** 一个码最多能用几次。再大就不是「邀请」而是「开放注册」了 */
+export const MAX_USES = 100;
+export const MAX_EXPIRE_DAYS = 365;
 
 export function newInviteCode() {
   // 32 字节随机：不可猜，也就不需要「隐藏码本身」
@@ -45,14 +48,18 @@ export function createInvites(db) {
    */
   function create({ createdBy, expiresInDays = DEFAULT_EXPIRE_DAYS, maxUses = 1, note = '' } = {}) {
     if (!Number.isInteger(createdBy)) throw new Error('create 需要 createdBy');
-    const uses = Number.isInteger(maxUses) && maxUses > 0 ? maxUses : 1;
+    // 夹在合理区间里：一个大 maxUses 的码等于变相开放注册，超长有效期等于永久凭证
+    const uses = Math.min(Math.max(Number.isInteger(maxUses) && maxUses > 0 ? maxUses : 1, 1), MAX_USES);
     const code = newInviteCode();
     const now = Date.now();
     st.insert.run({
       code,
       created_by: createdBy,
       created_at: now,
-      expires_at: expiresInDays > 0 ? now + expiresInDays * 86_400_000 : null,
+      expires_at:
+        expiresInDays > 0
+          ? now + Math.min(expiresInDays, MAX_EXPIRE_DAYS) * 86_400_000
+          : null,
       max_uses: uses,
       note: String(note ?? '').slice(0, 120),
     });

@@ -347,6 +347,15 @@ describe('资源上限（由装配层注入，本模块不读环境变量）', (
     );
   });
 
+  it('一个订阅下的账号数量有上限', () => {
+    const root = freshRoot({ maxAccountsPerSubscription: 3 });
+    const mine = root.forUser(USER_ID);
+    mine.subscribe('t'); // 自带一个默认账号
+    mine.addAccount('t', { label: '二号' });
+    mine.addAccount('t', { label: '三号' });
+    assert.throws(() => mine.addAccount('t', { label: '四号' }), /最多配 3 个账号/);
+  });
+
   it('countRunsToday 不计入 skipped（它不代表真的发出过请求）', () => {
     const store = fresh();
     run(store, { date: '2026-10-14', ts: 1, status: 'success' });

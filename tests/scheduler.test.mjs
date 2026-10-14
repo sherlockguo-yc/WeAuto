@@ -346,6 +346,23 @@ describe('调度循环', () => {
     assert.equal(store.forUser(USER_ID).stateOf('e-task').next_due_ts, NOON + 10 * 60_000);
   });
 
+  it('停用的用户不再被调度', async () => {
+    const { db, store } = fresh();
+    const { execute, calls } = fakeExecute(store);
+    const sch = createScheduler({
+      store,
+      tasks: new Map([[windowTask.name, windowTask]]),
+      execute,
+      now: () => windowTargetMs + 1000,
+    });
+
+    db.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(USER_ID);
+    const r = sch.tick();
+    assert.deepEqual(r.started, [], '停用后不该再有任何调度目标');
+    await sch.waitForIdle();
+    assert.equal(calls.length, 0);
+  });
+
   it('同一用户串行：两个账号不会同时打出去', async () => {
     const { store } = fresh();
     const extra = store.forUser(USER_ID).addAccount('w-task', { label: '小号' });

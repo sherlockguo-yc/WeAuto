@@ -13,8 +13,6 @@ import express from 'express';
 import { LOGIN_RATE_LIMIT } from './config.mjs';
 import { renderView } from './format.mjs';
 import * as render from './render.mjs';
-import { SecretsError } from './secrets.mjs';
-import { listFieldNames, writeSecrets } from './credentials.mjs';
 import { describeSchedule, summarizeAll, summarizeTask } from './status.mjs';
 import { normalizeSchedule } from './task-contract.mjs';
 import { DB_FILE } from './db.mjs';
@@ -30,15 +28,6 @@ function parseCookies(header) {
     out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
   }
   return out;
-}
-
-/** 当前可用凭据的字段名（**只返回名字**）；解密失败时返回原因 */
-function credentialFields() {
-  try {
-    return { keys: listFieldNames(), error: null };
-  } catch (err) {
-    return { keys: [], error: err instanceof SecretsError ? err.message : String(err?.message ?? err) };
-  }
 }
 
 function groupByGroup(items) {
@@ -126,9 +115,20 @@ export function createServer({
   );
 
   /* ───────── 会话 ───────── */
+  /**
+   * token 里没有账号状态，所以每次都要回查一次 users。
+   *
+   * 不查的后果：把某个账号停用后，他已经拿到的 token 还能用到 7 天过期为止——
+   * 停用只能阻止「重新登录」，等于形同虚设。查一次主键的代价可以忽略。
+   */
   function currentUser(req) {
     const payload = auth.verify(parseCookies(req.headers.cookie)[COOKIE]);
-    return payload ? { id: payload.id, username: payload.username, role: payload.role } : null;
+    if (!payload?.id) return null;
+    const user = auth.getUser(payload.id);
+    if (!user || user.status !== 'active') return null;
+    // 注销 / 改密之后，之前签发的 token 立即作废（版本号对不上）
+    if (user.sessionEpoch !== payload.se) return null;
+    return { id: user.id, username: user.username, role: user.role, status: user.status };
   }
   function setSession(req, res, token) {
     const secure = (req.headers['x-forwarded-proto'] ?? '') === 'https';
@@ -225,6 +225,9 @@ export function createServer({
     return doLogin(req, res, req.body);
   });
   app.post('/logout', requireLogin, (req, res) => {
+    // 先把这个账号已签发的 token 全部作废，再清 cookie。
+    // 只清 cookie 的话，那个值的副本在 7 天内仍然有效。
+    auth.bumpSessionEpoch(req.user.id);
     clearSession(res);
     res.redirect('/login');
   });
