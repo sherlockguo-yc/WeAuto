@@ -123,6 +123,18 @@
     }
   });
 
+  /* 调度表单：切换类型时只显示对应的输入框 */
+  document.addEventListener('change', function (e) {
+    var radio = e.target.closest('input[name="kind"]');
+    if (!radio) return;
+    var form = radio.closest('form');
+    if (!form) return;
+    var blocks = form.querySelectorAll('.schedule-fields');
+    for (var i = 0; i < blocks.length; i++) {
+      blocks[i].hidden = blocks[i].getAttribute('data-for') !== radio.value;
+    }
+  });
+
   document.addEventListener('submit', async function (e) {
     // 凭据表单：留空的字段直接不提交，避免把已有凭据清掉
     var credForm = e.target.closest('[data-action="save-credentials"]');
@@ -145,6 +157,38 @@
       } catch (err) {
         hint(err.message, 'error');
         if (credBtn) credBtn.disabled = false;
+      }
+      return;
+    }
+
+    // 调度表单：按选中的类型提交对应字段；选「跟随默认」时提交 null（= 回到模板）
+    var schedForm = e.target.closest('[data-action="save-schedule"]');
+    if (schedForm) {
+      e.preventDefault();
+      var checked = schedForm.querySelector('input[name="kind"]:checked');
+      var kind = checked ? checked.value : null;
+      var body = null;
+      if (kind === 'default') {
+        body = { schedule: null };
+      } else if (kind === 'window') {
+        body = { schedule: { window: { start: schedForm.elements.start.value, end: schedForm.elements.end.value } } };
+      } else if (kind === 'every') {
+        body = { schedule: { every: { minutes: Number(schedForm.elements.minutes.value) } } };
+      } else if (kind === 'once') {
+        body = { schedule: { once: { at: schedForm.elements.at.value } } };
+      }
+      if (!body) {
+        hint('请选择一种调度方式', 'error');
+        return;
+      }
+      var schedBtn = schedForm.querySelector('button[type="submit"]');
+      if (schedBtn) schedBtn.disabled = true;
+      try {
+        await api('PATCH', '/api/tasks/' + encodeURIComponent(schedForm.dataset.task), body);
+        location.reload();
+      } catch (err) {
+        hint(err.message, 'error');
+        if (schedBtn) schedBtn.disabled = false;
       }
       return;
     }

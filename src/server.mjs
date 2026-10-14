@@ -15,7 +15,7 @@ import { renderView } from './format.mjs';
 import * as render from './render.mjs';
 import { SecretsError } from './secrets.mjs';
 import { listFieldNames, writeSecrets } from './credentials.mjs';
-import { summarizeAll, summarizeTask } from './status.mjs';
+import { describeSchedule, summarizeAll, summarizeTask } from './status.mjs';
 import { normalizeSchedule } from './task-contract.mjs';
 import { DB_FILE } from './db.mjs';
 import { DATA_DIR, ROOT, humanDuration } from './util.mjs';
@@ -269,7 +269,14 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
       render.layout({
         title: `${task.displayName} · 配置`,
         active: 'tasks',
-        body: render.pageTaskConfig({ task: { ...summary, retention: task.retention } }),
+        body: render.pageTaskConfig({
+          task: {
+            ...summary,
+            retention: task.retention,
+            // 模板自带的调度，用于表单里「跟随默认」那一项的说明
+            templateScheduleLabel: describeSchedule(task.schedule),
+          },
+        }),
         user: req.user,
       }),
     );
@@ -372,8 +379,11 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
    *
    * 调度时间是「每个用户配自己的」，所以必须能在这里写——调度器会优先用订阅里的值
    * （见 scheduler.mjs 的 targets()），写不进去就等于这个功能是假的。
+   *
+   * 权限：改的是**自己的**订阅，所以只要登录即可，不需要 admin。
+   * admin 与 user 在这条路上没有区别——多租户下「自己的任务自己配」是前提。
    */
-  app.patch('/api/tasks/:name', requireLogin, requireAdmin, (req, res) => {
+  app.patch('/api/tasks/:name', requireLogin, (req, res) => {
     const name = req.params.name;
     if (!tasks.has(name)) return res.status(404).json({ error: '没有这个任务' });
 
@@ -416,7 +426,7 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   });
 
   /** 取消订阅（原「清掉覆盖层」）。多租户下没有「回到全局默认」这回事了 */
-  app.delete('/api/tasks/:name/override', requireLogin, requireAdmin, (req, res) => {
+  app.delete('/api/tasks/:name/override', requireLogin, (req, res) => {
     if (!tasks.has(req.params.name)) return res.status(404).json({ error: '没有这个任务' });
     res.json({ ok: true, cleared: mine(req).unsubscribe(req.params.name) });
   });

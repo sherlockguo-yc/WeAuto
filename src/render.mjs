@@ -302,27 +302,74 @@ export function pageTaskDetail({ task, view, runs, canRun, hiddenSkipped = 0, in
 
 /* ─────────────────── 任务配置 ─────────────────── */
 
+/** epoch 毫秒 → 「YYYY-MM-DDTHH:mm」（北京时间），给 <input type="datetime-local"> 用 */
+function beijingInputValue(ms) {
+  if (!Number.isFinite(ms)) return '';
+  return new Date(ms + 8 * 36e5).toISOString().slice(0, 16);
+}
+
 export function pageTaskConfig({ task }) {
   const retention = task.retention ?? {};
+  // 有效调度 = 订阅里改过的（若有）否则模板默认。表单要能表达「我改过哪一种」
+  const sch = task.schedule ?? null;
+  const customized = !!task.hasOverride && !!sch;
+  const mode = customized ? sch.kind : 'default';
+  const win = sch?.kind === 'window' ? sch.window : { start: '09:00', end: '09:50' };
+  const everyMinutes = sch?.kind === 'every' ? sch.every.minutes : 30;
+  const onceAt = sch?.kind === 'once' ? beijingInputValue(sch.once.atMs) : '';
+
   return `
 <section class="card">
   <h2>调度</h2>
   <dl class="kv">
     <dt>当前</dt><dd>${esc(task.scheduleLabel)}</dd>
-    <dt>状态</dt><dd>${task.enabled ? '启用' : '停用'}${
-      task.hasOverride ? '（网页设置）' : '（跟随任务文件）'
-    }</dd>
+    <dt>来源</dt><dd>${customized ? '我在下面改过' : esc(task.templateScheduleLabel ?? '跟随模板')}</dd>
     <dt>今日</dt><dd>${esc(task.planReason)}</dd>
   </dl>
+  ${task.overrideInvalid ? '<p class="error">我保存的调度有问题，当前正按模板默认执行</p>' : ''}
+  <form class="schedule-form" data-action="save-schedule" data-task="${esc(task.name)}">
+    <fieldset>
+      <legend>什么时候跑</legend>
+      <label class="radio"><input type="radio" name="kind" value="default"${
+        mode === 'default' ? ' checked' : ''
+      }>跟随模板默认（${esc(task.templateScheduleLabel ?? '—')}）</label>
+      <label class="radio"><input type="radio" name="kind" value="window"${
+        mode === 'window' ? ' checked' : ''
+      }>每天在一段时间里随机</label>
+      <label class="radio"><input type="radio" name="kind" value="every"${
+        mode === 'every' ? ' checked' : ''
+      }>每隔固定分钟</label>
+      <label class="radio"><input type="radio" name="kind" value="once"${
+        mode === 'once' ? ' checked' : ''
+      }>只在某个时刻执行一次</label>
+    </fieldset>
+    <div class="schedule-fields" data-for="window"${mode === 'window' ? '' : ' hidden'}>
+      <label>开始<input type="time" name="start" value="${esc(win.start)}"></label>
+      <label>结束<input type="time" name="end" value="${esc(win.end)}"></label>
+      <p class="hint">在这段时间里随机挑一个时刻，每天不同</p>
+    </div>
+    <div class="schedule-fields" data-for="every"${mode === 'every' ? '' : ' hidden'}>
+      <label>间隔（分钟，最少 5）<input type="number" name="minutes" min="5" step="1" value="${esc(
+        String(everyMinutes),
+      )}"></label>
+    </div>
+    <div class="schedule-fields" data-for="once"${mode === 'once' ? '' : ' hidden'}>
+      <label>时刻（北京时间）<input type="datetime-local" name="at" value="${esc(onceAt)}"></label>
+      <p class="hint">超过计划时刻 5 分钟还没跑就判为「已错过」，不会自动补跑</p>
+    </div>
+    <button type="submit">保存调度</button>
+  </form>
   <div class="actions">
     <button data-action="toggle" data-task="${esc(task.name)}" data-enabled="${
       task.enabled ? '1' : '0'
     }">${task.enabled ? '停用此任务' : '启用此任务'}</button>
-    <button data-action="clear-override" data-task="${esc(task.name)}" ${
-      task.hasOverride ? '' : 'disabled'
-    }>恢复为任务文件的默认值</button>
+    <button data-action="clear-override" data-task="${esc(task.name)}"${
+      task.subscribed ? '' : ' disabled'
+    }>取消订阅</button>
   </div>
-  <p class="hint">调度的具体时间写在任务文件里（tasks/${esc(task.file ?? '?')}）。网页上改调度时间将在下一批支持。</p>
+  <p class="hint">这里的设置只影响我自己这个实例，不影响别人，也不会改动模板本身（tasks/${esc(
+    task.file ?? '?',
+  )}）。</p>
 </section>
 
 <section class="card">

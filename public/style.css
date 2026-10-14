@@ -232,6 +232,25 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 .inline-form { display: grid; gap: 10px; }
 label { display: grid; gap: 5px; font-size: 14px; color: var(--dim); }
+
+/* ── 调度表单（选类型 → 显示对应字段） ── */
+.schedule-form { display: grid; gap: 12px; margin-top: 10px; }
+.schedule-form fieldset {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin: 0;
+}
+.schedule-form legend { font-size: 13px; color: var(--dim); padding: 0 4px; }
+.schedule-form label.radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  padding: 4px 0;
+}
+.schedule-form label.radio input { width: auto; margin: 0; }
+.schedule-fields { display: grid; gap: 10px; }
 input, select {
   font: inherit;
   color: var(--text);

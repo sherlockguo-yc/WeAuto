@@ -66,14 +66,14 @@ let seq = 0;
  *   多租户后「看得到任务」的前提是「订阅了它」，不预置就什么都看不到。
  *   测「首次初始化」的用例要传 false。
  */
-async function startServer({ execute, seedUser = true, limits } = {}) {
+async function startServer({ execute, seedUser = true, limits, seedRole = 'admin' } = {}) {
   const db = openDb(path.join(dir, `db-${++seq}.sqlite`));
   dbs.push(db);
   const store = createStore(db, { limits });
   const tasks = new Map([[DEMO_TASK.name, { ...DEMO_TASK }]]);
   const auth = createAuth({ db, jwtSecret: 'test-secret' });
   if (seedUser) {
-    auth.register({ username: 'tester', password: 'pass-word-1', role: 'admin' });
+    auth.register({ username: 'tester', password: 'pass-word-1', role: seedRole });
     store.forUser(USER_ID).subscribe(DEMO_TASK.name);
   }
   const scheduler = createScheduler({
@@ -327,6 +327,46 @@ describe('调度配置（用户配自己的时间必须生效）', () => {
     });
     assert.equal(back.status, 200);
     assert.equal(store.forUser(USER_ID).getSubscription('demo-task').schedule, null);
+  });
+
+  it('普通用户（非 admin）也能改自己的订阅', async () => {
+    const { base } = await startServer({ seedRole: 'user' });
+    const cookie = await login(base);
+
+    const res = await fetch(`${base}/api/tasks/demo-task`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule: { every: { minutes: 15 } } }),
+    });
+    assert.equal(res.status, 200, '改自己的任务不该要求 admin');
+    assert.equal((await res.json()).subscription.schedule.every.minutes, 15);
+  });
+
+  it('改自己的订阅不会动到别人的', async () => {
+    const { base, store, auth } = await startServer({ seedRole: 'user' });
+    auth.register({ username: 'other', password: 'pass-word-2', role: 'user' });
+    store.forUser(2).subscribe('demo-task');
+
+    const cookie = await login(base);
+    await fetch(`${base}/api/tasks/demo-task`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule: { every: { minutes: 15 } } }),
+    });
+
+    assert.equal(store.forUser(USER_ID).getSubscription('demo-task').schedule.every.minutes, 15);
+    assert.equal(store.forUser(2).getSubscription('demo-task').schedule, null, '别人的订阅没被碰到');
+  });
+
+  it('配置页给出可编辑的调度表单', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
+
+    assert.match(html, /data-action="save-schedule"/);
+    assert.match(html, /name="kind"/);
+    assert.match(html, /跟随模板默认/);
+    assert.equal(html.includes('网页上改调度时间将在下一批支持'), false);
   });
 });
 
