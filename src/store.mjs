@@ -9,6 +9,7 @@
  *   · 统计是**累加计数器**（每行明细只会被累加一次，因为累加后立刻删除）
  */
 import { SUCCESS_STATUSES } from './task-contract.mjs';
+import { timestampInTZ } from './util.mjs';
 
 const DAY_MS = 86_400_000;
 
@@ -28,6 +29,8 @@ function rowToRun(row) {
     accountKey: row.account_key,
     date: row.date,
     ts: row.ts,
+    /** 展示用的北京时间字符串。ts 是 epoch **毫秒**，页面不直接用它 */
+    time: timestampInTZ(new Date(row.ts)),
     status: row.status,
     message: row.message,
     data,

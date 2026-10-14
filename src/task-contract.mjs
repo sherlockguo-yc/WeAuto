@@ -127,7 +127,7 @@ function normalizeRetention(taskName, retention) {
  * 会得到一个永不停止的任务。CLI 时代没有这个风险（每次都靠 cron 触发），
  * 服务化之后必须显式。
  */
-function normalizeSchedule(taskName, schedule) {
+export function normalizeSchedule(taskName, schedule) {
   if (schedule === undefined || schedule === null) return null;
   if (typeof schedule !== 'object' || Array.isArray(schedule)) {
     bad(`任务 ${taskName} 的 schedule 必须是对象`);
