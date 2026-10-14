@@ -64,6 +64,16 @@ const NAV = [
 ];
 
 /**
+ * 主题启动脚本（内联在 <head> 里，必须在样式生效前跑完）。
+ *
+ * 为什么要内联：主题存在 localStorage，服务端不知道用户选了什么。若等到
+ * app.js 加载后再切换，页面会先按系统主题画一遍再翻转 —— 手机上就是一次明显的闪屏。
+ */
+export const THEME_BOOT =
+  `try{var t=localStorage.getItem('weauto-theme');` +
+  `if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t)}}catch(e){}`;
+
+/**
  * 页面骨架。移动端优先：底部是导航条，内容单列。
  * @param {{title: string, active: string, body: string, user?: object|null, banner?: string}} opts
  */
@@ -86,6 +96,7 @@ export function layout({ title, active, body, user = null, banner = '' }) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
+<script>${THEME_BOOT}</script>
 <title>${esc(title)} · WeAuto</title>
 <link rel="stylesheet" href="/style.css">
 </head>
@@ -119,6 +130,7 @@ export function authPage({ mode, error = '', redirect = '/', hasUsers = true }) 
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
+<script>${THEME_BOOT}</script>
 <title>${esc(title)} · WeAuto</title>
 <link rel="stylesheet" href="/style.css">
 </head>
@@ -391,16 +403,20 @@ ${body}`;
 /* ─────────────────── 设置 ─────────────────── */
 
 export function pageSettings({ users, canCreateUser, system }) {
+  // 账号行单独一套栅格：两个徽章归到右上角，操作按钮独占一行。
+  // 用通用 .row 时徽章与按钮会挤在同一格里，手机上看起来是错乱的。
   const list = users
     .map(
-      (u) => `<div class="row row-plain">
+      (u) => `<div class="user-row">
         <span class="row-main">${esc(u.username)}</span>
-        <span class="badge badge-${u.role === 'admin' ? 'ok' : 'off'}">${esc(
-          u.role === 'admin' ? '管理员' : '普通',
-        )}</span>
-        <span class="badge badge-${u.status === 'active' ? 'ok' : 'bad'}">${esc(
-          u.status === 'active' ? '正常' : '已停用',
-        )}</span>
+        <span class="badges">
+          <span class="badge badge-${u.role === 'admin' ? 'ok' : 'off'}">${esc(
+            u.role === 'admin' ? '管理员' : '普通',
+          )}</span>
+          <span class="badge badge-${u.status === 'active' ? 'ok' : 'bad'}">${esc(
+            u.status === 'active' ? '正常' : '已停用',
+          )}</span>
+        </span>
         <span class="row-sub">最近登录 ${
           u.lastLoginAt ? esc(new Date(u.lastLoginAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })) : '从未'
         }</span>
@@ -412,6 +428,16 @@ export function pageSettings({ users, canCreateUser, system }) {
     .join('');
 
   return `
+<section class="card">
+  <h2>外观</h2>
+  <div class="segmented" data-theme-picker>
+    <button type="button" data-theme-value="system" class="active">跟随系统</button>
+    <button type="button" data-theme-value="light">浅色</button>
+    <button type="button" data-theme-value="dark">深色</button>
+  </div>
+  <p class="hint">默认跟随系统深浅色；选择后会记住，下次打开仍然生效。</p>
+</section>
+
 <section class="card">
   <h2>账号</h2>
   <p class="sub">WeAuto 的账号与 WeMusic / WeMonitor 完全独立。</p>

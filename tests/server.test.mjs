@@ -322,6 +322,31 @@ describe('凭据接口', () => {
   });
 });
 
+describe('外观（主题）', () => {
+  it('设置页提供「跟随系统 / 浅色 / 深色」三选项', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    const html = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    assert.match(html, /data-theme-picker/);
+    for (const v of ['system', 'light', 'dark']) {
+      assert.match(html, new RegExp(`data-theme-value="${v}"`), `缺少选项 ${v}`);
+    }
+  });
+
+  it('主题脚本内联在 <head> 里（避免先按系统画一遍再翻转的闪屏）', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const page = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    const head = /<head>([\s\S]*?)<\/head>/.exec(page)?.[1] ?? '';
+    assert.match(head, /weauto-theme/, '主布局的 head 里缺少主题脚本');
+
+    // 登录页同样需要：选过的主题在未登录页也要生效
+    const loginHtml = await (await fetch(`${base}/login`)).text();
+    assert.match(loginHtml, /weauto-theme/, '登录页缺少主题脚本');
+  });
+});
+
 describe('CSRF', () => {
   it('跨站来源的写操作被拒绝', async () => {
     const { base } = await startServer();

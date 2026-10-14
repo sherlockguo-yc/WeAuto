@@ -21,6 +21,16 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* ── 主题 ────────────────────────────────────────────────
+   未手动选择时跟随系统；一旦选择了就固定下来。
+   靠选择器优先级实现，不需要 JS 参与配色：
+     :root                   基础（暗色）          权重 0,1,0
+     @media light :root      跟随系统             权重 0,1,0（后写覆盖）
+     [data-theme="..."]      手动选择             权重 0,2,0（最高）
+   两套色板各写一遍是刻意的选择：项目不用预处理器，
+   抽成「变量再映射一层」只会让改颜色时更难找。
+   ------------------------------------------------------ */
+
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #f4f5f7;
@@ -30,6 +40,24 @@
     --text: #1b1f27;
     --dim: #626b7a;
   }
+}
+
+:root[data-theme='light'] {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f0f1f4;
+  --border: #dfe2e8;
+  --text: #1b1f27;
+  --dim: #626b7a;
+}
+
+:root[data-theme='dark'] {
+  --bg: #0f1115;
+  --surface: #171a21;
+  --surface-2: #1e222b;
+  --border: #272c37;
+  --text: #e7e9ee;
+  --dim: #9aa3b2;
 }
 
 * { box-sizing: border-box; }
@@ -129,6 +157,19 @@ body {
 .row-sub { grid-column: 1 / -1; color: var(--dim); font-size: 13px; }
 .row-plain { grid-template-columns: 1fr auto; }
 
+/* 账号行：名字 + 徽章一行，最近登录一行，操作按钮一行 */
+.user-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.user-row:first-of-type { border-top: none; }
+.user-row .badges { display: flex; gap: 6px; align-items: center; }
+.user-row .row-sub { grid-column: 1 / -1; color: var(--dim); font-size: 13px; }
+.user-row .link-btn { grid-column: 1 / -1; justify-self: start; padding-left: 0; }
+
 /* ── 状态徽章 ── */
 .badge {
   align-self: start;
@@ -169,6 +210,25 @@ button, .btn-link {
 button.primary { background: var(--accent); border-color: var(--accent); color: #08101f; font-weight: 600; }
 button:disabled { opacity: 0.5; cursor: default; }
 .link-btn { background: none; border: none; color: var(--accent); padding: 4px; }
+
+/* ── 分段控件（主题选择） ── */
+.segmented { display: flex; gap: 6px; }
+.segmented button {
+  flex: 1;
+  padding: 9px 6px;
+  font-size: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--dim);
+  cursor: pointer;
+}
+.segmented button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08101f;
+  font-weight: 600;
+}
 
 .inline-form { display: grid; gap: 10px; }
 label { display: grid; gap: 5px; font-size: 14px; color: var(--dim); }

@@ -7,6 +7,46 @@
 (function () {
   'use strict';
 
+  /* ── 主题 ──────────────────────────────────────────────
+     配色由 CSS 变量 + [data-theme] 决定，这里只负责读写偏好。
+     'system' 表示删掉属性，把决定权交回给 prefers-color-scheme。
+     ------------------------------------------------------ */
+  var THEME_KEY = 'weauto-theme';
+
+  function applyTheme(value) {
+    var root = document.documentElement;
+    if (value === 'light' || value === 'dark') root.setAttribute('data-theme', value);
+    else root.removeAttribute('data-theme');
+
+    try {
+      localStorage.setItem(THEME_KEY, value || 'system');
+    } catch (e) {
+      /* 隐私模式下写不了，忽略：本次会话内仍然生效 */
+    }
+
+    var buttons = document.querySelectorAll('[data-theme-picker] button');
+    for (var i = 0; i < buttons.length; i++) {
+      var active = buttons[i].getAttribute('data-theme-value') === (value || 'system');
+      buttons[i].classList.toggle('active', active);
+    }
+  }
+
+  function currentTheme() {
+    try {
+      return localStorage.getItem(THEME_KEY) || 'system';
+    } catch (e) {
+      return 'system';
+    }
+  }
+
+  applyTheme(currentTheme());
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-theme-value]');
+    if (!btn) return;
+    applyTheme(btn.getAttribute('data-theme-value'));
+  });
+
   function hint(msg, tone) {
     var el = document.getElementById('action-hint');
     if (!el) return;
