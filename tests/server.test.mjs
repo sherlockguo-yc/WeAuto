@@ -14,6 +14,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { openDb } from '../src/db.mjs';
 import { createStore } from '../src/store.mjs';
+import { createUserSecrets, generateMasterKey } from '../src/user-secrets.mjs';
 import { createAuth } from '../src/auth/index.mjs';
 import { createScheduler } from '../src/scheduler.mjs';
 import { createServer } from '../src/server.mjs';
@@ -66,15 +67,23 @@ let seq = 0;
  *   多租户后「看得到任务」的前提是「订阅了它」，不预置就什么都看不到。
  *   测「首次初始化」的用例要传 false。
  */
-async function startServer({ execute, seedUser = true, limits, seedRole = 'admin' } = {}) {
+async function startServer({
+  execute,
+  seedUser = true,
+  seedSubscription = true,
+  limits,
+  seedRole = 'admin',
+  extraTasks = [],
+} = {}) {
   const db = openDb(path.join(dir, `db-${++seq}.sqlite`));
   dbs.push(db);
   const store = createStore(db, { limits });
   const tasks = new Map([[DEMO_TASK.name, { ...DEMO_TASK }]]);
+  for (const t of extraTasks) tasks.set(t.name, { ...t });
   const auth = createAuth({ db, jwtSecret: 'test-secret' });
   if (seedUser) {
     auth.register({ username: 'tester', password: 'pass-word-1', role: seedRole });
-    store.forUser(USER_ID).subscribe(DEMO_TASK.name);
+    if (seedSubscription) store.forUser(USER_ID).subscribe(DEMO_TASK.name);
   }
   const scheduler = createScheduler({
     store,
@@ -83,7 +92,16 @@ async function startServer({ execute, seedUser = true, limits, seedRole = 'admin
     now: () => NOW,
     log: () => {},
   });
-  const app = createServer({ store, auth, tasks, scheduler, config: { trustProxy: true }, now: () => NOW });
+  const userSecrets = createUserSecrets(db, generateMasterKey());
+  const app = createServer({
+    store,
+    auth,
+    tasks,
+    scheduler,
+    config: { trustProxy: true },
+    userSecrets,
+    now: () => NOW,
+  });
 
   const server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
@@ -397,47 +415,160 @@ describe('执行历史默认隐藏跳过记录', () => {
   });
 });
 
-describe('凭据接口', () => {
-  it('普通账号不能改凭据', async () => {
-    const { base, auth } = await startServer();
-    const adminCookie = await login(base);
+describe('模板市场（只能启用平台提供的模板）', () => {
+  const INTERNAL_TASK = {
+    ...DEMO_TASK,
+    name: 'internal-task',
+    displayName: '内部模板',
+    visibility: 'internal',
+  };
 
-    auth.register({ username: 'plain', password: 'pass-word-1', role: 'user', status: 'active' });
-    const res = await fetch(`${base}/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ username: 'plain', password: 'pass-word-1' }),
-      redirect: 'manual',
-    });
-    const cookies = res.headers.getSetCookie?.() ?? [res.headers.get('set-cookie')];
-    const plainCookie = cookies.filter(Boolean).map((c) => c.split(';')[0]).join('; ');
+  it('未启用的模板能启用，启用后进入我的任务', async () => {
+    const { base } = await startServer({ seedSubscription: false });
+    const cookie = await login(base);
 
-    const denied = await fetch(`${base}/api/credentials`, {
-      method: 'POST',
-      headers: { cookie: plainCookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields: { A: '1' } }),
-    });
-    assert.equal(denied.status, 403);
+    let list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
+    assert.equal(list.tasks[0].subscribed, false);
 
-    // 管理员请求本身能走到业务层（本机没配 age 私钥时会是 400/500，总之不是 403）
-    const asAdmin = await fetch(`${base}/api/credentials`, {
+    const res = await fetch(`${base}/api/subscriptions`, {
       method: 'POST',
-      headers: { cookie: adminCookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields: { A: '1' } }),
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskName: 'demo-task' }),
     });
-    assert.notEqual(asAdmin.status, 403);
+    assert.equal(res.status, 200);
+
+    list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
+    assert.equal(list.tasks[0].subscribed, true);
+  });
+
+  it('启用不存在的模板返回 404，不会凭空造出订阅', async () => {
+    const { base, store } = await startServer({ seedSubscription: false });
+    const cookie = await login(base);
+
+    const res = await fetch(`${base}/api/subscriptions`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskName: 'no-such-template' }),
+    });
+    assert.equal(res.status, 404);
+    assert.equal(store.forUser(USER_ID).listSubscriptions().length, 0);
+  });
+
+  it('internal 模板对普通用户不可见，也启用不了', async () => {
+    const { base } = await startServer({ seedRole: 'user', extraTasks: [INTERNAL_TASK] });
+    const cookie = await login(base);
+
+    const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
+    assert.equal(list.tasks.some((t) => t.name === 'internal-task'), false, '列表里不该出现');
+
+    const res = await fetch(`${base}/api/subscriptions`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskName: 'internal-task' }),
+    });
+    // 404 而不是 403：403 会证实「这个名字存在」，等于泄露 internal 清单
+    assert.equal(res.status, 404);
+    assert.equal((await fetch(`${base}/tasks/internal-task`, { headers: { cookie } })).status, 404);
+  });
+
+  it('admin 能看到并启用 internal 模板', async () => {
+    const { base } = await startServer({ extraTasks: [INTERNAL_TASK] });
+    const cookie = await login(base);
+
+    const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
+    assert.equal(list.tasks.some((t) => t.name === 'internal-task'), true);
+
+    const res = await fetch(`${base}/api/subscriptions`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskName: 'internal-task' }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  it('任务页给出启用按钮', async () => {
+    const { base } = await startServer({ seedSubscription: false });
+    const cookie = await login(base);
+    const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.match(html, /data-action="subscribe"/);
+    assert.match(html, /可以启用的模板/);
+  });
+});
+
+describe('凭据接口（每人一份）', () => {
+  const post = (base, cookie, body) =>
+    fetch(`${base}/api/credentials`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('普通用户也能写自己的凭据', async () => {
+    const { base } = await startServer({ seedRole: 'user' });
+    const cookie = await login(base);
+
+    const res = await post(base, cookie, {
+      taskName: 'demo-task',
+      accountKey: '',
+      fields: { DEMO_TOKEN: 'abc' },
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, keys: ['DEMO_TOKEN'] });
+  });
+
+  it('只能写模板声明过的字段（白名单）', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const res = await post(base, cookie, {
+      taskName: 'demo-task',
+      fields: { WHATEVER: 'x' },
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /不属于这个模板/);
   });
 
   it('字段值必须是字符串（对象/数组说明客户端写错了）', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
-    const res = await fetch(`${base}/api/credentials`, {
-      method: 'POST',
-      headers: { cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields: { A: { nested: 1 } } }),
+
+    const res = await post(base, cookie, {
+      taskName: 'demo-task',
+      fields: { DEMO_TOKEN: { nested: 1 } },
     });
     assert.equal(res.status, 400);
     assert.match((await res.json()).error, /必须是字符串/);
+  });
+
+  it('没有的模板 / 没有启用的模板都写不进去', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    assert.equal((await post(base, cookie, { taskName: 'nope', fields: {} })).status, 404);
+  });
+
+  it('不能拿别人的账号标识覆盖别人的凭据', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const res = await post(base, cookie, {
+      taskName: 'demo-task',
+      accountKey: 'someone-elses',
+      fields: { DEMO_TOKEN: 'x' },
+    });
+    assert.equal(res.status, 404);
+    assert.match((await res.json()).error, /没有这个账号/);
+  });
+
+  it('凭据值不出现在页面里', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    await post(base, cookie, { taskName: 'demo-task', fields: { DEMO_TOKEN: 'top-secret' } });
+
+    const html = await (await fetch(`${base}/credentials`, { headers: { cookie } })).text();
+    assert.match(html, /DEMO_TOKEN/);
+    assert.equal(html.includes('top-secret'), false);
+    assert.match(html, /已设置/);
   });
 });
 

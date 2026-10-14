@@ -89,7 +89,7 @@ async function main() {
     maxConcurrent: TENANT_LIMITS.maxConcurrent,
     log: (m) => console.log(m),
   });
-  const app = createServer({ store, auth, tasks, scheduler, config });
+  const app = createServer({ store, auth, tasks, scheduler, config, userSecrets });
 
   const server = app.listen(config.port, config.host, () => {
     const users = auth.countUsers();

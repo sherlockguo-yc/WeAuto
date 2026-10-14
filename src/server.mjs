@@ -58,7 +58,16 @@ function groupByGroup(items) {
  * @param {object} deps.scheduler createScheduler 的结果
  * @param {object} deps.config
  */
-export function createServer({ store, auth, tasks, scheduler, config, now = () => Date.now() }) {
+export function createServer({
+  store,
+  auth,
+  tasks,
+  scheduler,
+  config,
+  /** 每用户凭据（createUserSecrets 的结果）。不传则凭据页只读显示「未就绪」 */
+  userSecrets = null,
+  now = () => Date.now(),
+}) {
   const app = express();
   app.set('trust proxy', config.trustProxy ?? true);
   app.disable('x-powered-by');
@@ -154,6 +163,19 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
    */
   const mine = (req) => store.forUser(req.user.id);
 
+  /**
+   * 这个人能看见哪些模板。`internal` 的只有 admin 看得见——
+   * 用途是「我自己专用的自动化」和「还在调试、不想给别人看到的半成品」。
+   */
+  const visibleTasks = (req) => {
+    const out = new Map();
+    for (const [name, task] of tasks) {
+      if (task.visibility === 'internal' && req.user?.role !== 'admin') continue;
+      out.set(name, task);
+    }
+    return out;
+  };
+
   /* ───────── 登录 / 首次初始化 ───────── */
   app.get('/login', (req, res) => {
     if (req.user) return res.redirect('/');
@@ -205,12 +227,12 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
 
   /* ───────── 页面 ───────── */
   app.get('/', requireLogin, (req, res) => {
-    const data = summarizeAll({ tasks, store: mine(req), nowMs: now() });
+    const data = summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() });
     res.type('html').send(render.layout({ title: '概览', active: 'home', body: render.pageOverview(data), user: req.user }));
   });
 
   app.get('/tasks', requireLogin, (req, res) => {
-    const data = summarizeAll({ tasks, store: mine(req), nowMs: now() });
+    const data = summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() });
     res.type('html').send(
       render.layout({
         title: '任务',
@@ -221,9 +243,11 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
     );
   });
 
-  function detailOf(taskName, { includeSkipped = false, userId } = {}) {
+  function detailOf(taskName, { includeSkipped = false, userId, role } = {}) {
     const task = tasks.get(taskName);
     if (!task) return null;
+    // internal 模板对非 admin 视同不存在
+    if (task.visibility === 'internal' && role !== 'admin') return null;
     const mine = store.forUser(userId);
     const summary = summarizeTask({ task, store: mine, nowMs: now() });
     const all = mine.runsOfTask(taskName, { limit: 50 });
@@ -242,7 +266,7 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   }
 
   app.get('/tasks/:name', requireLogin, (req, res) => {
-    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1', userId: req.user.id });
+    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1', userId: req.user.id, role: req.user.role });
     if (!d) return res.status(404).type('html').send(render.layout({ title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>', user: req.user }));
     res.type('html').send(
       render.layout({
@@ -282,23 +306,45 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
     );
   });
 
+  /**
+   * 凭据页：**只列这个人自己订阅过的模板**，按账号分组。
+   *
+   * 多租户前这里是「全站一份凭据、只有 admin 能改」，现在每个人有自己的一份，
+   * 所以权限判断从「是不是 admin」变成「是不是他自己的」。
+   */
   app.get('/credentials', requireLogin, (req, res) => {
-    const { keys, error } = credentialFields();
-    const present = Object.fromEntries(keys.map((k) => [k, true]));
-    const grouped = [...tasks.values()].map((t) => ({
-      name: t.name,
-      displayName: t.displayName,
-      requires: t.requires,
-      present,
-    }));
+    const groups = [];
+    for (const sub of mine(req).listSubscriptions()) {
+      const task = tasks.get(sub.taskName);
+      if (!task) continue; // 模板已下线：保留订阅行，但不显示（没有字段可填）
+      const accounts = sub.accounts.map((acc) => ({
+        accountKey: acc.accountKey,
+        label: acc.label,
+        enabled: acc.enabled,
+        fields: task.requires.map((key) => ({
+          key,
+          set: userSecrets
+            ? !!userSecrets.fieldStatus(req.user.id, sub.taskName, acc.accountKey, [key])[key]
+            : false,
+        })),
+      }));
+      groups.push({
+        name: task.displayName,
+        description: task.description,
+        taskName: sub.taskName,
+        requires: task.requires,
+        multiAccount: !!task.accounts,
+        accounts,
+      });
+    }
+
     res.type('html').send(
       render.layout({
         title: '凭据',
         active: 'creds',
         body: render.pageCredentials({
-          groups: [{ name: '按任务', tasks: grouped }],
-          secretsError: error,
-          canEdit: req.user.role === 'admin',
+          groups,
+          secretsError: userSecrets ? null : '凭据存储未就绪（缺少主密钥）',
         }),
         user: req.user,
       }),
@@ -306,7 +352,7 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   });
 
   app.get('/settings', requireLogin, (req, res) => {
-    const data = summarizeAll({ tasks, store: mine(req), nowMs: now() });
+    const data = summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() });
     res.type('html').send(
       render.layout({
         title: '设置',
@@ -341,15 +387,15 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   });
 
   app.get('/api/overview', requireLogin, (req, res) =>
-    res.json(summarizeAll({ tasks, store: mine(req), nowMs: now() })),
+    res.json(summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() })),
   );
 
   app.get('/api/tasks', requireLogin, (req, res) =>
-    res.json({ tasks: summarizeAll({ tasks, store: mine(req), nowMs: now() }).items }),
+    res.json({ tasks: summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() }).items }),
   );
 
   app.get('/api/tasks/:name', requireLogin, (req, res) => {
-    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1', userId: req.user.id });
+    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1', userId: req.user.id, role: req.user.role });
     if (!d) return res.status(404).json({ error: '没有这个任务' });
     res.json({
       task: d.summary,
@@ -432,24 +478,100 @@ export function createServer({ store, auth, tasks, scheduler, config, now = () =
   });
 
   /**
-   * 写入凭据字段。**留空表示不修改** —— 界面上不会因为一个空输入框就把已有凭据清掉。
-   * 只接受字符串值：非字符串（对象、数组）说明是客户端写错了，直接拒绝。
+   * 写入**我自己**在某个模板某个账号下的凭据。
+   *
+   * 三条硬约束：
+   *   · 只能写这个模板声明过的字段（白名单）——否则凭据库会变成任意数据的垃圾桶
+   *   · 必须先订阅过——没有实例就不该有凭据
+   *   · 账号必须是这个订阅下的——防止拿别人的 accountKey 覆盖别人的凭据
+   *
+   * **留空表示不修改**：界面上不会因为一个空输入框就把已有凭据清掉。
    */
-  app.post('/api/credentials', requireLogin, requireAdmin, (req, res) => {
-    const fields = req.body?.fields;
+  app.post('/api/credentials', requireLogin, (req, res) => {
+    if (!userSecrets) return res.status(503).json({ error: '凭据存储未就绪' });
+
+    const { taskName, accountKey = '', fields } = req.body ?? {};
+    if (typeof taskName !== 'string') return res.status(400).json({ error: '缺少 taskName' });
+    const task = tasks.get(taskName);
+    if (!task) return res.status(404).json({ error: '没有这个模板' });
     if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
       return res.status(400).json({ error: '缺少 fields 对象' });
     }
-    const keys = Object.keys(fields);
-    if (!keys.length) return res.status(400).json({ error: '没有要修改的字段' });
-    const bad = keys.find((k) => typeof fields[k] !== 'string');
-    if (bad) return res.status(400).json({ error: `字段 ${bad} 的值必须是字符串` });
+
+    const allowed = new Set(task.requires);
+    const notAllowed = Object.keys(fields).find((k) => !allowed.has(k));
+    if (notAllowed) return res.status(400).json({ error: `字段 ${notAllowed} 不属于这个模板` });
+    const notString = Object.keys(fields).find((k) => typeof fields[k] !== 'string');
+    if (notString) return res.status(400).json({ error: `字段 ${notString} 的值必须是字符串` });
+    if (!Object.keys(fields).length) return res.status(400).json({ error: '没有要修改的字段' });
+
+    const sub = mine(req).getSubscription(taskName);
+    if (!sub) return res.status(400).json({ error: '还没有启用这个模板' });
+    if (accountKey && !sub.accounts.some((a) => a.accountKey === accountKey)) {
+      return res.status(404).json({ error: '没有这个账号' });
+    }
 
     try {
-      res.json({ ok: true, keys: writeSecrets(fields) });
+      // 只回字段名，绝不回值
+      res.json({ ok: true, keys: userSecrets.set(req.user.id, taskName, accountKey, fields) });
     } catch (err) {
-      res.status(err instanceof SecretsError ? 400 : 500).json({ error: err.message });
+      res.status(500).json({ error: '写入凭据失败' });
     }
+  });
+
+  /* ───────── 订阅与账号 ───────── */
+
+  /**
+   * 启用一个模板（= 建一个我自己的实例）。
+   *
+   * 校验顺序很关键：**不在 registry 里、或 internal 且非 admin，都返回 404**——
+   * 返回 403 会证实「这个名字存在但你不配用」，等于把 internal 模板的清单泄露出去。
+   */
+  app.post('/api/subscriptions', requireLogin, (req, res) => {
+    const name = req.body?.taskName;
+    if (typeof name !== 'string') return res.status(400).json({ error: '缺少 taskName' });
+    const task = tasks.get(name);
+    if (!task || (task.visibility === 'internal' && req.user.role !== 'admin')) {
+      return res.status(404).json({ error: '没有这个模板' });
+    }
+    try {
+      mine(req).subscribe(name);
+      res.json({ ok: true, subscription: mine(req).getSubscription(name) });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  /** 给支持多账号的模板加一个账号（accounts: true 才允许） */
+  app.post('/api/subscriptions/:taskName/accounts', requireLogin, (req, res) => {
+    const task = tasks.get(req.params.taskName);
+    if (!task) return res.status(404).json({ error: '没有这个模板' });
+    if (!task.accounts) return res.status(400).json({ error: '这个模板不支持多账号' });
+    if (!mine(req).getSubscription(task.name)) {
+      return res.status(400).json({ error: '还没有启用这个模板' });
+    }
+    try {
+      const accountKey = mine(req).addAccount(task.name, {
+        label: String(req.body?.label ?? '').trim().slice(0, 32) || '未命名',
+      });
+      res.json({ ok: true, accountKey });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  /** 删账号：连它的凭据一起删（历史记录保留，那是发生过的事实） */
+  app.delete('/api/subscriptions/:taskName/accounts/:accountKey', requireLogin, (req, res) => {
+    const { taskName, accountKey } = req.params;
+    if (!tasks.has(taskName)) return res.status(404).json({ error: '没有这个模板' });
+    if (!accountKey) return res.status(400).json({ error: '默认账号不能删除' });
+    const sub = mine(req).getSubscription(taskName);
+    if (!sub || !sub.accounts.some((a) => a.accountKey === accountKey)) {
+      return res.status(404).json({ error: '没有这个账号' });
+    }
+    mine(req).removeAccount(taskName, accountKey);
+    if (userSecrets) userSecrets.removeAccount(req.user.id, taskName, accountKey);
+    res.json({ ok: true });
   });
 
   app.get('/api/runs', requireLogin, (req, res) => {

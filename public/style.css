@@ -251,6 +251,18 @@ label { display: grid; gap: 5px; font-size: 14px; color: var(--dim); }
 }
 .schedule-form label.radio input { width: auto; margin: 0; }
 .schedule-fields { display: grid; gap: 10px; }
+
+/* 删除账号：破坏性操作，弱化存在感但保持可达 */
+button.link-danger {
+  background: none;
+  border: none;
+  color: var(--bad);
+  padding: 0;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  width: auto;
+}
 input, select {
   font: inherit;
   color: var(--text);

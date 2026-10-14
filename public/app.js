@@ -110,6 +110,17 @@
       } else if (action === 'clear-override') {
         await api('DELETE', '/api/tasks/' + encodeURIComponent(name) + '/override');
         location.reload();
+      } else if (action === 'subscribe') {
+        // 启用模板 = 建一个我自己的实例
+        await api('POST', '/api/subscriptions', { taskName: name });
+        location.reload();
+      } else if (action === 'remove-account') {
+        if (!window.confirm('删除这个账号？它的凭据会一起删掉，历史记录保留。')) return;
+        await api(
+          'DELETE',
+          '/api/subscriptions/' + encodeURIComponent(name) + '/accounts/' + encodeURIComponent(btn.dataset.account),
+        );
+        location.reload();
       } else if (action === 'toggle-user') {
         var id = btn.dataset.user;
         var status = btn.dataset.status;
@@ -152,7 +163,11 @@
       var credBtn = credForm.querySelector('button[type="submit"]');
       if (credBtn) credBtn.disabled = true;
       try {
-        await api('POST', '/api/credentials', { fields: fields });
+        await api('POST', '/api/credentials', {
+          taskName: credForm.dataset.task,
+          accountKey: credForm.dataset.account || '',
+          fields: fields,
+        });
         location.reload();
       } catch (err) {
         hint(err.message, 'error');
@@ -189,6 +204,29 @@
       } catch (err) {
         hint(err.message, 'error');
         if (schedBtn) schedBtn.disabled = false;
+      }
+      return;
+    }
+
+    // 多账号模板：再加一个账号
+    var addForm = e.target.closest('[data-action="add-account"]');
+    if (addForm) {
+      e.preventDefault();
+      var label = (addForm.elements.label.value || '').trim();
+      if (!label) {
+        hint('给这个账号起个名字', 'error');
+        return;
+      }
+      var addBtn = addForm.querySelector('button[type="submit"]');
+      if (addBtn) addBtn.disabled = true;
+      try {
+        await api('POST', '/api/subscriptions/' + encodeURIComponent(addForm.dataset.task) + '/accounts', {
+          label: label,
+        });
+        location.reload();
+      } catch (err) {
+        hint(err.message, 'error');
+        if (addBtn) addBtn.disabled = false;
       }
       return;
     }

@@ -203,31 +203,61 @@ export function pageOverview(data) {
 
 /* ─────────────────── 任务列表 ─────────────────── */
 
-export function pageTasks({ items, groups }) {
-  if (!items.length) {
-    return `<section class="card"><p class="empty">tasks/ 下还没有任务。放一个 .mjs 任务文件即可，不需要改框架。</p></section>`;
-  }
-
-  const body = groups
-    .map(
-      (g) => `<section class="card">
-  <h2>${esc(g.name)} <span class="count">${g.items.length}</span></h2>
-  ${g.items
-    .map(
-      (t) => `<a class="row" href="/tasks/${esc(t.name)}">
+/** 已启用实例的一行（可点进详情） */
+function taskRow(t) {
+  return `<a class="row" href="/tasks/${esc(t.name)}">
         <span class="row-main">${esc(t.displayName)}</span>
         ${statusBadge(t.todayStatus)}
         <span class="row-sub">${esc(t.scheduleLabel)}${
           t.todayTargetLabel ? ` · 今日 ${esc(t.todayTargetLabel)}` : ''
         }</span>
-      </a>`,
-    )
-    .join('')}
-</section>`,
-    )
+      </a>`;
+}
+
+/**
+ * 任务页 = 「我的实例」+「可以启用的模板」两栏。
+ *
+ * 模板只能由平台提供（tasks/*.mjs），用户能做的是「启用一个、配自己的时间与凭据」，
+ * 所以未启用的那些不显示状态、只给一个「启用」按钮。
+ */
+export function pageTasks({ items, groups }) {
+  const mine = items.filter((t) => t.subscribed);
+  const market = items.filter((t) => !t.subscribed);
+
+  const mineHtml = groups
+    .map((g) => {
+      const list = g.items.filter((t) => t.subscribed);
+      if (!list.length) return '';
+      return `<section class="card">
+  <h2>${esc(g.name)} <span class="count">${list.length}</span></h2>
+  ${list.map(taskRow).join('')}
+</section>`;
+    })
     .join('');
 
-  return body;
+  const marketHtml = market.length
+    ? `<section class="card">
+  <h2>可以启用的模板 <span class="count">${market.length}</span></h2>
+  ${market
+    .map(
+      (t) => `<div class="row row-plain">
+        <span class="row-main">${esc(t.displayName)}</span>
+        <span class="row-sub">${esc(t.description || t.scheduleLabel || '')}</span>
+        <button data-action="subscribe" data-task="${esc(t.name)}">启用</button>
+      </div>`,
+    )
+    .join('')}
+  <p class="hint">模板由平台提供，启用后你可以配自己的时间与账号；不能自己新建模板。</p>
+</section>`
+    : '';
+
+  if (!mine.length && !market.length) {
+    return `<section class="card"><p class="empty">还没有任何模板。模板由平台提供（tasks/ 下的 .mjs 文件）。</p></section>`;
+  }
+  if (!mine.length) {
+    return `<section class="card"><p class="empty">还没启用任何模板。从下面挑一个启用，然后去「凭据」页填自己的账号。</p></section>${marketHtml}`;
+  }
+  return mineHtml + marketHtml;
 }
 
 /* ─────────────────── 任务详情 ─────────────────── */
@@ -385,7 +415,15 @@ export function pageTaskConfig({ task }) {
 
 /* ─────────────────── 凭据 ─────────────────── */
 
-export function pageCredentials({ groups, secretsError, canEdit = false }) {
+/**
+ * 我的凭据：按「模板 × 账号」分组，每个账号一组输入框。
+ *
+ * 与单租户版的三点不同：
+ *   · 只列**我订阅过的**模板（不再是全站一份）
+ *   · 支持多账号（模板声明 accounts: true 时可以加号）
+ *   · 明确写出「管理员技术上能解密」——不能让人误以为这是端到端加密
+ */
+export function pageCredentials({ groups = [], secretsError = null }) {
   const bannerHtml = secretsError ? banner(`凭据不可用：${secretsError}`, 'bad') : '';
 
   const body = groups.length
@@ -393,56 +431,58 @@ export function pageCredentials({ groups, secretsError, canEdit = false }) {
         .map(
           (g) => `<section class="card">
   <h2>${esc(g.name)}</h2>
-  ${g.tasks
+  ${g.description ? `<p class="sub">${esc(g.description)}</p>` : ''}
+  ${g.accounts
     .map(
-      (t) => `<div class="cred">
-        <div class="cred-title">${esc(t.displayName)}</div>
+      (acc) => `<div class="cred">
+        <div class="cred-title">${esc(acc.label)}${acc.accountKey ? '' : '（默认）'}</div>
         ${
-          t.requires.length
-            ? `${
-                canEdit && !secretsError
-                  ? `<form class="inline-form cred-form" data-action="save-credentials">
-                       ${t.requires
-                         .map(
-                           (f) =>
-                             `<label>${esc(f)}<input type="password" name="${esc(
-                               f,
-                             )}" autocomplete="new-password" placeholder="${
-                               t.present[f] ? '已设置，留空表示不修改' : '未设置'
-                             }"></label>`,
-                         )
-                         .join('')}
-                       <button type="submit">保存</button>
-                     </form>`
-                  : ''
-              }
-                <ul class="fields">${t.requires
-                  .map(
-                    (f) =>
-                      `<li class="${t.present[f] ? 'ok' : 'missing'}">${esc(f)} <span>${
-                        t.present[f] ? '已设置' : '缺失'
-                      }</span></li>`,
-                  )
-                  .join('')}</ul>`
-            : '<p class="hint">这个任务不需要凭据</p>'
+          g.requires.length
+            ? `<form class="inline-form cred-form" data-action="save-credentials"
+                    data-task="${esc(g.taskName)}" data-account="${esc(acc.accountKey)}">
+                 ${g.requires
+                   .map((key) => {
+                     const set = acc.fields.find((f) => f.key === key)?.set;
+                     return `<label>${esc(key)}<input type="password" name="${esc(
+                       key,
+                     )}" autocomplete="new-password" placeholder="${
+                       set ? '已设置，留空表示不修改' : '未设置'
+                     }"></label>`;
+                   })
+                   .join('')}
+                 <button type="submit">保存</button>
+               </form>`
+            : '<p class="hint">这个模板不需要凭据</p>'
+        }
+        ${
+          acc.accountKey
+            ? `<button class="link-danger" data-action="remove-account" data-task="${esc(
+                g.taskName,
+              )}" data-account="${esc(acc.accountKey)}">删除这个账号</button>`
+            : ''
         }
       </div>`,
     )
     .join('')}
+  ${
+    g.multiAccount
+      ? `<form class="inline-form add-account" data-action="add-account" data-task="${esc(g.taskName)}">
+           <label>再加一个账号<input name="label" placeholder="例如：小号" maxlength="32"></label>
+           <button type="submit">添加账号</button>
+         </form>`
+      : ''
+  }
 </section>`,
         )
         .join('')
-    : '<section class="card"><p class="empty">还没有任务</p></section>';
+    : '<section class="card"><p class="empty">还没有启用任何模板。先去「任务」页启用一个，再来这里填自己的账号。</p></section>';
 
   return `${bannerHtml}
 <section class="card">
-  <h2>凭据</h2>
+  <h2>我的凭据</h2>
   <p class="sub">只显示字段名与是否已设置，<b>凭据值永远不会出现在网页上</b>。</p>
-  <p class="hint">${
-    canEdit
-      ? '留空表示不修改；填新值即覆盖。写入后仍以 age 密文落盘，明文不进数据库。'
-      : '只有管理员可以修改凭据。'
-  }</p>
+  <p class="hint">留空表示不修改，填新值即覆盖。这里填的账号密码<b>加密后存在本站</b>，
+    <b>站点管理员在技术上可以解密</b>。请不要填写你在别处复用的重要密码。</p>
 </section>
 ${body}`;
 }

@@ -256,6 +256,9 @@ export function assertValidTask(task, file) {
   if (task.accounts !== undefined && typeof task.accounts !== 'boolean') {
     bad(`任务 ${task.name} 的 accounts 必须是布尔值`);
   }
+  if (task.visibility !== undefined && !['public', 'internal'].includes(task.visibility)) {
+    bad(`任务 ${task.name} 的 visibility 只能是 public / internal，当前是 ${task.visibility}`);
+  }
   if (task.timeoutMs !== undefined) {
     if (!Number.isInteger(task.timeoutMs) || task.timeoutMs <= 0) {
       bad(`任务 ${task.name} 的 timeoutMs 必须是正整数`);
@@ -293,6 +296,8 @@ export function normalizeTask(task, file) {
     tags: task.tags ? [...task.tags] : [],
     requires: task.requires ? [...task.requires] : [],
     accounts: task.accounts ?? false,
+    /** public：所有人可见可订阅；internal：只有 admin 看得见（自用模板、还在调试的模板） */
+    visibility: task.visibility ?? 'public',
     timeoutMs: task.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     retention: normalizeRetention(task.name, task.retention),
     schedule: normalizeSchedule(task.name, task.schedule),
