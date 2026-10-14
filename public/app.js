@@ -121,6 +121,17 @@
           '/api/subscriptions/' + encodeURIComponent(name) + '/accounts/' + encodeURIComponent(btn.dataset.account),
         );
         location.reload();
+      } else if (action === 'revoke-invite') {
+        if (!window.confirm('撤销这个邀请码？已经注册成功的不受影响。')) return;
+        await api('DELETE', '/api/invites/' + encodeURIComponent(btn.dataset.code));
+        location.reload();
+      } else if (action === 'copy-invite') {
+        try {
+          await navigator.clipboard.writeText(btn.dataset.url);
+          hint('邀请链接已复制');
+        } catch (err) {
+          hint('复制失败，请手动选中链接复制', 'error');
+        }
       } else if (action === 'toggle-user') {
         var id = btn.dataset.user;
         var status = btn.dataset.status;
@@ -227,6 +238,28 @@
       } catch (err) {
         hint(err.message, 'error');
         if (addBtn) addBtn.disabled = false;
+      }
+      return;
+    }
+
+    // 生成邀请链接
+    var inviteForm = e.target.closest('[data-action="create-invite"]');
+    if (inviteForm) {
+      e.preventDefault();
+      var ifd = new FormData(inviteForm);
+      var invBtn = inviteForm.querySelector('button[type="submit"]');
+      if (invBtn) invBtn.disabled = true;
+      try {
+        var made = await api('POST', '/api/invites', {
+          note: ifd.get('note') || '',
+          expiresInDays: Number(ifd.get('expiresInDays')),
+          maxUses: Number(ifd.get('maxUses')),
+        });
+        hint('已生成：' + made.url);
+        location.reload();
+      } catch (err) {
+        hint(err.message, 'error');
+        if (invBtn) invBtn.disabled = false;
       }
       return;
     }

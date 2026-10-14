@@ -66,6 +66,10 @@ export function createServer({
   config,
   /** 每用户凭据（createUserSecrets 的结果）。不传则凭据页只读显示「未就绪」 */
   userSecrets = null,
+  /** 邀请码（createInvites 的结果）。注册功能依赖它 */
+  invites = null,
+  /** 数据库连接：注册要在事务里「建账号 + 消耗邀请码」 */
+  db = null,
   now = () => Date.now(),
 }) {
   const app = express();
@@ -225,6 +229,97 @@ export function createServer({
     res.redirect('/login');
   });
 
+  /* ───────── 邀请码注册 ───────── */
+
+  /* 注册口同样在公网上，失败要限速。与登录分开计数：别让注册失败把登录也锁了 */
+  const registerFailures = new Map();
+  function tooManyRegisterFailures(ip) {
+    const rec = registerFailures.get(ip);
+    if (!rec) return false;
+    if (now() > rec.until) {
+      registerFailures.delete(ip);
+      return false;
+    }
+    return rec.count >= LOGIN_RATE_LIMIT.maxFailures;
+  }
+  function noteRegisterFailure(ip) {
+    const rec = registerFailures.get(ip) ?? { count: 0, until: now() + LOGIN_RATE_LIMIT.windowMs };
+    rec.count += 1;
+    rec.until = now() + LOGIN_RATE_LIMIT.windowMs;
+    registerFailures.set(ip, rec);
+  }
+
+  /** 无码时是否允许注册。默认只走邀请码（需求文档 §6 第 7 条） */
+  const inviteOnly = config.inviteOnly !== false;
+
+  app.get('/register', (req, res) => {
+    if (req.user) return res.redirect('/');
+    const code = String(req.query.code ?? '');
+    const checked = invites ? invites.check(code) : { ok: false, message: '未启用邀请码功能' };
+
+    // 无码且只允许邀请 → 直接说清楚，不给表单
+    if (!code && inviteOnly) {
+      return res
+        .status(403)
+        .type('html')
+        .send(render.registerPage({ code: '', fatal: '这个站点只接受邀请注册，需要管理员给你一个邀请链接' }));
+    }
+    if (!checked.ok) {
+      return res.status(403).type('html').send(render.registerPage({ code, fatal: checked.message }));
+    }
+    res.type('html').send(render.registerPage({ code }));
+  });
+
+  app.post('/register', (req, res) => {
+    if (req.user) return res.redirect('/');
+    if (!invites || !db) {
+      return res.status(503).type('html').send(render.registerPage({ code: '', fatal: '注册功能未启用' }));
+    }
+
+    const ip = req.ip ?? 'unknown';
+    if (tooManyRegisterFailures(ip)) {
+      return res
+        .status(429)
+        .type('html')
+        .send(render.registerPage({ code: '', fatal: '尝试过于频繁，请稍后再试' }));
+    }
+
+    const code = String(req.body?.code ?? '');
+    const { username, password } = req.body ?? {};
+
+    // 服务端重新校验：表单里的 code 是隐藏字段，客户端可以改
+    const checked = invites.check(code);
+    if (!checked.ok) {
+      noteRegisterFailure(ip);
+      return res.status(403).type('html').send(render.registerPage({ code, fatal: checked.message }));
+    }
+
+    let account;
+    try {
+      account = db.transaction(() => {
+        // 角色固定为 user：admin 只能由管理员在后台升级，不能靠邀请码拿到
+        const created = auth.register({ username, password, role: 'user' });
+        if (!created.ok) throw new Error(created.error);
+        if (!invites.consume(code, created.user.id)) {
+          throw new Error('这个邀请码刚刚被用掉了');
+        }
+        return created.user;
+      })();
+    } catch (err) {
+      noteRegisterFailure(ip);
+      return res
+        .status(400)
+        .type('html')
+        .send(render.registerPage({ code, error: err.message, username: String(username ?? '') }));
+    }
+
+    registerFailures.delete(ip);
+    const logged = auth.login(username, password);
+    if (!logged.ok) return res.redirect('/login');
+    setSession(req, res, logged.token);
+    res.redirect('/');
+  });
+
   /* ───────── 页面 ───────── */
   app.get('/', requireLogin, (req, res) => {
     const data = summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() });
@@ -360,6 +455,11 @@ export function createServer({
         body: render.pageSettings({
           users: auth.listUsers(),
           canCreateUser: req.user.role === 'admin',
+          invites:
+            req.user.role === 'admin' && invites
+              ? invites.list(50).map((row) => invites.describe(row))
+              : [],
+          baseUrl: originOf(req),
           system: {
             version: process.env.WEAUTO_VERSION || 'dev',
             dataDir: DATA_DIR,
@@ -585,6 +685,33 @@ export function createServer({
     const created = auth.register(req.body ?? {});
     if (!created.ok) return res.status(400).json({ error: created.error });
     res.json({ ok: true, user: created.user });
+  });
+
+  /* ───────── 邀请码（只有 admin 能发、能撤） ───────── */
+  const originOf = (req) =>
+    config.publicBaseUrl || `${req.protocol}://${req.headers.host}`;
+
+  app.post('/api/invites', requireLogin, requireAdmin, (req, res) => {
+    if (!invites) return res.status(503).json({ error: '未启用邀请码' });
+
+    const expiresInDays = Number(req.body?.expiresInDays);
+    const maxUses = Number(req.body?.maxUses);
+    const row = invites.create({
+      createdBy: req.user.id,
+      expiresInDays: Number.isFinite(expiresInDays) && expiresInDays >= 0 ? expiresInDays : 7,
+      maxUses: Number.isInteger(maxUses) && maxUses > 0 ? maxUses : 1,
+      note: String(req.body?.note ?? ''),
+    });
+    res.json({
+      ok: true,
+      invite: invites.describe(row),
+      url: `${originOf(req)}/register?code=${row.code}`,
+    });
+  });
+
+  app.delete('/api/invites/:code', requireLogin, requireAdmin, (req, res) => {
+    if (!invites) return res.status(503).json({ error: '未启用邀请码' });
+    res.json({ ok: true, revoked: invites.revoke(req.params.code) });
   });
 
   app.patch('/api/users/:id', requireLogin, requireAdmin, (req, res) => {

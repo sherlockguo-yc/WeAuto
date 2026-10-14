@@ -13,6 +13,7 @@ import { TENANT_LIMITS, loadConfig } from '../src/config.mjs';
 import { DB_FILE, openDb } from '../src/db.mjs';
 import { bootstrapTenancy, pickOwnerId } from '../src/bootstrap.mjs';
 import { createExecutor } from '../src/executor.mjs';
+import { createInvites } from '../src/invites.mjs';
 import { loadTasks } from '../src/registry.mjs';
 import { createScheduler } from '../src/scheduler.mjs';
 import { createServer } from '../src/server.mjs';
@@ -89,7 +90,8 @@ async function main() {
     maxConcurrent: TENANT_LIMITS.maxConcurrent,
     log: (m) => console.log(m),
   });
-  const app = createServer({ store, auth, tasks, scheduler, config, userSecrets });
+  const invites = createInvites(db);
+  const app = createServer({ store, auth, tasks, scheduler, config, userSecrets, invites, db });
 
   const server = app.listen(config.port, config.host, () => {
     const users = auth.countUsers();

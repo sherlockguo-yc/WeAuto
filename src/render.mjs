@@ -98,6 +98,8 @@ export function layout({ title, active, body, user = null, banner = '' }) {
 <meta name="color-scheme" content="dark light">
 <script>${THEME_BOOT}</script>
 <title>${esc(title)} · WeAuto</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -132,6 +134,8 @@ export function authPage({ mode, error = '', redirect = '/', hasUsers = true }) 
 <meta name="color-scheme" content="dark light">
 <script>${THEME_BOOT}</script>
 <title>${esc(title)} · WeAuto</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body class="auth-body">
@@ -147,6 +151,47 @@ export function authPage({ mode, error = '', redirect = '/', hasUsers = true }) 
   }" required>${isSetup ? '<span class="hint">至少 8 位</span>' : ''}</label>
   <button type="submit">${esc(title)}</button>
 </form>
+</body>
+</html>`;
+}
+
+/**
+ * 注册页（带邀请码）
+ *
+ * 页面上必须写明「管理员技术上能解密你的凭据」——
+ * 用户填的是自己在别处的真实账号，知情后再决定用不用（需求文档 §6）。
+ */
+export function registerPage({ code = '', error = '', fatal = '', username = '' } = {}) {
+  const body = fatal
+    ? `<p class="error">${esc(fatal)}</p>
+       <p class="hint">找管理员要一个新的邀请链接。</p>`
+    : `<form class="card auth-card" method="post" action="/register">
+  <h1>WeAuto</h1>
+  <p class="sub">创建账号</p>
+  ${error ? `<p class="error">${esc(error)}</p>` : ''}
+  <input type="hidden" name="code" value="${esc(code)}">
+  <label>用户名<input name="username" value="${esc(username)}" autocomplete="username" autocapitalize="off" required></label>
+  <label>密码<input type="password" name="password" autocomplete="new-password" required><span class="hint">至少 8 位</span></label>
+  <p class="hint"><b>先说清楚一件事</b>：你之后在任务里填的账号密码会加密存在本站，
+    但<b>站点管理员在技术上可以解密它</b>（密钥在服务器上，这是自建部署的固有性质，不是缺陷）。
+    请不要填写你在别处复用的重要密码。</p>
+  <button type="submit">创建账号</button>
+</form>`;
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<script>${THEME_BOOT}</script>
+<title>注册 · WeAuto</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="auth-body">
+${body}
 </body>
 </html>`;
 }
@@ -489,7 +534,7 @@ ${body}`;
 
 /* ─────────────────── 设置 ─────────────────── */
 
-export function pageSettings({ users, canCreateUser, system }) {
+export function pageSettings({ users, canCreateUser, system, invites = [], baseUrl = '' }) {
   // 账号行单独一套栅格：两个徽章归到右上角，操作按钮独占一行。
   // 用通用 .row 时徽章与按钮会挤在同一格里，手机上看起来是错乱的。
   const list = users
@@ -539,6 +584,53 @@ export function pageSettings({ users, canCreateUser, system }) {
     <button type="submit">创建</button>
   </form>
 </section>
+
+${
+  canCreateUser
+    ? `<section class="card">
+  <h2>邀请码</h2>
+  <p class="sub">新用户只能凭邀请链接注册。默认单次使用、7 天过期，随时可撤销。</p>
+  <form class="inline-form" data-action="create-invite">
+    <label>备注（给谁的，备查）<input name="note" maxlength="60" placeholder="例如：给小明"></label>
+    <label>有效期（天，0 = 长期）<input type="number" name="expiresInDays" value="7" min="0" step="1"></label>
+    <label>可用次数<input type="number" name="maxUses" value="1" min="1" step="1"></label>
+    <button type="submit">生成邀请链接</button>
+  </form>
+  ${
+    invites.length
+      ? `<div class="invites">
+    ${invites
+      .map((i) => {
+        const url = `${baseUrl}/register?code=${encodeURIComponent(i.code)}`;
+        const label = {
+          unused: '未使用',
+          partial: `已用 ${i.usedCount}/${i.maxUses}`,
+          used: '已用完',
+          expired: '已过期',
+          revoked: '已撤销',
+        }[i.state];
+        const canRevoke = i.state === 'unused' || i.state === 'partial';
+        return `<div class="invite-row">
+      <span class="row-main mono">${esc(i.note || '（无备注）')}</span>
+      <span class="badges"><span class="badge badge-${i.state === 'unused' ? 'ok' : 'off'}">${esc(label)}</span></span>
+      <span class="row-sub mono invite-url">${esc(url)}</span>
+      <span class="invite-actions">
+        <button class="link-btn" data-action="copy-invite" data-url="${esc(url)}">复制链接</button>
+        ${
+          canRevoke
+            ? `<button class="link-danger" data-action="revoke-invite" data-code="${esc(i.code)}">撤销</button>`
+            : ''
+        }
+      </span>
+    </div>`;
+      })
+      .join('')}
+  </div>`
+      : '<p class="empty">还没有生成过邀请码</p>'
+  }
+</section>`
+    : ''
+}
 
 <section class="card">
   <h2>系统</h2>

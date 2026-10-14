@@ -252,6 +252,16 @@ label { display: grid; gap: 5px; font-size: 14px; color: var(--dim); }
 .schedule-form label.radio input { width: auto; margin: 0; }
 .schedule-fields { display: grid; gap: 10px; }
 
+/* 邀请码行：链接很长，单独占一行并允许换行 */
+.invite-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.invite-url { word-break: break-all; font-size: 12px; color: var(--dim); }
+.invite-actions { display: flex; gap: 14px; }
+
 /* 删除账号：破坏性操作，弱化存在感但保持可达 */
 button.link-danger {
   background: none;

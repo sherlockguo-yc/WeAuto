@@ -131,6 +131,10 @@ export function loadConfig({ env = process.env } = {}) {
     jwtSecret: loadJwtSecret({ env }),
     masterKey: loadMasterKey({ env }),
     tokenTtl: pick('WEAUTO_TOKEN_TTL', '7d'),
+    /** 生成邀请链接时用。不配则按请求的 Host 拼，经 Tunnel 时也能对 */
+    publicBaseUrl: pick('WEAUTO_PUBLIC_URL', ''),
+    /** 关掉（=0）就变成开放注册，默认只接受邀请码 */
+    inviteOnly: pick('WEAUTO_INVITE_ONLY', '1') !== '0',
     /** 是否只在 HTTPS 下带 cookie。经 Cloudflare Tunnel 时由代理头判断 */
     trustProxy: true,
     envFile: ENV_FILE,

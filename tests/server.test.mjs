@@ -16,6 +16,7 @@ import { openDb } from '../src/db.mjs';
 import { createStore } from '../src/store.mjs';
 import { createUserSecrets, generateMasterKey } from '../src/user-secrets.mjs';
 import { createAuth } from '../src/auth/index.mjs';
+import { createInvites } from '../src/invites.mjs';
 import { createScheduler } from '../src/scheduler.mjs';
 import { createServer } from '../src/server.mjs';
 
@@ -93,6 +94,7 @@ async function startServer({
     log: () => {},
   });
   const userSecrets = createUserSecrets(db, generateMasterKey());
+  const invites = createInvites(db);
   const app = createServer({
     store,
     auth,
@@ -100,6 +102,8 @@ async function startServer({
     scheduler,
     config: { trustProxy: true },
     userSecrets,
+    invites,
+    db,
     now: () => NOW,
   });
 
@@ -107,7 +111,7 @@ async function startServer({
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   servers.push(server);
-  return { base: `http://127.0.0.1:${server.address().port}`, store, auth, scheduler };
+  return { base: `http://127.0.0.1:${server.address().port}`, store, auth, scheduler, invites, db };
 }
 
 /**
@@ -412,6 +416,119 @@ describe('执行历史默认隐藏跳过记录', () => {
     const api = await (await fetch(`${base}/api/tasks/demo-task`, { headers: { cookie } })).json();
     assert.equal(api.hiddenSkipped, 1);
     assert.deepEqual(api.runs.map((r) => r.status), ['success']);
+  });
+});
+
+describe('邀请注册', () => {
+  async function makeInvite(base, cookie, opts = {}) {
+    const res = await fetch(`${base}/api/invites`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: '测试用', ...opts }),
+    });
+    assert.equal(res.status, 200);
+    return await res.json();
+  }
+
+  const signUp = (base, code, username, password) =>
+    fetch(`${base}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ code, username, password }),
+      redirect: 'manual',
+    });
+
+  it('没有邀请码时不给注册表单（默认只接受邀请）', async () => {
+    const { base } = await startServer();
+    const res = await fetch(`${base}/register`);
+    assert.equal(res.status, 403);
+    assert.match(await res.text(), /只接受邀请注册/);
+  });
+
+  it('凭邀请码能注册：注册后直接登录，角色是普通用户', async () => {
+    const { base, auth, invites } = await startServer();
+    const cookie = await login(base);
+    const { invite, url } = await makeInvite(base, cookie);
+    assert.match(url, /\/register\?code=/);
+
+    const page = await fetch(`${base}/register?code=${invite.code}`);
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /创建账号/);
+
+    const res = await signUp(base, invite.code, 'newbie', 'pass-word-1');
+    assert.equal(res.status, 302);
+    const cookies = res.headers.getSetCookie?.() ?? [res.headers.get('set-cookie')];
+    assert.ok(
+      cookies.filter(Boolean).join(';').includes('wa_session'),
+      '注册成功应直接签发会话',
+    );
+
+    const created = auth.listUsers().find((u) => u.username === 'newbie');
+    assert.equal(created.role, 'user', '邀请码不能拿到管理员');
+    assert.equal(invites.check(invite.code).reason, 'exhausted');
+  });
+
+  it('同一个码注册第二次被拒', async () => {
+    const { base, invites } = await startServer();
+    const cookie = await login(base);
+    const { invite } = await makeInvite(base, cookie);
+
+    assert.equal((await signUp(base, invite.code, 'first', 'pass-word-1')).status, 302);
+    const second = await signUp(base, invite.code, 'second', 'pass-word-1');
+    assert.equal(second.status, 403);
+    assert.match(await second.text(), /已用完/);
+  });
+
+  it('撤销后的码不能注册', async () => {
+    const { base, invites } = await startServer();
+    const cookie = await login(base);
+    const { invite } = await makeInvite(base, cookie);
+    assert.equal(invites.revoke(invite.code), true);
+
+    const res = await signUp(base, invite.code, 'nope', 'pass-word-1');
+    assert.equal(res.status, 403);
+    assert.match(await res.text(), /已被撤销/);
+  });
+
+  it('注册失败（密码太短）时不会消耗邀请码', async () => {
+    const { base, invites, auth } = await startServer();
+    const cookie = await login(base);
+    const { invite } = await makeInvite(base, cookie);
+
+    const res = await signUp(base, invite.code, 'shorty', '123');
+    assert.equal(res.status, 400);
+    assert.equal(invites.check(invite.code).ok, true, '码应该还能用');
+    assert.equal(auth.listUsers().some((u) => u.username === 'shorty'), false);
+  });
+
+  it('普通用户不能生成邀请码', async () => {
+    const { base } = await startServer({ seedRole: 'user' });
+    const cookie = await login(base);
+    const res = await fetch(`${base}/api/invites`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'x' }),
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('设置页给管理员显示邀请码管理', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    await makeInvite(base, cookie, { note: '给小明' });
+
+    const html = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    assert.match(html, /data-action="create-invite"/);
+    assert.match(html, /给小明/);
+    assert.match(html, /\/register\?code=/);
+  });
+
+  it('注册页写明管理员可解密凭据', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    const { invite } = await makeInvite(base, cookie);
+    const html = await (await fetch(`${base}/register?code=${invite.code}`)).text();
+    assert.match(html, /管理员在技术上可以解密/);
   });
 });
 
