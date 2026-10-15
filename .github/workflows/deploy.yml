@@ -68,6 +68,30 @@ jobs:
           files: weauto.tar.gz
           prerelease: true
 
+      # 同步上传到 Cloudflare R2（2026-10-15）：N150 在大陆，出境到 GitHub 只剩约
+      # 3.5KB/s（ghproxy 镜像已废、直连不通），产物稍大就永远下不完，部署陷入
+      # 无限重试。R2 走 Cloudflare 通道实测约 698KB/s，deploy-agent 会优先从这拉。
+      # continue-on-error：R2 没配凭据时只是跳过上传，发布与部署照旧（自动回退）。
+      - name: Upload to R2
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${R2_BUCKET:-}" ] || [ -z "${R2_ACCOUNT_ID:-}" ]; then
+            echo "R2 未配置（缺 R2_BUCKET / R2_ACCOUNT_ID），跳过上传"
+            exit 0
+          fi
+          ENDPOINT="${R2_ENDPOINT:-https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com}"
+          aws s3 cp weauto.tar.gz \
+            "s3://${R2_BUCKET}/weauto/${{ steps.ver.outputs.sha }}/weauto.tar.gz" \
+            --endpoint-url "$ENDPOINT"
+          echo "✓ 已上传到 R2"
+
       - name: Notify N150
         continue-on-error: true
         run: |
