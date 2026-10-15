@@ -670,27 +670,26 @@ function taskConfigBody({ task, credential = null }) {
 
 <section class="card" id="credentials">
   <h2>任务名与账号</h2>
-  <form class="inline-form rename-form" data-action="rename-task" data-task="${esc(task.id)}">
+  <!-- 名字和账号密码共用一个「保存」：它们都是「我这个任务长什么样」，
+       分成两个按钮只会让人点了名字再去找第二个按钮（2026-10-16）。 -->
+  <form class="inline-form task-form" data-action="save-task" data-task="${esc(
+    task.id,
+  )}" data-original-label="${esc(task.label || '')}">
     <label class="field">
       <span class="field-label">任务名</span>
       <input name="label" value="${esc(task.label || '')}" maxlength="32" placeholder="${esc(
         task.displayName,
       )}">
     </label>
-    <button type="submit">保存名字</button>
+    ${(credential?.fields ?? []).map(credentialField).join('')}
+    <button type="submit" class="primary">保存</button>
   </form>
   ${
     task.requires.length
-      ? `<form class="inline-form cred-form" data-action="save-credentials" data-task="${esc(
-          task.id,
-        )}">
-           ${(credential?.fields ?? []).map(credentialField).join('')}
-           <button type="submit" class="primary">保存</button>
-         </form>
-         <p class="hint">留空表示不修改。一个任务只跑这一个账号——想跑第二个账号，
+      ? `<p class="hint">账号密码留空表示不修改。一个任务只跑这一个账号——想跑第二个账号，
            回任务页用同一个模板再建一个任务。这里填的账号密码<b>加密后存在本站</b>，
            <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
-      : '<p class="hint">这个模板不需要凭据</p>'
+      : '<p class="hint">这个模板不需要账号密码。</p>'
   }
 </section>
 

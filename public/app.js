@@ -356,30 +356,40 @@
   });
 
   document.addEventListener('submit', async function (e) {
-    // 凭据表单：留空的字段直接不提交，避免把已有凭据清掉
-    var credForm = e.target.closest('[data-action="save-credentials"]');
-    if (credForm) {
+    // 任务名 + 账号密码：一个「保存」按钮，两处都提交，哪处没改就跳过哪处。
+    // 凭据字段留空 = 不修改（否则一个空输入框就会把已存的密码清掉）。
+    var taskForm = e.target.closest('[data-action="save-task"]');
+    if (taskForm) {
       e.preventDefault();
-      var fd = new FormData(credForm);
+      var taskId = taskForm.dataset.task;
+      var newLabel = (taskForm.elements.label.value || '').trim();
       var fields = {};
-      fd.forEach(function (v, k) {
-        if (typeof v === 'string' && v.length) fields[k] = v;
+      new FormData(taskForm).forEach(function (v, k) {
+        if (k !== 'label' && typeof v === 'string' && v.length) fields[k] = v;
       });
-      if (!Object.keys(fields).length) {
-        hint('没有填任何新值', 'error');
+      var labelChanged = newLabel !== (taskForm.dataset.originalLabel || '');
+      var credsFilled = Object.keys(fields).length > 0;
+      if (labelChanged && !newLabel) {
+        hint('给这个任务起个名字', 'error');
         return;
       }
-      var credBtn = credForm.querySelector('button[type="submit"]');
-      if (credBtn) credBtn.disabled = true;
+      if (!labelChanged && !credsFilled) {
+        hint('没有需要保存的修改', 'error');
+        return;
+      }
+      var saveBtn = taskForm.querySelector('button[type="submit"]');
+      if (saveBtn) saveBtn.disabled = true;
       try {
-        await api('POST', '/api/credentials', {
-          taskId: Number(credForm.dataset.task),
-          fields: fields,
-        });
+        if (labelChanged) {
+          await api('PATCH', '/api/tasks/' + encodeURIComponent(taskId), { label: newLabel });
+        }
+        if (credsFilled) {
+          await api('POST', '/api/credentials', { taskId: Number(taskId), fields: fields });
+        }
         location.reload();
       } catch (err) {
         hint(err.message, 'error');
-        if (credBtn) credBtn.disabled = false;
+        if (saveBtn) saveBtn.disabled = false;
       }
       return;
     }
@@ -412,29 +422,6 @@
       } catch (err) {
         hint(err.message, 'error');
         if (schedBtn) schedBtn.disabled = false;
-      }
-      return;
-    }
-
-    // 改任务名
-    var renameForm = e.target.closest('[data-action="rename-task"]');
-    if (renameForm) {
-      e.preventDefault();
-      var renameLabel = (renameForm.elements.label.value || '').trim();
-      if (!renameLabel) {
-        hint('给这个任务起个名字', 'error');
-        return;
-      }
-      var renameBtn = renameForm.querySelector('button[type="submit"]');
-      if (renameBtn) renameBtn.disabled = true;
-      try {
-        await api('PATCH', '/api/tasks/' + encodeURIComponent(renameForm.dataset.task), {
-          label: renameLabel,
-        });
-        location.reload();
-      } catch (err) {
-        hint(err.message, 'error');
-        if (renameBtn) renameBtn.disabled = false;
       }
       return;
     }

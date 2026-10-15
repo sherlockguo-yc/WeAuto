@@ -446,13 +446,18 @@ describe('停用要即时生效', () => {
 });
 
 describe('凭据就近配置', () => {
-  it('任务配置页直接给出凭据表单', async () => {
+  it('任务配置页把任务名与凭据放在同一个表单里，只有一个保存按钮', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
     const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
-    assert.match(html, /data-action="save-credentials"/);
+    // 一个表单：名字 + 账号密码，提交按钮只有一个
+    assert.match(html, /data-action="save-task"/);
+    assert.match(html, /data-original-label=/);
+    assert.match(html, /name="label"/);
     assert.match(html, /name="DEMO_TOKEN"/);
+    assert.equal((html.match(/data-action="save-creds/g) || []).length, 0);
+    assert.equal((html.match(/data-action="rename-task"/g) || []).length, 0);
   });
 
   it('没建过任务时任务页没有任务，只有模板', async () => {
