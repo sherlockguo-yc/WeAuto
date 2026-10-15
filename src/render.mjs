@@ -67,8 +67,8 @@ const ICON = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg>',
   tasks:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="M3.8 6.5l1.1 1.1L7 5.4"/><path d="M3.8 12l1.1 1.1L7 10.9"/><path d="M3.8 17.5l1.1 1.1L7 16.4"/></svg>',
-  caret:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9.5l6 6 6-6"/></svg>',
+  settings:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h7.5M17 7h3M4 17h2.5M12 17h8"/><circle cx="14.4" cy="7" r="2.4"/><circle cx="9.6" cy="17" r="2.4"/></svg>',
   admin:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2l7 2.8v5.6c0 4.4-2.9 7.4-7 8.9-4.1-1.5-7-4.5-7-8.9V6l7-2.8z"/><path d="M9.4 11.9l1.9 1.9 3.6-3.6"/></svg>',
   eye:
@@ -77,14 +77,10 @@ const ICON = {
     '<svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.7 6.4A9.7 9.7 0 0 1 12 6.2c6 0 9.8 5.8 9.8 5.8a17.6 17.6 0 0 1-3.2 3.8"/><path d="M6.5 8.3A16.6 16.6 0 0 0 2.2 12S6 17.8 12 17.8a9.8 9.8 0 0 0 3.6-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
 };
 
-/**
- * 底部导航只放「看数据的两个页面」。
- * 设置不是页面，是右上角头像展开的弹层——它只有两项内容（外观、系统信息），
- * 占一个底部 tab 太奢侈，而且让用户以为里面还有别的东西。
- */
 const NAV = [
   { href: '/', label: '概览', key: 'home', icon: ICON.home },
   { href: '/tasks', label: '任务', key: 'tasks', icon: ICON.tasks },
+  { href: '/settings', label: '设置', key: 'settings', icon: ICON.settings },
   /** 只有管理员看得到：普通用户看平台全局没有意义，也是信息泄露 */
   { href: '/admin', label: '管理', key: 'admin', icon: ICON.admin, adminOnly: true },
 ];
@@ -101,14 +97,9 @@ export const THEME_BOOT =
 
 /**
  * 页面骨架。移动端优先：底部是导航条，内容单列。
- *
- * @param {{title: string, active: string, body: string, user?: object|null,
- *          banner?: string, settings?: string}} opts
- * @param {string} [opts.settings] 右上角弹层的内容（settingsPanel 的结果）。
- *   它是骨架的一部分而不是某个页面的内容：**每个页面都要能点开设置**，
- *   漏传就等于那一页没有设置入口，所以由 server 的 shell() 统一装配。
+ * @param {{title: string, active: string, body: string, user?: object|null, banner?: string}} opts
  */
-export function layout({ title, active, body, user = null, banner = '', settings = '' }) {
+export function layout({ title, active, body, user = null, banner = '' }) {
   const nav = NAV.filter((n) => !n.adminOnly || user?.role === 'admin')
     .map(
       (n) =>
@@ -117,29 +108,13 @@ export function layout({ title, active, body, user = null, banner = '', settings
     )
     .join('');
 
-  /**
-   * 右上角：头像 + 用户名 = 一个按钮，点开是设置弹层。
-   * 退出从顶栏挪进了弹层里（settingsPanel 末尾），顶栏只留这一个入口。
-   *
-   * 用 button 而不是 a[href=/settings]：设置已经没有独立页面了，
-   * 没有 JS 时按钮不响应——这是这次改动的明确代价，见 settingsPanel 的注释。
-   */
-  const account = user
-    ? `<button type="button" class="account-btn" data-action="toggle-user-menu"
-         aria-haspopup="dialog" aria-expanded="false" aria-controls="user-menu">
-         <span class="avatar">${esc(String(user.username ?? '').slice(0, 1).toUpperCase())}</span>
-         <span class="account-name">${esc(user.username)}</span>
-         <span class="account-caret">${ICON.caret}</span>
-       </button>`
-    : '';
-
-  /**
-   * 弹层放在顶栏外面：顶栏有 backdrop-filter，会成为 fixed 子元素的包含块，
-   * 放在里面的话窄屏的「底部抽屉」会被顶栏的框子困住。
-   */
-  const panel = user
-    ? `<div class="panel-backdrop" data-action="close-user-menu" hidden></div>
-<aside class="user-panel" id="user-menu" role="dialog" aria-label="账号与设置" tabindex="-1" hidden>${settings}</aside>`
+  const logout = user
+    ? `<form class="logout" method="post" action="/logout">
+         <span class="who"><span class="avatar">${esc(
+           String(user.username ?? '').slice(0, 1).toUpperCase(),
+         )}</span>${esc(user.username)}</span>
+         <button type="submit" class="link-btn">退出</button>
+       </form>`
     : '';
 
   return `<!doctype html>
@@ -158,7 +133,7 @@ export function layout({ title, active, body, user = null, banner = '', settings
 ${banner}
 <header class="topbar">
   <span class="brand"><span class="brand-mark">${ICON.brand}</span>WeAuto</span>
-  ${account}
+  ${logout}
 </header>
 <main class="page">
 ${body}
@@ -166,7 +141,6 @@ ${body}
 <nav class="tabbar">
 ${nav}
 </nav>
-${panel}
 <script src="/app.js" defer></script>
 </body>
 </html>`;
@@ -293,9 +267,9 @@ export function pageOverview(data) {
   return `
 <section class="grid">
   <div class="stat stat-ok"><b>${b.success}</b><span>今日成功</span></div>
-  <div class="stat stat-wait"><b>${b.pending}</b><span>待执行</span></div>
+  <div class="stat"><b>${b.pending}</b><span>待执行</span></div>
   <div class="stat stat-bad"><b>${b.failed + b.blocked}</b><span>失败/被拦</span></div>
-  <div class="stat stat-off"><b>${b.disabled + b.manual}</b><span>停用/手动</span></div>
+  <div class="stat"><b>${b.disabled + b.manual}</b><span>停用/手动</span></div>
 </section>
 <section class="card">
   <h2>需要处理</h2>
