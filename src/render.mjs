@@ -267,9 +267,9 @@ export function pageOverview(data) {
   return `
 <section class="grid">
   <div class="stat stat-ok"><b>${b.success}</b><span>今日成功</span></div>
-  <div class="stat"><b>${b.pending}</b><span>待执行</span></div>
+  <div class="stat stat-wait"><b>${b.pending}</b><span>待执行</span></div>
   <div class="stat stat-bad"><b>${b.failed + b.blocked}</b><span>失败/被拦</span></div>
-  <div class="stat"><b>${b.disabled + b.manual}</b><span>停用/手动</span></div>
+  <div class="stat stat-off"><b>${b.disabled + b.manual}</b><span>停用/手动</span></div>
 </section>
 <section class="card">
   <h2>需要处理</h2>
