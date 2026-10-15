@@ -272,8 +272,8 @@ export function pageOverview(data) {
   const attention = data.attention.length
     ? data.attention
         .map(
-          (t) => `<a class="row" href="/tasks/${esc(t.name)}">
-            <span class="row-main">${esc(t.displayName)}</span>
+          (t) => `<a class="row" href="${taskHref(t)}">
+            <span class="row-main">${esc(taskTitle(t))}</span>
             <span class="badges">${statusBadge(t.todayStatus)}</span>
             <span class="row-sub">${esc(t.planReason)}</span>
           </a>`,
@@ -350,6 +350,15 @@ function taskHref(t) {
 }
 
 /**
+ * 任务在界面上的名字：多账号时把账号名带上。
+ * 概览的「需要处理」与「最近执行」、任务列表、任务页头部四处都要它——
+ * 同一个任务的两个账号不写账号名的话，两行长得一模一样，分不清哪条是哪个账号。
+ */
+function taskTitle(t) {
+  return t.accountCount > 1 ? `${t.displayName} · ${t.accountLabel || '默认'}` : t.displayName;
+}
+
+/**
  * 已启用实例的一行：**操作就地完成，不用进详情**。
  * 多账号模板每个账号一行，标题带上账号名——否则两行长得一模一样，分不清哪个失败了。
  *
@@ -357,8 +366,7 @@ function taskHref(t) {
  * 「停用」会改变任务是否在跑、「配置」是进下一层，两者收成右侧的小图标。
  */
 function taskRow(t) {
-  const title =
-    t.accountCount > 1 ? `${t.displayName} · ${t.accountLabel || '默认'}` : t.displayName;
+  const title = taskTitle(t);
   const href = taskHref(t);
   // 没填凭据就直接标出来：取消凭据页之后，这是唯一能一眼看出哪些实例没配好的地方
   const credBadge =
@@ -505,7 +513,7 @@ export function pageTaskDetail({
   return `
 ${hintHtml}
 <section class="card">
-  <h2>${esc(task.accountCount > 1 ? `${task.displayName} · ${task.accountLabel || '默认'}` : task.displayName)} ${statusBadge(task.todayStatus)}</h2>
+  <h2>${esc(taskTitle(task))} ${statusBadge(task.todayStatus)}</h2>
   <p class="sub">${esc(task.description ?? task.name)}</p>
   <div class="actions">
     <button class="primary" data-action="run" data-task="${esc(task.name)}" data-account="${esc(
