@@ -47,7 +47,13 @@ function rowToRun(row) {
     userId: row.user_id,
     subscriptionId: row.subscription_id ?? null,
     task: row.task_name,
-    accountKey: row.account_key,
+    /*
+     * 归一成字符串。account_key 在迁移 2 里是可空列，命令行时代导入的历史记录是 NULL，
+     * 而订阅账号里「默认」账号的 key 是 ''——一 NULL 一 '' 会拼出两个不同的 map key，
+     * status.mjs 匹配不上就回退显示原始任务名（2026-10-15 生产实测）。
+     * 读出来统一成 '' 之后不会再出现这种错配。
+     */
+    accountKey: row.account_key ?? '',
     date: row.date,
     ts: row.ts,
     /** 展示用的北京时间字符串。ts 是 epoch **毫秒**，页面不直接用它 */

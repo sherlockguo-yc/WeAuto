@@ -87,6 +87,23 @@ describe('执行记录', () => {
     assert.equal(store.getRun(r.id).data, null);
   });
 
+  /*
+   * 命令行时代导入的历史记录不带账号 key，而 account_key 列是可空的 → 存进去是 NULL。
+   * 订阅账号里「默认」账号的 key 却是 ''，两边拼出的 map key 不一样，
+   * status.mjs 匹配不上就回退显示原始任务名（2026-10-15 生产实测）。
+   */
+  it('account_key 为 NULL 的历史记录读出来是空串', () => {
+    const db = freshDb();
+    const store = createStore(db).forUser(USER_ID);
+    const { lastInsertRowid } = db
+      .prepare(
+        `INSERT INTO runs (user_id, task_name, account_key, date, ts, status, message)
+         VALUES (?, 't', NULL, '2026-10-14', 1000, 'success', 'ok')`,
+      )
+      .run(USER_ID);
+    assert.equal(store.getRun(Number(lastInsertRowid)).accountKey, '');
+  });
+
   it('按任务取记录：最新在前', () => {
     const store = fresh();
     run(store, { ts: 100 });
