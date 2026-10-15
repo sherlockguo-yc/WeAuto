@@ -251,13 +251,16 @@ export function pageOverview(data) {
 
   const recent = data.recent.length
     ? data.recent
-        .map(
-          (r) => `<div class="row row-plain">
+        .map((r) => {
+          // r.time 是 "YYYY-MM-DD HH:MM:SS"（北京时间），概览里省掉年份，完整值留在 title 上
+          const short = r.time ? r.time.slice(5) : '';
+          const sub = [r.message, short].filter(Boolean).join(' · ');
+          return `<div class="row row-plain">
             <span class="row-main">${esc(r.task)}</span>
             <span class="badges">${runBadge(r.status)}</span>
-            <span class="row-sub">${esc(r.message)}</span>
-          </div>`,
-        )
+            <span class="row-sub"${r.time ? ` title="${esc(r.time)}"` : ''}>${esc(sub)}</span>
+          </div>`;
+        })
         .join('')
     : '<p class="empty">还没有执行记录</p>';
 
