@@ -262,15 +262,6 @@ export function createStore(db, { limits = {} } = {}) {
 
     /* ───────── 平台视角（/admin 用，跨用户只读统计） ───────── */
     statusesOnDate: db.prepare('SELECT status, COUNT(*) AS n FROM runs WHERE date = ? GROUP BY status'),
-    /* 成功状态来自代码常量（不是用户输入），直接拼进 SQL 省掉动态占位符，
-       这样这条语句的参数就只有 (sinceMs, limit) 两个。 */
-    failRank: db.prepare(
-      `SELECT user_id, task_name, COUNT(*) AS n FROM runs
-       WHERE ts >= ? AND status NOT IN (${successList.map((s) => `'${s}'`).join(',')})
-         AND status <> 'skipped'
-       GROUP BY user_id, task_name
-       ORDER BY n DESC LIMIT ?`,
-    ),
     subCount: db.prepare('SELECT COUNT(*) AS n FROM subscriptions'),
     enabledSubCount: db.prepare('SELECT COUNT(*) AS n FROM subscriptions WHERE enabled = 1'),
   };
@@ -624,11 +615,6 @@ export function createStore(db, { limits = {} } = {}) {
         else out.failed += row.n;
       }
       return out;
-    },
-
-    /** /admin 用：一段时间内失败最多的「账号 × 模板」 */
-    failureRanking({ sinceMs = Date.now() - 7 * DAY_MS, limit = 10 } = {}) {
-      return s.failRank.all(sinceMs, limit);
     },
 
     subscriptionCounts() {

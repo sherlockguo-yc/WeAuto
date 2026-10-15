@@ -558,7 +558,6 @@ export function createServer({
 
   /** 管理首页（admin）：跨用户的只读统计 + 各管理功能的入口 */
   app.get('/admin', requireLogin, requireAdmin, (req, res) => {
-    const weekAgo = now() - 7 * 86_400_000;
     res.type('html').send(
       shell(req, {
         title: '管理',
@@ -567,10 +566,6 @@ export function createServer({
           users: auth.listUsers(),
           subs: store.subscriptionCounts(),
           today: store.platformStats(dateInTZ(new Date(now()))),
-          ranking: store.failureRanking({ sinceMs: weekAgo }).map((r) => ({
-            ...r,
-            taskLabel: tasks.get(r.task_name)?.displayName ?? r.task_name,
-          })),
         }),
       }),
     );

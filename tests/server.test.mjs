@@ -769,7 +769,6 @@ describe('管理页（仅 admin）', () => {
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /启用中的实例/);
-    assert.match(html, /最近 7 天失败最多/);
     assert.match(html, /href="\/admin\/users"/);
   });
 

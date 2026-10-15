@@ -802,18 +802,7 @@ function inviteRowTemplate() {
 }
 
 /** 管理首页：跨用户的只读统计 + 各管理功能的入口 */
-export function pageAdmin({ users = [], subs = {}, today = {}, ranking = [] }) {
-  const rankingHtml = ranking.length
-    ? ranking
-        .map(
-          (r) => `<div class="row row-plain">
-        <span class="row-main">${esc(r.taskLabel)}</span>
-        <span class="row-sub">#${r.user_id} · ${r.n} 次</span>
-      </div>`,
-        )
-        .join('')
-    : '<p class="empty">最近一周没有失败记录</p>';
-
+export function pageAdmin({ users = [], subs = {}, today = {} }) {
   return `
 <section class="grid">
   <div class="stat"><b>${users.length}</b><span>账号</span></div>
@@ -828,11 +817,6 @@ export function pageAdmin({ users = [], subs = {}, today = {}, ranking = [] }) {
     <span class="row-main">管理账号</span>
     <span class="row-sub">停用 / 启用、删除，以及邀请码</span>
   </a>
-</section>
-
-<section class="card">
-  <h2>最近 7 天失败最多</h2>
-  ${rankingHtml}
 </section>`;
 }
 
