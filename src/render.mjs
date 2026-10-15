@@ -61,6 +61,8 @@ const NAV = [
   { href: '/tasks', label: '任务', key: 'tasks' },
   { href: '/credentials', label: '凭据', key: 'creds' },
   { href: '/settings', label: '设置', key: 'settings' },
+  /** 只有管理员看得到：普通用户看平台全局没有意义，也是信息泄露 */
+  { href: '/admin', label: '平台', key: 'admin', adminOnly: true },
 ];
 
 /**
@@ -78,10 +80,12 @@ export const THEME_BOOT =
  * @param {{title: string, active: string, body: string, user?: object|null, banner?: string}} opts
  */
 export function layout({ title, active, body, user = null, banner = '' }) {
-  const nav = NAV.map(
-    (n) =>
-      `<a class="nav-item ${active === n.key ? 'active' : ''}" href="${n.href}">${esc(n.label)}</a>`,
-  ).join('');
+  const nav = NAV.filter((n) => !n.adminOnly || user?.role === 'admin')
+    .map(
+      (n) =>
+        `<a class="nav-item ${active === n.key ? 'active' : ''}" href="${n.href}">${esc(n.label)}</a>`,
+    )
+    .join('');
 
   const logout = user
     ? `<form class="logout" method="post" action="/logout">
@@ -532,9 +536,79 @@ export function pageCredentials({ groups = [], secretsError = null }) {
 ${body}`;
 }
 
+/* ─────────────────── 平台概览（admin） ─────────────────── */
+
+/** 账号行：管理员可在设置页与平台页复用（后者带删除，前者不带） */
+function adminUserRow(u, { deletable = false } = {}) {
+  return `<div class="user-row">
+        <span class="row-main">${esc(u.username)}</span>
+        <span class="badges">
+          <span class="badge badge-${u.role === 'admin' ? 'ok' : 'off'}">${esc(
+            u.role === 'admin' ? '管理员' : '普通',
+          )}</span>
+          <span class="badge badge-${u.status === 'active' ? 'ok' : 'bad'}">${esc(
+            u.status === 'active' ? '正常' : '已停用',
+          )}</span>
+        </span>
+        <span class="row-sub">最近登录 ${
+          u.lastLoginAt
+            ? esc(new Date(u.lastLoginAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }))
+            : '从未'
+        }</span>
+        ${
+          deletable
+            ? `<button class="link-danger" data-action="delete-user" data-user="${u.id}">删除</button>`
+            : ''
+        }
+      </div>`;
+}
+
+export function pageAdmin({ users = [], subs = {}, today = {}, ranking = [], currentUserId = null }) {
+  const rankingHtml = ranking.length
+    ? ranking
+        .map(
+          (r) => `<div class="row row-plain">
+        <span class="row-main">${esc(r.taskLabel)}</span>
+        <span class="row-sub">#${r.user_id} · ${r.n} 次</span>
+      </div>`,
+        )
+        .join('')
+    : '<p class="empty">最近一周没有失败记录</p>';
+
+  const userRows = users
+    .map((u) => adminUserRow(u, { deletable: u.id !== currentUserId }))
+    .join('');
+
+  return `
+<section class="grid">
+  <div class="stat"><b>${users.length}</b><span>账号</span></div>
+  <div class="stat"><b>${subs.enabled ?? 0}</b><span>启用中的实例</span></div>
+  <div class="stat stat-ok"><b>${today.success ?? 0}</b><span>今日成功</span></div>
+  <div class="stat stat-bad"><b>${today.failed ?? 0}</b><span>今日失败</span></div>
+</section>
+
+<section class="card">
+  <h2>最近 7 天失败最多</h2>
+  ${rankingHtml}
+</section>
+
+<section class="card">
+  <h2>账号</h2>
+  ${userRows}
+  <p class="hint">删除会连同他的订阅、凭据和执行历史一起清掉，不可恢复。</p>
+</section>`;
+}
+
 /* ─────────────────── 设置 ─────────────────── */
 
-export function pageSettings({ users, canCreateUser, system, invites = [], baseUrl = '' }) {
+export function pageSettings({
+  users,
+  canCreateUser,
+  system,
+  invites = [],
+  baseUrl = '',
+  currentUserId = null,
+}) {
   // 账号行单独一套栅格：两个徽章归到右上角，操作按钮独占一行。
   // 用通用 .row 时徽章与按钮会挤在同一格里，手机上看起来是错乱的。
   const list = users
@@ -552,9 +626,16 @@ export function pageSettings({ users, canCreateUser, system, invites = [], baseU
         <span class="row-sub">最近登录 ${
           u.lastLoginAt ? esc(new Date(u.lastLoginAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })) : '从未'
         }</span>
-        <button class="link-btn" data-action="toggle-user" data-user="${u.id}" data-status="${esc(
-          u.status,
-        )}">${u.status === 'active' ? '停用' : '启用'}</button>
+        <span class="invite-actions">
+          <button class="link-btn" data-action="toggle-user" data-user="${u.id}" data-status="${esc(
+            u.status,
+          )}">${u.status === 'active' ? '停用' : '启用'}</button>
+          ${
+            canCreateUser && u.id !== currentUserId
+              ? `<button class="link-danger" data-action="delete-user" data-user="${u.id}">删除</button>`
+              : ''
+          }
+        </span>
       </div>`,
     )
     .join('');

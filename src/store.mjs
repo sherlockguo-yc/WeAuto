@@ -232,6 +232,20 @@ export function createStore(db, { limits = {} } = {}) {
          total   = total   + excluded.total`,
     ),
     deleteStatsOfUser: db.prepare('DELETE FROM run_stats_daily WHERE user_id = ?'),
+
+    /* ───────── 平台视角（/admin 用，跨用户只读统计） ───────── */
+    statusesOnDate: db.prepare('SELECT status, COUNT(*) AS n FROM runs WHERE date = ? GROUP BY status'),
+    /* 成功状态来自代码常量（不是用户输入），直接拼进 SQL 省掉动态占位符，
+       这样这条语句的参数就只有 (sinceMs, limit) 两个。 */
+    failRank: db.prepare(
+      `SELECT user_id, task_name, COUNT(*) AS n FROM runs
+       WHERE ts >= ? AND status NOT IN (${successList.map((s) => `'${s}'`).join(',')})
+         AND status <> 'skipped'
+       GROUP BY user_id, task_name
+       ORDER BY n DESC LIMIT ?`,
+    ),
+    subCount: db.prepare('SELECT COUNT(*) AS n FROM subscriptions'),
+    enabledSubCount: db.prepare('SELECT COUNT(*) AS n FROM subscriptions WHERE enabled = 1'),
   };
 
   /* ─────────────────── 用户视图 ─────────────────── */
@@ -547,6 +561,27 @@ export function createStore(db, { limits = {} } = {}) {
     /** 保留策略用：有哪些用户在库里有订阅 */
     allUserIds() {
       return [...new Set(s.allSubs.all().map((r) => r.user_id))];
+    },
+
+    /** /admin 用：全平台某天的执行概况 */
+    platformStats(date) {
+      const out = { success: 0, failed: 0, skipped: 0, total: 0 };
+      for (const row of s.statusesOnDate.all(date)) {
+        out.total += row.n;
+        if (SUCCESS_STATUSES.has(row.status)) out.success += row.n;
+        else if (row.status === 'skipped') out.skipped += row.n;
+        else out.failed += row.n;
+      }
+      return out;
+    },
+
+    /** /admin 用：一段时间内失败最多的「账号 × 模板」 */
+    failureRanking({ sinceMs = Date.now() - 7 * DAY_MS, limit = 10 } = {}) {
+      return s.failRank.all(sinceMs, limit);
+    },
+
+    subscriptionCounts() {
+      return { total: s.subCount.get().n, enabled: s.enabledSubCount.get().n };
     },
 
     /**

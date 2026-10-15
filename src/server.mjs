@@ -16,7 +16,7 @@ import * as render from './render.mjs';
 import { describeSchedule, summarizeAll, summarizeTask } from './status.mjs';
 import { normalizeSchedule } from './task-contract.mjs';
 import { DB_FILE } from './db.mjs';
-import { DATA_DIR, ROOT, humanDuration } from './util.mjs';
+import { DATA_DIR, ROOT, dateInTZ, humanDuration } from './util.mjs';
 
 const COOKIE = 'wa_session';
 
@@ -449,6 +449,29 @@ export function createServer({
     );
   });
 
+  /** 平台概览（admin）：跨用户的只读统计。普通用户看不到入口也访问不了 */
+  app.get('/admin', requireLogin, requireAdmin, (req, res) => {
+    const users = auth.listUsers();
+    const weekAgo = now() - 7 * 86_400_000;
+    res.type('html').send(
+      render.layout({
+        title: '平台',
+        active: 'admin',
+        body: render.pageAdmin({
+          users,
+          subs: store.subscriptionCounts(),
+          today: store.platformStats(dateInTZ(new Date(now()))),
+          ranking: store.failureRanking({ sinceMs: weekAgo }).map((r) => ({
+            ...r,
+            taskLabel: tasks.get(r.task_name)?.displayName ?? r.task_name,
+          })),
+          currentUserId: req.user.id,
+        }),
+        user: req.user,
+      }),
+    );
+  });
+
   app.get('/settings', requireLogin, (req, res) => {
     const data = summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() });
     res.type('html').send(
@@ -458,6 +481,7 @@ export function createServer({
         body: render.pageSettings({
           users: auth.listUsers(),
           canCreateUser: req.user.role === 'admin',
+          currentUserId: req.user.id,
           invites:
             req.user.role === 'admin' && invites
               ? invites.list(50).map((row) => invites.describe(row))
@@ -688,6 +712,29 @@ export function createServer({
     const created = auth.register(req.body ?? {});
     if (!created.ok) return res.status(400).json({ error: created.error });
     res.json({ ok: true, user: created.user });
+  });
+
+  /**
+   * 删号：连带清掉他的一切，不可恢复。
+   *
+   * 顺序要紧：runs / run_logs / run_stats_daily / task_state 没有外键兜底
+   * （ALTER TABLE 加不了 REFERENCES），必须先手动清；订阅与凭据才靠 CASCADE。
+   * 反过来的话会先触发外键约束，删到一半失败。
+   */
+  app.delete('/api/users/:id', requireLogin, requireAdmin, (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: '无效的用户 id' });
+    if (id === req.user.id) return res.status(400).json({ error: '不能删除自己' });
+    if (!auth.getUser(id)) return res.status(404).json({ error: '没有这个账号' });
+
+    try {
+      store.purgeUser(id);
+      if (userSecrets) userSecrets.removeUser(id);
+      auth.removeUser(id);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: '删除账号失败' });
+    }
   });
 
   /* ───────── 邀请码（只有 admin 能发、能撤） ───────── */

@@ -435,6 +435,75 @@ describe('停用要即时生效', () => {
   });
 });
 
+describe('账号删除', () => {
+  it('删号会连带清掉他的一切（订阅、凭据、历史）', async () => {
+    const { base, db, store, auth, invites } = await startServer();
+    const cookie = await login(base);
+    auth.register({ username: 'goner', password: 'pass-word-1', role: 'user' });
+    const victim = auth.listUsers().find((u) => u.username === 'goner');
+    store.forUser(victim.id).subscribe('demo-task');
+    store.forUser(victim.id).appendRun({
+      taskName: 'demo-task',
+      date: '2026-10-14',
+      ts: NOW,
+      status: 'success',
+    });
+
+    const res = await fetch(`${base}/api/users/${victim.id}`, { method: 'DELETE', headers: { cookie } });
+    assert.equal(res.status, 200);
+
+    assert.equal(auth.listUsers().some((u) => u.username === 'goner'), false);
+    assert.equal(
+      store.allUserIds().includes(victim.id),
+      false,
+      '订阅应被清掉',
+    );
+    // runs 没有外键兜底，最容易留成孤儿行
+    const left = db.prepare('SELECT COUNT(*) AS n FROM runs WHERE user_id = ?').get(victim.id).n;
+    assert.equal(left, 0, '执行历史不该留下没有主人的孤儿行');
+  });
+
+  it('不能删除自己', async () => {
+    const { base, auth } = await startServer();
+    const cookie = await login(base);
+    const me = auth.listUsers().find((u) => u.username === 'tester');
+
+    const res = await fetch(`${base}/api/users/${me.id}`, { method: 'DELETE', headers: { cookie } });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /不能删除自己/);
+  });
+
+  it('普通用户删不了别人', async () => {
+    const { base, auth } = await startServer({ seedRole: 'user' });
+    const cookie = await login(base);
+    const other = auth.listUsers().find((u) => u.id !== USER_ID) ?? { id: 999 };
+
+    assert.equal((await fetch(`${base}/api/users/${other.id}`, { method: 'DELETE', headers: { cookie } })).status, 403);
+  });
+});
+
+describe('平台概览（仅 admin）', () => {
+  it('admin 能看到平台页', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const res = await fetch(`${base}/admin`, { headers: { cookie } });
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /启用中的实例/);
+    assert.match(html, /最近 7 天失败最多/);
+  });
+
+  it('普通用户访问返回 403，导航里也没有入口', async () => {
+    const { base } = await startServer({ seedRole: 'user' });
+    const cookie = await login(base);
+
+    assert.equal((await fetch(`${base}/admin`, { headers: { cookie } })).status, 403);
+    const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.equal(html.includes('href="/admin"'), false, '导航里不该出现平台入口');
+  });
+});
+
 describe('概览统计', () => {
   it('未启用的模板不计入统计，也不出现在「需要注意」里', async () => {
     const { base } = await startServer({ seedSubscription: false });
