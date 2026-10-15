@@ -343,19 +343,49 @@ export function createServer({
   });
 
   /* ───────── 页面 ───────── */
+
+  /**
+   * 所有页面的统一出口：body 之外，骨架里的设置弹层也在这里装配。
+   *
+   * 不让每个页面自己调 render.layout，是因为弹层属于骨架、每页都得有——
+   * 分散到 7 个调用点里迟早漏掉一个，而「这一页点不开设置」只在那一页暴露，
+   * 平时很难发现。集中在这里，漏不掉。
+   */
+  const shell = (req, { title, active, body, banner = '' }) =>
+    render.layout({
+      title,
+      active,
+      body,
+      banner,
+      user: req.user,
+      settings: render.settingsPanel({
+        username: req.user.username,
+        role: req.user.role,
+        system: {
+          version: process.env.WEAUTO_VERSION || 'dev',
+          dataDir: DATA_DIR,
+          dbFile: path.basename(DB_FILE),
+          uptime: humanDuration(process.uptime() * 1000),
+          scheduler: '运行中',
+          // 报「看得见的模板数」而不是实例数：这里回答的是「平台上有几个自动化」，
+          // 没必要为此把全部订阅和账号再汇总一遍
+          taskCount: visibleTasks(req).size,
+        },
+      }),
+    });
+
   app.get('/', requireLogin, (req, res) => {
     const data = summarizeFor(req);
-    res.type('html').send(render.layout({ title: '概览', active: 'home', body: render.pageOverview(data), user: req.user }));
+    res.type('html').send(shell(req, { title: '概览', active: 'home', body: render.pageOverview(data) }));
   });
 
   app.get('/tasks', requireLogin, (req, res) => {
     const data = summarizeFor(req);
     res.type('html').send(
-      render.layout({
+      shell(req, {
         title: '任务',
         active: 'tasks',
         body: render.pageTasks({ items: data.items, groups: groupByGroup(data.items) }),
-        user: req.user,
       }),
     );
   });
@@ -382,22 +412,77 @@ export function createServer({
       accountCount: sub?.accounts.length ?? 1,
       accountEnabled: acc?.enabled ?? true,
     });
-    // 指定账号时只看这个账号的历史；不指定就全部账号
-    const all = mine.runsOfTask(taskName, { accountKey: acc?.accountKey ?? null, limit: 50 });
-    // 历史默认隐藏 skipped：间隔类任务跑顺之后，跳过记录会把有用的行挤下去
-    const runs = includeSkipped ? all : all.filter((r) => r.status !== 'skipped');
-    const lastCompleted = all.find((r) => r.status !== 'skipped') ?? null;
+    /*
+     * 历史与顶部状态卡必须是同一个账号：不带 ?account= 时就是第一个账号
+     * （acc 的取值见上）。若让「不带参数 = 全部账号」，就会出现
+     * 「顶部写着今日已成功、下面第一条却是另一个账号失败」这种新的不一致。
+     * 首页「最近执行」是跨任务跨账号的流水，粒度本来就不同 ——
+     * 靠在那里标出账号名来对齐，而不是把详情页改成全账号。
+     */
+    const historyAccountKey = acc?.accountKey ?? null;
+    // 窗口 = 最近 50 条（含 skipped），用来算「其中被隐藏了几条 skipped」
+    const window = mine.runsOfTask(taskName, {
+      accountKey: historyAccountKey,
+      limit: 50,
+      includeSkipped: true,
+    });
+    // 展示口径与首页一致：先排除 skipped 再取 50 条
+    const runs = includeSkipped
+      ? window
+      : mine.runsOfTask(taskName, { accountKey: historyAccountKey, limit: 50, includeSkipped: false });
+    const lastCompleted = runs.find((r) => r.status !== 'skipped') ?? null;
     return {
       task,
       summary,
       view: renderView(summary.view, lastCompleted?.data ?? {}),
       runs,
-      hiddenSkipped: all.length - runs.length,
+      // 「最近 50 条里被隐藏掉的 skipped 有几条」——点 ?all=1 显示的就是这 50 条
+      hiddenSkipped: window.filter((r) => r.status === 'skipped').length,
       includeSkipped,
       lastCompleted,
     };
   }
 
+  /**
+   * 配置区要用的数据：哪些凭据字段已填 + 这个实例下的账号列表。
+   *
+   * 单独抽出来而不是塞进 detailOf()，是因为 detailOf() 也被 /api/tasks/:name 用，
+   * 那里只要状态和历史，没必要为每个接口调用多查一遍凭据。
+   */
+  function credentialOf({ userId, task, accountKey = '' }) {
+    const sub = store.forUser(userId).getSubscription(task.name);
+    const acc = accountKey
+      ? sub?.accounts.find((a) => a.accountKey === accountKey) ?? null
+      : sub?.accounts[0] ?? null;
+    return {
+      account: acc ?? null,
+      credential: {
+        subscribed: !!sub,
+        accountKey: acc?.accountKey ?? '',
+        accountLabel: acc?.label ?? '',
+        multiAccount: !!task.accounts,
+        fields: task.requires.map((key) => ({
+          key,
+          set: userSecrets
+            ? !!userSecrets.fieldStatus(userId, task.name, acc?.accountKey ?? '', [key])[key]
+            : false,
+        })),
+        /* 这个实例下的全部账号：加/删/停用账号都在任务页里做 */
+        accounts: (sub?.accounts ?? []).map((a) => ({
+          accountKey: a.accountKey,
+          label: a.label,
+          enabled: a.enabled,
+          missing: userSecrets ? userSecrets.missing(userId, task.name, a.accountKey, task.requires) : [],
+        })),
+      },
+    };
+  }
+
+  /**
+   * 任务页 = 详情 + 配置，两层结构里的最后一层。
+   * 原来「列表 → 详情 → 配置」三层里，详情只多了结果和历史，
+   * 却让用户为了改一个时间多点一次。
+   */
   app.get('/tasks/:name', requireLogin, (req, res) => {
     const d = detailOf(req.params.name, {
       includeSkipped: req.query.all === '1',
@@ -405,93 +490,66 @@ export function createServer({
       role: req.user.role,
       accountKey: String(req.query.account ?? ''),
     });
-    if (!d) return res.status(404).type('html').send(render.layout({ title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>', user: req.user }));
+    if (!d)
+      return res
+        .status(404)
+        .type('html')
+        .send(shell(req, { title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>' }));
+    const { credential } = credentialOf({
+      userId: req.user.id,
+      task: d.task,
+      accountKey: String(req.query.account ?? ''),
+    });
     res.type('html').send(
-      render.layout({
+      shell(req, {
         title: d.task.displayName,
         active: 'tasks',
         body: render.pageTaskDetail({
-          task: d.summary,
+          task: {
+            ...d.summary,
+            retention: d.task.retention,
+            // 模板自带的调度，用于表单里「跟随默认」那一项的说明
+            templateScheduleLabel: describeSchedule(d.task.schedule),
+          },
           view: d.view,
           runs: d.runs,
           hiddenSkipped: d.hiddenSkipped,
           includeSkipped: d.includeSkipped,
           canRun: !scheduler.isRunning(d.task.name, req.user.id),
+          credential,
         }),
-        user: req.user,
-      }),
-    );
-  });
-
-  app.get('/tasks/:name/config', requireLogin, (req, res) => {
-    const task = tasks.get(req.params.name);
-    if (!task) return res.status(404).type('html').send(render.layout({ title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>', user: req.user }));
-    const mineStore = mine(req);
-    const accountKey = String(req.query.account ?? '');
-    const sub = mineStore.getSubscription(task.name);
-    const acc = accountKey
-      ? sub?.accounts.find((a) => a.accountKey === accountKey) ?? null
-      : sub?.accounts[0] ?? null;
-    if (accountKey && !acc) {
-      return res
-        .status(404)
-        .type('html')
-        .send(render.layout({ title: '未找到', active: 'tasks', body: '<p class="empty">没有这个账号</p>', user: req.user }));
-    }
-    const summary = summarizeTask({
-      task,
-      store: mineStore,
-      nowMs: now(),
-      accountKey: acc?.accountKey ?? '',
-      accountLabel: acc?.label ?? '',
-      accountCount: sub?.accounts.length ?? 1,
-      accountEnabled: acc?.enabled ?? true,
-    });
-    res.type('html').send(
-      render.layout({
-        title: `${task.displayName} · 配置`,
-        active: 'tasks',
-        body: render.pageTaskConfig({
-          task: {
-            ...summary,
-            retention: task.retention,
-            // 模板自带的调度，用于表单里「跟随默认」那一项的说明
-            templateScheduleLabel: describeSchedule(task.schedule),
-          },
-          /*
-           * 凭据直接放在这里填，而不是只放在「凭据」页：
-           * 启用一个任务后就要填它的账号密码，这是最自然的路径。
-           * 凭据页保留下来作为多账号的集中管理入口。
-           */
-          credential: {
-            subscribed: !!sub,
-            accountKey: acc?.accountKey ?? '',
-            accountLabel: acc?.label ?? '',
-            multiAccount: !!task.accounts,
-            fields: task.requires.map((key) => ({
-              key,
-              set: userSecrets
-                ? !!userSecrets.fieldStatus(req.user.id, task.name, acc?.accountKey ?? '', [key])[key]
-                : false,
-            })),
-            /* 这个实例下的全部账号：凭据页取消后，加/删/停用账号都在这里做 */
-            accounts: (sub?.accounts ?? []).map((a) => ({
-              accountKey: a.accountKey,
-              label: a.label,
-              enabled: a.enabled,
-              missing: userSecrets
-                ? userSecrets.missing(req.user.id, task.name, a.accountKey, task.requires)
-                : [],
-            })),
-          },
-        }),
-        user: req.user,
       }),
     );
   });
 
   /**
-   * 凭据页已取消：凭据在任务自己的配置页里填（`/tasks/:name/config`）。
+   * 配置已并入任务页：/tasks/:name 本身就是配置页。
+   *
+   * 保留重定向是为了让旧书签和旧链接不至于 404。校验放在重定向之前——
+   * 否则「账号不存在」会先跳一次再 404，用户看到的 URL 就不是他点的那个。
+   */
+  app.get('/tasks/:name/config', requireLogin, (req, res) => {
+    const task = tasks.get(req.params.name);
+    const accountKey = String(req.query.account ?? '');
+    const notFound = (text) =>
+      res
+        .status(404)
+        .type('html')
+        .send(shell(req, { title: '未找到', active: 'tasks', body: `<p class="empty">${text}</p>` }));
+    if (!task || (task.visibility === 'internal' && req.user.role !== 'admin')) return notFound('没有这个任务');
+    if (accountKey) {
+      const sub = mine(req).getSubscription(task.name);
+      if (!sub?.accounts.some((a) => a.accountKey === accountKey)) return notFound('没有这个账号');
+    }
+    res.redirect(
+      `/tasks/${encodeURIComponent(req.params.name)}${
+        accountKey ? `?account=${encodeURIComponent(accountKey)}` : ''
+      }`,
+    );
+  });
+
+  /**
+   * 凭据页已取消：凭据在任务页里填（`/tasks/:name`）。
    *
    * 这里保留一条重定向，是为了让旧书签和旧链接不至于 404。
    */
@@ -503,7 +561,7 @@ export function createServer({
   app.get('/admin', requireLogin, requireAdmin, (req, res) => {
     const weekAgo = now() - 7 * 86_400_000;
     res.type('html').send(
-      render.layout({
+      shell(req, {
         title: '管理',
         active: 'admin',
         body: render.pageAdmin({
@@ -515,7 +573,6 @@ export function createServer({
             taskLabel: tasks.get(r.task_name)?.displayName ?? r.task_name,
           })),
         }),
-        user: req.user,
       }),
     );
   });
@@ -523,7 +580,7 @@ export function createServer({
   /** 账号管理（admin）：停用 / 启用、删除 + 邀请码。不提供新建，账号一律走邀请注册 */
   app.get('/admin/users', requireLogin, requireAdmin, (req, res) => {
     res.type('html').send(
-      render.layout({
+      shell(req, {
         title: '账号',
         active: 'admin',
         body: render.pageAdminUsers({
@@ -533,30 +590,17 @@ export function createServer({
           baseUrl: originOf(req),
           currentUserId: req.user.id,
         }),
-        user: req.user,
       }),
     );
   });
 
+  /**
+   * 设置页已取消：内容搬进了右上角头像展开的弹层（骨架的一部分，每页都在）。
+   *
+   * 保留这条重定向，同样是为了旧书签和旧链接不至于 404。
+   */
   app.get('/settings', requireLogin, (req, res) => {
-    const data = summarizeFor(req);
-    res.type('html').send(
-      render.layout({
-        title: '设置',
-        active: 'settings',
-        body: render.pageSettings({
-          system: {
-            version: process.env.WEAUTO_VERSION || 'dev',
-            dataDir: DATA_DIR,
-            dbFile: path.basename(DB_FILE),
-            uptime: humanDuration(process.uptime() * 1000),
-            scheduler: '运行中',
-            taskCount: data.items.length,
-          },
-        }),
-        user: req.user,
-      }),
-    );
+    res.redirect('/');
   });
 
   /* ───────── JSON 接口（页面与将来的移动端共用） ───────── */

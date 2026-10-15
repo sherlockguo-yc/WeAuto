@@ -210,8 +210,6 @@ input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
 .brand-mark-lg { width: 40px; height: 40px; border-radius: 12px; }
 .brand-mark-lg svg { width: 24px; height: 24px; }
 
-.logout { display: flex; align-items: center; gap: 8px; }
-.who { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 14px; }
 .avatar {
   display: grid;
   place-items: center;
@@ -225,6 +223,99 @@ input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
   font-weight: 600;
 }
 .avatar:empty { display: none; }
+
+/* ── 右上角账号：设置弹层的入口 ──────────────────────────
+   设置不再占一个页面，点这里展开：桌面端锚定在按钮正下方，
+   窄屏放不下 320px 的浮层，改成底部抽屉（见文件末尾的 max-width 查询）。
+   ------------------------------------------------------ */
+.account-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px 4px 4px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--dim);
+  font-size: 14px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+.account-btn:hover,
+.account-btn[aria-expanded='true'] { background: var(--surface-2); color: var(--text); }
+.account-name {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-caret { display: grid; place-items: center; opacity: 0.65; transition: transform 0.18s ease; }
+.account-caret svg { width: 14px; height: 14px; display: block; }
+.account-btn[aria-expanded='true'] .account-caret { transform: rotate(180deg); }
+
+/* 遮罩只负责「点外面就关」；只有窄屏的抽屉才需要变暗（它有模态感） */
+.panel-backdrop { position: fixed; inset: 0; z-index: 40; }
+
+.user-panel {
+  position: fixed;
+  z-index: 41;
+  /* --panel-top / --panel-right 由 JS 按按钮位置写入，窄屏不用它们 */
+  top: var(--panel-top, 58px);
+  right: var(--panel-right, var(--pad));
+  width: min(320px, calc(100vw - 2 * var(--pad)));
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: grid;
+  gap: 14px;
+  padding: var(--pad);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  animation: panel-in 0.16s ease both;
+}
+/* hidden 属性赢不过上面那条 display: grid，得自己补一条 */
+.user-panel[hidden],
+.panel-backdrop[hidden] { display: none; }
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+.panel-head { display: flex; align-items: center; gap: 10px; }
+.avatar-lg { width: 34px; height: 34px; font-size: 14px; }
+.panel-who { display: grid; line-height: 1.3; min-width: 0; }
+.panel-who strong {
+  font-size: 14.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-who small { color: var(--dim); font-size: 12.5px; }
+
+.panel-block h3 { margin: 0 0 10px; font-size: 13px; font-weight: 650; color: var(--dim); }
+
+.panel-fold { border-top: 1px solid var(--border); padding-top: 10px; }
+.panel-fold summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--dim);
+  list-style: none;
+}
+.panel-fold summary::-webkit-details-marker { display: none; }
+.panel-fold summary::after { content: '+'; font-size: 15px; line-height: 1; }
+.panel-fold[open] summary::after { content: '−'; }
+.panel-fold .kv { margin-top: 10px; }
+
+.panel-logout { border-top: 1px solid var(--border); padding-top: 12px; margin: 0; }
+.panel-logout .link-btn { width: 100%; padding: 9px; }
 
 /* ── 底部导航 ── */
 .tabbar {
@@ -266,7 +357,7 @@ input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
   border-radius: 999px;
   background: var(--accent);
 }
-/* 1fr 列会自动均分；只有管理员是 4 项，普通用户 3 项也照样均分 */
+/* 1fr 列会自动均分；管理员 3 项、普通用户 2 项也照样均分（设置已移到右上角弹层） */
 
 .page { max-width: 720px; margin: 0 auto; padding: var(--pad); }
 .page > section + section { margin-top: 16px; }
@@ -357,6 +448,43 @@ a.row:hover .row-main { color: var(--accent); }
   line-height: 1.5;
 }
 .row-plain { grid-template-columns: 1fr auto; }
+/* 行内操作：主按钮靠左、图标按钮靠右。任务列表每行都有，所以只占一行的高度 */
+.row-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.row-actions-minor {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.btn-sm {
+  padding: 7px 13px;
+  font-size: 13.5px;
+  gap: 5px;
+}
+.btn-sm svg { width: 14px; height: 14px; }
+/* 小图标按钮：没有文字，语义靠 aria-label/title，所以 hover 要把颜色提上来 */
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--dim);
+}
+.icon-btn svg { width: 17px; height: 17px; }
+.icon-btn:hover:not(:disabled) { color: var(--text); }
+.icon-btn-danger:hover:not(:disabled) {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 42%, var(--border));
+  background: color-mix(in srgb, var(--bad) 10%, var(--surface-2));
+}
+a.row-main { color: inherit; text-decoration: none; }
+a.row-main:hover { color: var(--accent); }
+/* 顶栏是 sticky 的，锚点跳转要留出它的高度，否则目标标题被压在顶栏下面 */
+.card[id] { scroll-margin-top: 66px; }
 .badges {
   display: flex;
   flex-wrap: wrap;
@@ -772,4 +900,26 @@ details.raw .kv { margin-top: 10px; }
 @media (min-width: 640px) {
   .grid { grid-template-columns: repeat(4, 1fr); }
   .page { padding: 18px var(--pad); }
+}
+
+/* 窄屏：320px 的浮层贴着屏幕边缘会显得挤，改成从底部升起的抽屉 */
+@media (max-width: 639px) {
+  .panel-backdrop { background: rgba(0, 0, 0, 0.45); }
+  .user-panel {
+    top: auto;
+    right: 0;
+    left: 0;
+    bottom: 0;
+    width: auto;
+    max-height: 80vh;
+    border-bottom: none;
+    border-radius: var(--radius) var(--radius) 0 0;
+    padding-bottom: calc(var(--pad) + env(safe-area-inset-bottom));
+    animation: sheet-in 0.22s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  }
+}
+
+@keyframes sheet-in {
+  from { transform: translateY(100%); }
+  to { transform: none; }
 }

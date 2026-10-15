@@ -67,20 +67,30 @@ const ICON = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg>',
   tasks:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="M3.8 6.5l1.1 1.1L7 5.4"/><path d="M3.8 12l1.1 1.1L7 10.9"/><path d="M3.8 17.5l1.1 1.1L7 16.4"/></svg>',
-  settings:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h7.5M17 7h3M4 17h2.5M12 17h8"/><circle cx="14.4" cy="7" r="2.4"/><circle cx="9.6" cy="17" r="2.4"/></svg>',
+  caret:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9.5l6 6 6-6"/></svg>',
   admin:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2l7 2.8v5.6c0 4.4-2.9 7.4-7 8.9-4.1-1.5-7-4.5-7-8.9V6l7-2.8z"/><path d="M9.4 11.9l1.9 1.9 3.6-3.6"/></svg>',
   eye:
     '<svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.2 12S6 6.2 12 6.2 21.8 12 21.8 12 18 17.8 12 17.8 2.2 12 2.2 12z"/><circle cx="12" cy="12" r="2.7"/></svg>',
   eyeOff:
     '<svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.7 6.4A9.7 9.7 0 0 1 12 6.2c6 0 9.8 5.8 9.8 5.8a17.6 17.6 0 0 1-3.2 3.8"/><path d="M6.5 8.3A16.6 16.6 0 0 0 2.2 12S6 17.8 12 17.8a9.8 9.8 0 0 0 3.6-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
+  play:
+    '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7.5 4.6a1 1 0 0 1 1.52-.86l9.1 6.4a1 1 0 0 1 0 1.72l-9.1 6.4a1 1 0 0 1-1.52-.86z"/></svg>',
+  power:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 3.4v8.3"/><path d="M6.9 6.7a8 8 0 1 0 10.2 0"/></svg>',
+  gear:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.9v2.7M12 18.4v2.7M21.1 12h-2.7M5.6 12H2.9M18.4 5.6l-1.9 1.9M7.5 16.5l-1.9 1.9M18.4 18.4l-1.9-1.9M7.5 7.5 5.6 5.6"/></svg>',
 };
 
+/**
+ * 底部导航只放「看数据的两个页面」。
+ * 设置不是页面，是右上角头像展开的弹层——它只有两项内容（外观、系统信息），
+ * 占一个底部 tab 太奢侈，而且让用户以为里面还有别的东西。
+ */
 const NAV = [
   { href: '/', label: '概览', key: 'home', icon: ICON.home },
   { href: '/tasks', label: '任务', key: 'tasks', icon: ICON.tasks },
-  { href: '/settings', label: '设置', key: 'settings', icon: ICON.settings },
   /** 只有管理员看得到：普通用户看平台全局没有意义，也是信息泄露 */
   { href: '/admin', label: '管理', key: 'admin', icon: ICON.admin, adminOnly: true },
 ];
@@ -97,9 +107,14 @@ export const THEME_BOOT =
 
 /**
  * 页面骨架。移动端优先：底部是导航条，内容单列。
- * @param {{title: string, active: string, body: string, user?: object|null, banner?: string}} opts
+ *
+ * @param {{title: string, active: string, body: string, user?: object|null,
+ *          banner?: string, settings?: string}} opts
+ * @param {string} [opts.settings] 右上角弹层的内容（settingsPanel 的结果）。
+ *   它是骨架的一部分而不是某个页面的内容：**每个页面都要能点开设置**，
+ *   漏传就等于那一页没有设置入口，所以由 server 的 shell() 统一装配。
  */
-export function layout({ title, active, body, user = null, banner = '' }) {
+export function layout({ title, active, body, user = null, banner = '', settings = '' }) {
   const nav = NAV.filter((n) => !n.adminOnly || user?.role === 'admin')
     .map(
       (n) =>
@@ -108,13 +123,29 @@ export function layout({ title, active, body, user = null, banner = '' }) {
     )
     .join('');
 
-  const logout = user
-    ? `<form class="logout" method="post" action="/logout">
-         <span class="who"><span class="avatar">${esc(
-           String(user.username ?? '').slice(0, 1).toUpperCase(),
-         )}</span>${esc(user.username)}</span>
-         <button type="submit" class="link-btn">退出</button>
-       </form>`
+  /**
+   * 右上角：头像 + 用户名 = 一个按钮，点开是设置弹层。
+   * 退出从顶栏挪进了弹层里（settingsPanel 末尾），顶栏只留这一个入口。
+   *
+   * 用 button 而不是 a[href=/settings]：设置已经没有独立页面了，
+   * 没有 JS 时按钮不响应——这是这次改动的明确代价，见 settingsPanel 的注释。
+   */
+  const account = user
+    ? `<button type="button" class="account-btn" data-action="toggle-user-menu"
+         aria-haspopup="dialog" aria-expanded="false" aria-controls="user-menu">
+         <span class="avatar">${esc(String(user.username ?? '').slice(0, 1).toUpperCase())}</span>
+         <span class="account-name">${esc(user.username)}</span>
+         <span class="account-caret">${ICON.caret}</span>
+       </button>`
+    : '';
+
+  /**
+   * 弹层放在顶栏外面：顶栏有 backdrop-filter，会成为 fixed 子元素的包含块，
+   * 放在里面的话窄屏的「底部抽屉」会被顶栏的框子困住。
+   */
+  const panel = user
+    ? `<div class="panel-backdrop" data-action="close-user-menu" hidden></div>
+<aside class="user-panel" id="user-menu" role="dialog" aria-label="账号与设置" tabindex="-1" hidden>${settings}</aside>`
     : '';
 
   return `<!doctype html>
@@ -133,7 +164,7 @@ export function layout({ title, active, body, user = null, banner = '' }) {
 ${banner}
 <header class="topbar">
   <span class="brand"><span class="brand-mark">${ICON.brand}</span>WeAuto</span>
-  ${logout}
+  ${account}
 </header>
 <main class="page">
 ${body}
@@ -141,6 +172,7 @@ ${body}
 <nav class="tabbar">
 ${nav}
 </nav>
+${panel}
 <script src="/app.js" defer></script>
 </body>
 </html>`;
@@ -285,27 +317,75 @@ export function pageOverview(data) {
 /* ─────────────────── 任务列表 ─────────────────── */
 
 /**
- * 已启用实例的一行（可点进详情）。
+ * 行内小图标按钮。
+ *
+ * 列表里每一行都要带三个操作，写成文字按钮的话一行放不下、一屏滚不到几个任务；
+ * 但纯图标没有文字，语义只能靠 aria-label + title 补回来，
+ * 所以这里强制要求传 title——少一个图标按钮说不清自己是干什么的。
+ */
+function iconAction({ href = '', action = '', task = '', account = '', enabled = '', title, icon, tone = '' }) {
+  const attrs = href
+    ? ` href="${esc(href)}"`
+    : ` type="button" data-action="${esc(action)}" data-task="${esc(task)}"` +
+      (account ? ` data-account="${esc(account)}"` : '') +
+      (enabled !== '' ? ` data-enabled="${esc(enabled)}"` : '');
+  return `<${href ? 'a' : 'button'} class="icon-btn${tone ? ' icon-btn-' + esc(tone) : ''}"${attrs} title="${esc(
+    title,
+  )}" aria-label="${esc(title)}">${icon}</${href ? 'a' : 'button'}>`;
+}
+
+/** 任务行的链接（点它 = 看这个任务的详细配置）。多账号时带上 account，否则会落到第一个账号 */
+function taskHref(t) {
+  return t.accountKey
+    ? `/tasks/${esc(t.name)}?account=${esc(t.accountKey)}`
+    : `/tasks/${esc(t.name)}`;
+}
+
+/**
+ * 已启用实例的一行：**操作就地完成，不用进详情**。
  * 多账号模板每个账号一行，标题带上账号名——否则两行长得一模一样，分不清哪个失败了。
+ *
+ * 主次是刻意分开的：「立即执行」是最常用的，给实心主按钮；
+ * 「停用」会改变任务是否在跑、「配置」是进下一层，两者收成右侧的小图标。
  */
 function taskRow(t) {
   const title =
     t.accountCount > 1 ? `${t.displayName} · ${t.accountLabel || '默认'}` : t.displayName;
-  const href = t.accountKey ? `/tasks/${esc(t.name)}?account=${esc(t.accountKey)}` : `/tasks/${esc(t.name)}`;
+  const href = taskHref(t);
   // 没填凭据就直接标出来：取消凭据页之后，这是唯一能一眼看出哪些实例没配好的地方
   const credBadge =
     t.subscribed && t.missingCredentials?.length ? '<span class="badge badge-off">待填凭据</span>' : '';
-  return `<a class="row" href="${href}">
-        <span class="row-main">${esc(title)}</span>
+  return `<div class="row task-row">
+        <a class="row-main" href="${href}">${esc(title)}</a>
         <span class="badges">${statusBadge(t.todayStatus)}${credBadge}</span>
         <span class="row-sub">${esc(t.scheduleLabel)}${
           t.todayTargetLabel ? ` · 今日 ${esc(t.todayTargetLabel)}` : ''
         }</span>
-      </a>`;
+        <span class="row-actions">
+          <button type="button" class="primary btn-sm" data-action="run" data-task="${esc(
+            t.name,
+          )}" data-account="${esc(t.accountKey ?? '')}">${ICON.play}立即执行</button>
+          <span class="row-actions-minor">
+            ${iconAction({
+              action: 'toggle',
+              task: t.name,
+              account: t.accountKey ?? '',
+              enabled: t.enabled ? '1' : '0',
+              title: t.enabled ? '停用' : '启用',
+              icon: ICON.power,
+              tone: t.enabled ? 'danger' : '',
+            })}
+            ${iconAction({ href: href, title: '配置', icon: ICON.gear })}
+          </span>
+        </span>
+      </div>`;
 }
 
 /**
  * 任务页 = 「我的实例」+「可以启用的模板」两栏。
+ *
+ * 这里是操作的起点，不是目录：每行自带「立即执行 / 停用 / 配置」，
+ * 最常用的事在这层就能做完。点标题或齿轮才进任务页（详情 + 配置）。
  *
  * 模板只能由平台提供（tasks/*.mjs），用户能做的是「启用一个、配自己的时间与凭据」，
  * 所以未启用的那些不显示状态、只给一个「启用」按钮。
@@ -345,26 +425,43 @@ export function pageTasks({ items, groups }) {
     return `<section class="card"><p class="empty">还没有任何模板。模板由平台提供（tasks/ 下的 .mjs 文件）。</p></section>`;
   }
   if (!mine.length) {
-    return `<section class="card"><p class="empty">还没启用任何模板。从下面挑一个启用，然后去「凭据」页填自己的账号。</p></section>${marketHtml}`;
+    return `<section class="card"><p class="empty">还没启用任何模板。从下面挑一个启用，再点进去填自己的账号和时间。</p></section>${marketHtml}`;
   }
   return mineHtml + marketHtml;
 }
 
-/* ─────────────────── 任务详情 ─────────────────── */
+/* ─────────────────── 任务页（详情 + 配置合并） ─────────────────── */
 
 /**
  * 配置错误多半是凭据没填、或者用户自己改了密码。
  * 不明说的话，用户只能对着一个 config-error 猜。
+ *
+ * 链接指向本页的账号区（#accounts）：配置已经并入任务页，
+ * 再跳一次 /config 只是多一次重定向。
  */
 function credentialHint(task) {
   const broken = task.todayStatus === 'config-error' || task.lastRun?.status === 'config-error';
   if (!broken) return '';
-  const href = `/tasks/${esc(task.name)}/config${task.accountKey ? `?account=${esc(task.accountKey)}` : ''}`;
   return `<div class="banner banner-bad">这个任务报了配置错误，通常是账号密码没填，
-    或者你在别处改过密码。<a href="${href}">去填写或更新凭据</a></div>`;
+    或者你在别处改过密码。<a href="#accounts">去填写或更新凭据</a></div>`;
 }
 
-export function pageTaskDetail({ task, view, runs, canRun, hiddenSkipped = 0, includeSkipped = false }) {
+/**
+ * 任务页 = 详情 + 配置，两层结构里的第二层，也是最后一层。
+ *
+ * 为什么要合并：原来「列表 → 详情 → 配置」三层里，详情只多了结果和历史，
+ * 却让用户为了改一个时间多点一次。现在进来看见的就是全部：
+ * 先看它跑得怎么样（结果），再改设置（调度 / 账号 / 凭据），最后是历史。
+ */
+export function pageTaskDetail({
+  task,
+  view,
+  runs,
+  canRun,
+  hiddenSkipped = 0,
+  includeSkipped = false,
+  credential = null,
+}) {
   const hintHtml = credentialHint(task);
   const result = view.rows.length
     ? `<dl class="kv">${view.rows
@@ -405,11 +502,10 @@ ${hintHtml}
   <div class="actions">
     <button class="primary" data-action="run" data-task="${esc(task.name)}" data-account="${esc(
       task.accountKey ?? '',
-    )}" ${canRun ? '' : 'disabled'}>立即执行</button>
+    )}" ${canRun ? '' : 'disabled'}>${ICON.play}立即执行</button>
     <button data-action="toggle" data-task="${esc(task.name)}" data-enabled="${
       task.enabled ? '1' : '0'
-    }">${task.enabled ? '停用' : '启用'}</button>
-    <a class="btn-link" href="/tasks/${esc(task.name)}/config">配置</a>
+    }">${task.enabled ? '停用此任务' : '启用此任务'}</button>
   </div>
   <p class="hint" id="action-hint"></p>
 </section>
@@ -420,6 +516,8 @@ ${hintHtml}
   ${result}
   ${remaining}
 </section>
+
+${taskConfigBody({ task: task, credential: credential })}
 
 <section class="card">
   <h2>执行历史</h2>
@@ -492,7 +590,7 @@ function credentialField(f) {
 function accountRow(task, acc, currentKey) {
   const isCurrent = acc.accountKey === currentKey;
   return `<div class="account-row${isCurrent ? ' current' : ''}">
-    <a class="account-name" href="/tasks/${esc(task.name)}/config?account=${esc(
+    <a class="account-name" href="/tasks/${esc(task.name)}?account=${esc(
       acc.accountKey,
     )}">${esc(acc.label || '默认账号')}</a>
     <span class="badges">
@@ -516,7 +614,11 @@ function accountRow(task, acc, currentKey) {
   </div>`;
 }
 
-export function pageTaskConfig({ task, credential = null }) {
+/**
+ * 配置区：调度 / 我的账号（含凭据）/ 执行参数。
+ * 不再是独立页面，而是任务页里的一段——见 pageTaskDetail。
+ */
+function taskConfigBody({ task, credential = null }) {
   const retention = task.retention ?? {};
   // 有效调度 = 订阅里改过的（若有）否则模板默认。表单要能表达「我改过哪一种」
   const sch = task.schedule ?? null;
@@ -567,10 +669,8 @@ export function pageTaskConfig({ task, credential = null }) {
     </div>
     <button type="submit" class="primary">保存调度</button>
   </form>
+  <!-- 停用/启用已经在页面顶部，这里不再重复一个；取消订阅只留在这块配置里 -->
   <div class="actions">
-    <button data-action="toggle" data-task="${esc(task.name)}" data-enabled="${
-      task.enabled ? '1' : '0'
-    }">${task.enabled ? '停用此任务' : '启用此任务'}</button>
     <button data-action="clear-override" data-task="${esc(task.name)}"${
       task.subscribed ? '' : ' disabled'
     }>取消订阅</button>
@@ -580,7 +680,7 @@ export function pageTaskConfig({ task, credential = null }) {
   )}）。</p>
 </section>
 
-<section class="card">
+<section class="card" id="accounts">
   <h2>我的账号${credential && credential.accountCount > 1 ? `（${esc(credential.accountLabel || '默认')}）` : ''}</h2>
   ${
     !credential || !credential.subscribed
@@ -796,34 +896,54 @@ ${
 }`;
 }
 
-/* ─────────────────── 设置 ─────────────────── */
+/* ─────────────────── 设置（右上角弹层的内容） ─────────────────── */
 
 /**
- * 设置页只放个人偏好与只读信息。
- * 这里不再放「管理」入口卡片：管理员导航里已经有「管理」页（/admin），
- * 两处入口重复，且设置页是个人页，不该掺平台级操作。
+ * 右上角弹层的内容：我是谁 + 外观 + 系统信息（折叠）+ 退出。
+ *
+ * 只放个人偏好与只读信息。这里不再放「管理」入口：管理员导航里已经有
+ * 「管理」页（/admin），两处入口重复，且这是个人弹层，不该掺平台级操作。
+ *
+ * 系统信息默认折叠：换主题是高频动作，看数据目录这种一年一次，
+ * 平铺会让弹层高到在手机上顶到屏幕顶端。
+ *
+ * 代价要说清楚：这块内容只在 JS 可用时打不开——按钮没有 href 可去。
+ * 主题切换本来也依赖 JS，所以这里不是能力退化，只是多了一层依赖。
  */
-export function pageSettings({ system }) {
+export function settingsPanel({ username = '', role = '', system }) {
+  const initial = esc(String(username).slice(0, 1).toUpperCase());
   return `
-<section class="card">
-  <h2>外观</h2>
+<div class="panel-head">
+  <span class="avatar avatar-lg">${initial}</span>
+  <span class="panel-who">
+    <strong>${esc(username)}</strong>
+    <small>${role === 'admin' ? '管理员' : '普通用户'}</small>
+  </span>
+</div>
+
+<div class="panel-block">
+  <h3>外观</h3>
   <div class="segmented" data-theme-picker>
     <button type="button" data-theme-value="system" class="active">跟随系统</button>
     <button type="button" data-theme-value="light">浅色</button>
     <button type="button" data-theme-value="dark">深色</button>
   </div>
   <p class="hint">默认跟随系统深浅色；选择后会记住，下次打开仍然生效。</p>
-</section>
+</div>
 
-<section class="card">
-  <h2>系统</h2>
+<details class="panel-fold">
+  <summary>系统信息</summary>
   <dl class="kv">
     <dt>版本</dt><dd class="mono">${esc(system.version)}</dd>
     <dt>数据目录</dt><dd class="mono">${esc(system.dataDir)}</dd>
     <dt>数据库</dt><dd class="mono">${esc(system.dbFile)}</dd>
     <dt>运行时长</dt><dd>${esc(system.uptime)}</dd>
     <dt>调度器</dt><dd>${esc(system.scheduler)}</dd>
-    <dt>任务数</dt><dd>${system.taskCount}</dd>
+    <dt>任务模板</dt><dd>${system.taskCount}</dd>
   </dl>
-</section>`;
+</details>
+
+<form class="panel-logout" method="post" action="/logout">
+  <button type="submit" class="link-btn">退出登录</button>
+</form>`;
 }

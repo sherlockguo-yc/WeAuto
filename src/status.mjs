@@ -183,5 +183,23 @@ export function summarizeAll({
     ['failed', 'blocked', 'network-error', 'config-error', 'missed', 'disabled'].includes(it.todayStatus),
   );
 
-  return { today, items, byStatus, attention, recent: store.recentRuns(20) };
+  /*
+   * 「最近执行」必须与任务详情的历史是同一批记录、同一套展示口径：
+   * 以前这里只给原始 run（任务名是模板名、没有时间、多账号时分不清哪个账号），
+   * 详情页却显示时间和账号，同一条记录在两处长得不一样，用户没法对照。
+   * 所以在这里把展示要用的名字补齐——items 里已经有每个账号的元信息，不必再查库。
+   * 模板已从注册表移除时（items 里没有）退回原始任务名。
+   */
+  const metaByAccount = new Map(items.map((it) => [`${it.name}@${it.accountKey}`, it]));
+  const recent = store.recentRuns(20).map((r) => {
+    const it = metaByAccount.get(`${r.task}@${r.accountKey}`);
+    return {
+      ...r,
+      taskLabel: it?.displayName ?? r.task,
+      accountLabel: it?.accountLabel ?? '',
+      multiAccount: (it?.accountCount ?? 1) > 1,
+    };
+  });
+
+  return { today, items, byStatus, attention, recent };
 }

@@ -773,7 +773,7 @@ describe('管理页（仅 admin）', () => {
     assert.match(html, /href="\/admin\/users"/);
   });
 
-  it('账号管理只在管理页，设置页不再有管理卡片', async () => {
+  it('账号管理只在管理页，账号弹层里不再有管理入口', async () => {
     const { base, auth } = await startServer();
     const cookie = await login(base);
     // 自己的账号行没有操作按钮，得先有第二个账号才看得到删除
@@ -782,12 +782,15 @@ describe('管理页（仅 admin）', () => {
     const html = await (await fetch(`${base}/admin/users`, { headers: { cookie } })).text();
     assert.match(html, /data-action="delete-user"/);
 
-    const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
-    assert.equal(settings.includes('data-action="delete-user"'), false, '设置页不该有账号管理');
+    // 设置不再是独立页，而是骨架里的弹层：取首页里的弹层片段来断言
+    const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    const panel = /<aside class="user-panel"[\s\S]*?<\/aside>/.exec(home)?.[0] ?? '';
+    assert.ok(panel, '首页没有渲染账号弹层');
+    assert.equal(panel.includes('data-action="delete-user"'), false, '账号弹层不该有账号管理');
     assert.equal(
-      settings.includes('href="/admin/users"'),
+      panel.includes('href="/admin/users"'),
       false,
-      '设置页不该再重复一个账号管理入口：管理员导航里已有「管理」页',
+      '账号弹层不该再重复一个账号管理入口：管理员导航里已有「管理」页',
     );
   });
 
@@ -1139,14 +1142,28 @@ describe('凭据接口（每人一份）', () => {
 });
 
 describe('外观（主题）', () => {
-  it('设置页提供「跟随系统 / 浅色 / 深色」三选项', async () => {
+  it('账号弹层提供「跟随系统 / 浅色 / 深色」三选项', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
-    const html = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    // 骨架的一部分：任何页面都该带着它，否则那一页就换不了主题
+    const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     assert.match(html, /data-theme-picker/);
     for (const v of ['system', 'light', 'dark']) {
       assert.match(html, new RegExp(`data-theme-value="${v}"`), `缺少选项 ${v}`);
     }
+  });
+
+  it('设置不再是一个页面：/settings 回到首页，导航里也没有它', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const res = await fetch(`${base}/settings`, { headers: { cookie }, redirect: 'manual' });
+    assert.equal(res.status, 302, '旧链接不该 404');
+    assert.equal(res.headers.get('location'), '/');
+
+    const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    assert.equal(html.includes('href="/settings"'), false, '底部导航里不该再有设置');
+    assert.match(html, /id="user-menu"/, '骨架里要有账号弹层');
   });
 
   it('主题脚本内联在 <head> 里（避免先按系统画一遍再翻转的闪屏）', async () => {
@@ -1179,5 +1196,98 @@ describe('CSRF', () => {
     const cookie = await login(base);
     const res = await fetch(`${base}/api/tasks/demo-task/run`, { method: 'POST', headers: { cookie } });
     assert.equal(res.status, 200);
+  });
+});
+
+/* ───────────────────────────────────────────────────────
+   概览「最近执行」与任务详情「执行历史」必须是同一批记录。
+   两处曾经各用一套口径（账号范围 / skipped 过滤时机），
+   同一条记录在一个页面看得到、另一个页面看不到。
+   ------------------------------------------------------ */
+const MULTI_TASK = {
+  ...DEMO_TASK,
+  name: 'multi-task',
+  displayName: '多账号任务',
+  accounts: true,
+  view: [],
+};
+
+describe('概览与任务详情的执行记录一致', () => {
+  it('概览标出任务展示名与账号名，多账号下才分得清每条属于谁', async () => {
+    const { base, store } = await startServer({ extraTasks: [MULTI_TASK] });
+    const mine = store.forUser(USER_ID);
+    mine.subscribe(MULTI_TASK.name);
+    const second = mine.addAccount(MULTI_TASK.name, { label: '小号' });
+    const t0 = Date.parse('2026-10-14T09:00:00+08:00');
+    let i = 0;
+    for (const accountKey of ['', second, '', second]) {
+      mine.appendRun({
+        taskName: MULTI_TASK.name,
+        accountKey,
+        date: '2026-10-14',
+        ts: t0 + i * 60_000,
+        status: 'success',
+        message: 'ok' + i,
+        dur: 100,
+      });
+      i += 1;
+    }
+    const cookie = await login(base);
+
+    // 概览是跨账号流水：两个账号各 2 条都在，且每条都标得出账号
+    const overview = await (await fetch(`${base}/api/overview`, { headers: { cookie } })).json();
+    assert.equal(overview.recent.length, 4, '两个账号共 4 条');
+    assert.equal(overview.recent[0].taskLabel, '多账号任务', '概览不该再显示模板名');
+    assert.equal(overview.recent[0].multiAccount, true);
+    // 默认账号的 label 是「默认」，不是空串
+    const labels = overview.recent.map((r) => r.accountLabel).sort();
+    assert.deepEqual(labels, ['默认', '默认', '小号', '小号'].sort());
+
+    // 详情页仍是单账号视图（与顶部状态卡同一个账号），指定谁就只看谁
+    const main = await (await fetch(`${base}/api/tasks/multi-task`, { headers: { cookie } })).json();
+    assert.equal(main.runs.length, 2, '不带 account = 第一个账号');
+    const only = await (
+      await fetch(`${base}/api/tasks/multi-task?account=${second}`, { headers: { cookie } })
+    ).json();
+    assert.equal(only.runs.length, 2);
+    assert.ok(only.runs.every((r) => r.accountKey === second));
+  });
+
+  it('最近几十条全是 skipped 时，两处仍然给出同样的有效记录', async () => {
+    const { base, store } = await startServer();
+    const mine = store.forUser(USER_ID);
+    const t0 = Date.parse('2026-10-14T00:00:00+08:00');
+    for (let i = 0; i < 25; i++) {
+      mine.appendRun({
+        taskName: DEMO_TASK.name,
+        date: '2026-10-14',
+        ts: t0 + i * 60_000,
+        status: 'success',
+        message: 'ok' + i,
+        dur: 100,
+      });
+    }
+    for (let i = 0; i < 60; i++) {
+      mine.appendRun({
+        taskName: DEMO_TASK.name,
+        date: '2026-10-15',
+        ts: t0 + 86_400_000 + i * 60_000,
+        status: 'skipped',
+        message: 'skip' + i,
+        dur: 0,
+      });
+    }
+    const cookie = await login(base);
+    const overview = await (await fetch(`${base}/api/overview`, { headers: { cookie } })).json();
+    const detail = await (await fetch(`${base}/api/tasks/demo-task`, { headers: { cookie } })).json();
+
+    assert.equal(overview.recent.length, 20);
+    // 以前详情页先取 50 条（全是 skipped）再过滤 → 0 条，与概览的 20 条对不上
+    assert.equal(detail.runs.length, 25);
+    assert.deepEqual(
+      detail.runs.slice(0, 20).map((r) => r.id),
+      overview.recent.map((r) => r.id),
+    );
+    assert.equal(detail.hiddenSkipped, 50);
   });
 });

@@ -176,6 +176,18 @@ export function createStore(db, { limits = {} } = {}) {
     runsExecuted: db.prepare(
       `SELECT * FROM runs WHERE user_id = ? AND status <> 'skipped' ORDER BY ts DESC LIMIT ?`,
     ),
+    /* 「在 SQL 里先排除 skipped、再取条数」的同一组查询。
+       任务详情页以前是先取 50 条再在 JS 里过滤，于是「最近 50 条全是 skipped」时
+       详情页一条都不剩，而首页仍然给得出 20 条 —— 两处记录对不上。
+       与首页 recentRuns 走同一个口径（先过滤后取数）后就不会再出现这种偏差。 */
+    runsOfTaskExecuted: db.prepare(
+      `SELECT * FROM runs WHERE user_id = ? AND task_name = ? AND account_key = ?
+       AND status <> 'skipped' ORDER BY ts DESC LIMIT ?`,
+    ),
+    runsOfSubscriptionExecuted: db.prepare(
+      `SELECT * FROM runs WHERE user_id = ? AND task_name = ?
+       AND status <> 'skipped' ORDER BY ts DESC LIMIT ?`,
+    ),
     lastSuccess: db.prepare(
       `SELECT * FROM runs WHERE user_id = ? AND task_name = ? AND account_key = ?
        AND status IN (${inClause}) ORDER BY ts DESC LIMIT 1`,
@@ -417,11 +429,22 @@ export function createStore(db, { limits = {} } = {}) {
       return rowToRun(s.runById.get(info.lastInsertRowid));
     }
 
-    /** 某个账号的历史；不传 accountKey 时返回该模板下全部账号的历史 */
-    function runsOfTask(taskName, { accountKey = null, limit = 50 } = {}) {
-      const rows = accountKey == null
-        ? s.runsOfSubscription.all(userId, taskName, limit)
-        : s.runsOfTask.all(userId, taskName, accountKey, limit);
+    /**
+     * 某个账号的历史；不传 accountKey 时返回该模板下全部账号的历史。
+     *
+     * `includeSkipped = true` 是历史默认（取到的就是最近 N 条，含 skipped）；
+     * 页面要展示时传 false，走「先排除 skipped 再取 N 条」的查询，
+     * 这样条数不会被一堆 skipped 吃掉（与首页 recentRuns 同一口径）。
+     */
+    function runsOfTask(taskName, { accountKey = null, limit = 50, includeSkipped = true } = {}) {
+      const rows =
+        accountKey == null
+          ? includeSkipped
+            ? s.runsOfSubscription.all(userId, taskName, limit)
+            : s.runsOfSubscriptionExecuted.all(userId, taskName, limit)
+          : includeSkipped
+            ? s.runsOfTask.all(userId, taskName, accountKey, limit)
+            : s.runsOfTaskExecuted.all(userId, taskName, accountKey, limit);
       return rows.map(rowToRun);
     }
 

@@ -47,6 +47,58 @@
     applyTheme(btn.getAttribute('data-theme-value'));
   });
 
+  /* ── 右上角账号弹层（设置在这里，不是一个页面） ─────────────
+     内容由服务端直出在骨架里，JS 只管三件事：开合、定位、放开焦点。
+
+     定位写成 CSS 变量而不是直接写 top/right：宽屏拿它锚定在按钮下方，
+     窄屏的抽屉样式在媒体查询里把 top/right 整个覆盖掉——
+     内联样式会赢过样式表，所以只能让样式表自己决定用不用这两个值。
+     ------------------------------------------------------ */
+  var accountBtn = document.querySelector('[data-action="toggle-user-menu"]');
+  var userPanel = document.getElementById('user-menu');
+  var panelBackdrop = document.querySelector('[data-action="close-user-menu"]');
+
+  function placePanel() {
+    if (!accountBtn || !userPanel) return;
+    var r = accountBtn.getBoundingClientRect();
+    userPanel.style.setProperty('--panel-top', r.bottom + 8 + 'px');
+    userPanel.style.setProperty('--panel-right', Math.max(8, window.innerWidth - r.right) + 'px');
+  }
+
+  function setUserMenu(open) {
+    if (!accountBtn || !userPanel) return;
+    accountBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    userPanel.hidden = !open;
+    if (panelBackdrop) panelBackdrop.hidden = !open;
+    if (open) {
+      placePanel();
+      userPanel.focus();
+    } else if (userPanel.contains(document.activeElement)) {
+      accountBtn.focus();
+    }
+  }
+
+  document.addEventListener('click', function (e) {
+    if (!accountBtn || !userPanel) return;
+    if (e.target.closest('[data-action="toggle-user-menu"]')) {
+      setUserMenu(userPanel.hidden);
+      return;
+    }
+    if (userPanel.hidden) return;
+    // 点在弹层外面（含遮罩）就关；弹层内部的点击（换主题、展开系统信息）不关
+    if (!e.target.closest('.user-panel')) setUserMenu(false);
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (userPanel && !userPanel.hidden) setUserMenu(false);
+  });
+
+  // 转屏 / 改窗口宽度后锚点会漂，重算而不是关闭：手机上地址栏伸缩也会触发 resize
+  window.addEventListener('resize', function () {
+    if (userPanel && !userPanel.hidden) placePanel();
+  });
+
   /**
    * 页面级提示。只有任务详情页有 #action-hint（就在按钮旁边，最合适）；
    * 设置页、任务配置页、管理页都没有，以前会静默丢掉消息——
@@ -186,8 +238,12 @@
     });
   };
 
-  /** 任务跑起来后轮询它是否结束，结束就刷新页面 */
-  async function waitForTask(name, accountKey) {
+  /**
+   * 任务跑起来后轮询它是否结束，结束就刷新页面。
+   * 进度交给 onProgress：详情页写在 #action-hint 上，列表页写在按钮上——
+   * 列表页一个任务一个按钮，用浮层提示会连着弹一串行 toast。
+   */
+  async function waitForTask(name, accountKey, onProgress) {
     var qs = accountKey ? '?account=' + encodeURIComponent(accountKey) : '';
     for (var i = 0; i < 40; i++) {
       await sleep(2000);
@@ -196,15 +252,30 @@
         location.reload();
         return;
       }
-      hint('执行中…（' + ((i + 1) * 2) + 's）');
+      onProgress('执行中…（' + ((i + 1) * 2) + 's）');
     }
     hint('仍在执行，请稍后手动刷新', 'error');
+  }
+
+  /** 把按钮临时改成另一段内容，之后能原样还原（内容是本页渲染出来的，不含外部输入） */
+  function setButtonHtml(btn, html) {
+    if (btn._idleHtml == null) btn._idleHtml = btn.innerHTML;
+    btn.innerHTML = html;
+  }
+
+  function restoreButton(btn) {
+    if (btn._idleHtml == null) return;
+    btn.innerHTML = btn._idleHtml;
+    btn._idleHtml = null;
   }
 
   document.addEventListener('click', async function (e) {
     var btn = e.target.closest('[data-action]');
     if (!btn || btn.tagName === 'FORM') return;
     var action = btn.dataset.action;
+
+    // 账号弹层的开合不走 API，也不能被下面的 disabled 闪一下
+    if (action === 'toggle-user-menu' || action === 'close-user-menu') return;
 
     // 密码显隐：纯就地操作，不进 API、也不要被下面的 disabled 闪一下
     if (action === 'toggle-reveal') {
@@ -228,9 +299,15 @@
     try {
       if (action === 'run') {
         var accountKey = btn.dataset.account || '';
+        var hasHint = !!document.getElementById('action-hint');
+        var report = function (msg) {
+          if (hasHint) hint(msg);
+          else setButtonHtml(btn, msg);
+        };
         await api('POST', '/api/tasks/' + encodeURIComponent(name) + '/run', { accountKey: accountKey });
-        hint('已开始执行…');
-        await waitForTask(name, accountKey);
+        report('已开始执行…');
+        await waitForTask(name, accountKey, report);
+        restoreButton(btn);
       } else if (action === 'toggle') {
         var enabled = btn.dataset.enabled === '1';
         await api('PATCH', '/api/tasks/' + encodeURIComponent(name), { enabled: !enabled });
@@ -279,6 +356,7 @@
         location.reload();
       }
     } catch (err) {
+      restoreButton(btn);
       hint(err.message, 'error');
     } finally {
       btn.disabled = false;
