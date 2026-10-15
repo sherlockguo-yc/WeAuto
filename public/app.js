@@ -54,6 +54,61 @@
     el.className = 'hint' + (tone ? ' ' + tone : '');
   }
 
+  /* ── 按钮内联反馈 ──────────────────────────────────────
+     #action-hint 只在任务详情页存在，设置页（邀请码列表）没有，
+     hint() 会静默 return —— 点了按钮看不出成功还是失败。
+     所以复制这类就地操作直接在按钮上给反馈：改文字，2 秒后复原。
+     ------------------------------------------------------ */
+  var FLASH_MS = 2000;
+
+  function flash(btn, msg, tone) {
+    var timer = btn._flashTimer;
+    if (timer) clearTimeout(timer);
+    else btn._flashText = btn.textContent; // 连点时只认第一次记下的原文
+
+    btn.textContent = msg;
+    btn.classList.toggle('flash-ok', tone === 'ok');
+    btn.classList.toggle('flash-error', tone === 'error');
+
+    btn._flashTimer = setTimeout(function () {
+      btn.textContent = btn._flashText;
+      btn.classList.remove('flash-ok', 'flash-error');
+      btn._flashTimer = null;
+    }, FLASH_MS);
+  }
+
+  /**
+   * 复制文本。navigator.clipboard 只在 HTTPS / localhost 下存在，
+   * HTTP 自建部署里它是 undefined，直接调用会抛 TypeError，
+   * 所以退回到隐藏 textarea + execCommand（iOS 还要补 setSelectionRange）。
+   */
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (e) {
+        /* 权限被拒或不是安全上下文：走下面的兜底 */
+      }
+    }
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
   async function api(method, url, body) {
     var res = await fetch(url, {
       method: method,
@@ -140,12 +195,8 @@
         await api('DELETE', '/api/invites/' + encodeURIComponent(btn.dataset.code));
         location.reload();
       } else if (action === 'copy-invite') {
-        try {
-          await navigator.clipboard.writeText(btn.dataset.url);
-          hint('邀请链接已复制');
-        } catch (err) {
-          hint('复制失败，请手动选中链接复制', 'error');
-        }
+        var copied = await copyText(btn.dataset.url);
+        flash(btn, copied ? '已复制 ✓' : '复制失败，请手动选中', copied ? 'ok' : 'error');
       } else if (action === 'delete-user') {
         if (!window.confirm('删除这个账号？他的订阅、凭据和执行历史会一起清掉，不可恢复。')) return;
         await api('DELETE', '/api/users/' + encodeURIComponent(btn.dataset.user));

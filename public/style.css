@@ -211,6 +211,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button:disabled { opacity: 0.5; cursor: default; }
 .link-btn { background: none; border: none; color: var(--accent); padding: 4px; }
 
+/* 复制这类就地操作的反馈：直接把按钮文字临时改掉，2 秒后复原 */
+button.flash-ok { color: var(--ok); }
+button.flash-error { color: var(--bad); }
+
 /* ── 分段控件（主题选择） ── */
 .segmented { display: flex; gap: 6px; }
 .segmented button {
