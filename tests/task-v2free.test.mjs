@@ -13,7 +13,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { hasSignedToday, parseLastCheckin, parseSessionData } from '../tasks/v2free-checkin.mjs';
+import {
+  gainedTraffic,
+  hasSignedToday,
+  parseGainFromMessage,
+  parseLastCheckin,
+  parseSessionData,
+  parseTraffic,
+} from '../tasks/v2free-checkin.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SIGNED_HTML = fs.readFileSync(path.join(HERE, 'fixtures', 'v2free-user-signed.html'), 'utf8');
@@ -61,5 +68,74 @@ describe('hasSignedToday', () => {
 
   it('未签到的页面 → false', () => {
     assert.equal(hasSignedToday('<a class="btn btn-brand">立即签到</a>'), false);
+  });
+});
+
+/**
+ * 「本次获得」是签到唯一能体现收益的数字，错一个数量级就会把 512MB 显示成 0.5GB
+ * 这种看着像回事的假数据，所以单位换算必须逐档断言。
+ */
+describe('parseTraffic', () => {
+  it('带单位的字符串按 1024 进制换算', () => {
+    assert.equal(parseTraffic('0B'), 0);
+    assert.equal(parseTraffic('2KB'), 2048);
+    assert.equal(parseTraffic('1.5GB'), 1.5 * 1024 ** 3);
+    assert.equal(parseTraffic('1.02 GB'), 1.02 * 1024 ** 3);
+  });
+
+  it('纯数字按字节（契约里 bytes 类型的语义）', () => {
+    assert.equal(parseTraffic('12345678'), 12345678);
+    assert.equal(parseTraffic(1024), 1024);
+  });
+
+  it('解析不了返回 null，而不是 0', () => {
+    assert.equal(parseTraffic('485.94MB 左右'), null);
+    assert.equal(parseTraffic('不适用.'), null);
+    assert.equal(parseTraffic(null), null);
+  });
+});
+
+describe('parseGainFromMessage', () => {
+  it('从「获得了 X 流量」里取到流量', () => {
+    assert.equal(parseGainFromMessage('签到成功，获得了 1.5GB 流量'), 1.5 * 1024 ** 3);
+  });
+
+  it('文案里的其它数字不会被当成流量', () => {
+    assert.equal(parseGainFromMessage('连续签到 3 天，获得了 512MB 流量'), 512 * 1024 ** 2);
+  });
+
+  it('没有流量数字时返回 null', () => {
+    assert.equal(parseGainFromMessage('签到成功'), null);
+    assert.equal(parseGainFromMessage(null), null);
+  });
+});
+
+describe('gainedTraffic', () => {
+  it('接口文案里有就用文案，不去算差值', () => {
+    const g = gainedTraffic({
+      msg: '获得了 1GB 流量',
+      before: '100MB',
+      after: '200MB',
+    });
+    assert.equal(g, 1024 ** 3);
+  });
+
+  it('文案没有时用签到前后的差值', () => {
+    assert.equal(
+      gainedTraffic({ msg: '签到成功', before: '100.00MB', after: '612.00MB' }),
+      512 * 1024 ** 2,
+    );
+  });
+
+  it('签到前后没变化 → 没领到，返回 null', () => {
+    assert.equal(gainedTraffic({ msg: '签到成功', before: '485.94MB', after: '485.94MB' }), null);
+  });
+
+  it('期间有消耗（差值为负）时不显示负数', () => {
+    assert.equal(gainedTraffic({ msg: null, before: '600MB', after: '500MB' }), null);
+  });
+
+  it('任一侧解析不了就返回 null', () => {
+    assert.equal(gainedTraffic({ msg: null, before: null, after: '1GB' }), null);
   });
 });

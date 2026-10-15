@@ -859,22 +859,6 @@ select {
   background: color-mix(in srgb, var(--bad) 12%, var(--surface));
 }
 
-details.raw { margin-top: 12px; }
-details.raw summary {
-  color: var(--dim);
-  font-size: 13px;
-  cursor: pointer;
-  padding: 7px 11px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  background: var(--surface-2);
-  list-style: none;
-}
-details.raw summary::-webkit-details-marker { display: none; }
-details.raw summary::before { content: '▸ '; }
-details.raw[open] summary::before { content: '▾ '; }
-details.raw .kv { margin-top: 10px; }
-
 .cred + .cred { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
 .cred-title { font-weight: 550; margin-bottom: 6px; }
 .fields { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }

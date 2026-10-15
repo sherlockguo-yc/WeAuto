@@ -16,6 +16,9 @@ import { CookieJar, readJson, request } from '../src/http.mjs';
 
 const BASE = 'https://v2free.net';
 
+/** 1024 进制，与 src/format.mjs 的 formatBytes 保持一致 */
+const UNIT_BYTES = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4, PB: 1024 ** 5 };
+
 /** 从页面内嵌的 crispSessionData 提取结构化账户数据 */
 export function parseSessionData(html) {
   const m = /crispSessionData\s*=\s*(\[[\s\S]*?\]\])\s*;/.exec(html);
@@ -52,6 +55,53 @@ export function hasSignedToday(html) {
   return /今日已签到/.test(html);
 }
 
+/**
+ * 站点流量字符串 → 字节数。支持 "485.94MB" / "1.02 GB" / "0B" / 纯数字（按字节，契约里
+ * bytes 类型的语义）。
+ *
+ * 解析不了返回 null 而不是 0 —— 猜错的单位会显示成一个像真的假数字，比空着更糟。
+ */
+export function parseTraffic(text) {
+  const m = /^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB|PB)?$/i.exec(String(text ?? '').trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  const unit = (m[2] ?? 'B').toUpperCase();
+  return n * (UNIT_BYTES[unit] ?? 1);
+}
+
+/**
+ * 从签到接口文案里提取获得的流量（如「获得了 1.5GB 流量」）。
+ *
+ * 先只认「获得」附近的数字，避免把「连续签到 3 天」这类数字当成流量；
+ * 「获得」附近没有才退到全句找带单位的数字。
+ */
+export function parseGainFromMessage(msg) {
+  const s = String(msg ?? '');
+  if (!s) return null;
+  const m =
+    /获得[^，。；]{0,12}?(\d+(?:\.\d+)?)\s*(KB|MB|GB|TB|PB)/i.exec(s) ??
+    /(\d+(?:\.\d+)?)\s*(KB|MB|GB|TB|PB)\b/i.exec(s);
+  if (!m) return null;
+  const unit = m[2].toUpperCase();
+  return Number(m[1]) * (UNIT_BYTES[unit] ?? 1);
+}
+
+/**
+ * 本次签到实际领到多少流量：接口文案优先，拿不到再用签到前后的剩余量差值。
+ *
+ * 差值为负说明期间有消耗（签到没给或给得比用的少），此时返回 null ——
+ * 「本次获得」不该出现负数。
+ */
+export function gainedTraffic({ msg, before, after }) {
+  const fromMsg = parseGainFromMessage(msg);
+  if (fromMsg) return fromMsg;
+  const b = parseTraffic(before);
+  const a = parseTraffic(after);
+  if (b == null || a == null) return null;
+  const diff = a - b;
+  return diff > 0 ? diff : null;
+}
+
 export default {
   name: 'v2free-checkin',
   displayName: 'v2free 机场每日签到',
@@ -71,13 +121,14 @@ export default {
 
   /**
    * 结果字段声明 —— 界面照这个渲染，**因此以后再加任务不需要改界面代码**。
-   * 未声明的字段（trafficMain / trafficPackage / balance / lastUsed）仍会出现在
-   * 「原始数据」折叠区，不会丢。
+   * 只列真正要看的三项：签到领到多少、还剩多少、上次签到是何时。
+   *
+   * 未声明的字段（trafficMain / trafficPackage / balance / lastUsed / expire / plan）
+   * 仍然落库，只是页面不展示 —— 需要时能从执行历史的记录里查到。
    */
   view: [
+    { key: 'gainedTraffic', label: '本次获得', type: 'bytes' },
     { key: 'remainTraffic', label: '剩余流量', type: 'bytes' },
-    { key: 'expire', label: '到期时间', type: 'date' },
-    { key: 'plan', label: '套餐', type: 'text' },
     { key: 'lastCheckin', label: '上次签到', type: 'datetime' },
   ],
 
@@ -165,7 +216,17 @@ export default {
     const data = { ...latest, lastCheckin: parseLastCheckin(html) };
 
     if (checkJson.ret === 1) {
-      return { status: 'success', message: checkJson.msg ?? '签到成功', data };
+      // 只有真的签到成功才有「本次获得」；其余分支留空，界面显示「—」
+      const gain = gainedTraffic({
+        msg: checkJson.msg,
+        before: info?.remainTraffic,
+        after: latest?.remainTraffic,
+      });
+      return {
+        status: 'success',
+        message: checkJson.msg ?? '签到成功',
+        data: gain ? { ...data, gainedTraffic: gain } : data,
+      };
     }
     if (/已经签到|已签到/.test(checkJson.msg ?? '')) {
       return { status: 'already-signed', message: checkJson.msg, data };

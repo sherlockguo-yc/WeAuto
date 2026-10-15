@@ -124,8 +124,9 @@ export function formatValue(type, value) {
 /**
  * 把一次运行的 data 按 view 声明渲染成 [{label, value, raw}]。
  *
- * 未在 view 里声明的字段**不会丢**：调用方用 remainingFields 把它们放进
- * 「原始数据」区域。这是刻意的——任务作者忘记声明字段不该导致信息消失。
+ * 未在 view 里声明的字段**不会丢**：一并返回在 remaining 里（它们已经落库，
+ * 排查时可直接查历史记录）。当前页面只渲染声明过的字段，remaining 留给调用方
+ * 按需使用——面板要的信息越少越好读。
  */
 export function renderView(view, data) {
   const declared = new Set(view.map((v) => v.key));

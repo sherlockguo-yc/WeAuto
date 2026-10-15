@@ -57,9 +57,9 @@ export default {
 
   // ── 结果如何展示（关键：声明式，见 §3.2）───────────────
   view: [
+    { key: 'gainedTraffic', label: '本次获得', type: 'bytes' },
     { key: 'remainTraffic', label: '剩余流量', type: 'bytes' },
-    { key: 'expire',        label: '到期时间', type: 'date' },
-    { key: 'plan',          label: '套餐',     type: 'text' },
+    { key: 'lastCheckin',   label: '上次签到', type: 'datetime' },
   ],
 
   async run(ctx) {
@@ -79,7 +79,7 @@ export default {
 |---|---|
 | `status` | 枚举之一，**必须与已上线的取值一致**（改名会同时打断正在跑的 CLI 记录与 WeMonitor 面板）：`success` `already-signed` `skipped` `failed` `blocked` `network-error` `config-error`。**`success` / `already-signed` 视为「今天这件事办成了」**（幂等判断依据）。<br>`already-signed` 是站点特定措辞，等 P4 删掉 WeMonitor 面板后再改成中性的 `already-done` |
 | `message` | 一句话，给人看。失败时必须说明原因，不要只说「失败」 |
-| `data` | 任意 JSON。展示由 `view` 决定；未在 `view` 里声明的字段仍出现在「原始数据」折叠区，不会丢 |
+| `data` | 任意 JSON。展示由 `view` 决定：只显示声明过的字段。未声明的字段**仍然落库**（历史记录里可查），页面不展示 —— 面板要的信息越少越好读，剩下的留给排查 |
 
 ### 3.2 为什么 `view` 是声明式，而不是让任务返回 HTML
 
@@ -92,7 +92,7 @@ export default {
 **类型词表**（保持小而可扩展）：
 `text` `number` `bytes` `percent` `date` `datetime` `duration` `bool` `list` `json`
 
-**向前兼容规则**：框架遇到不认识的 `type` → 按 `text` 渲染，并把原值放进原始数据区。
+**向前兼容规则**：框架遇到不认识的 `type` → 按 `text` 渲染，并把原值原样显示。
 这样新增类型不要求框架先升级；任务用了新类型而框架是旧版也不会崩。
 
 ### 3.3 `ctx` 提供什么（能力边界）

@@ -488,14 +488,6 @@ export function pageTaskDetail({
         .join('')}</dl>`
     : '<p class="empty">这个任务没有声明结果字段（view），执行结果只在下方历史里</p>';
 
-  const remaining = view.remaining.length
-    ? `<details class="raw"><summary>原始数据（${view.remaining.length} 项）</summary>
-        <dl class="kv">${view.remaining
-          .map((r) => `<dt>${esc(r.key)}</dt><dd>${esc(r.value)}</dd>`)
-          .join('')}</dl>
-      </details>`
-    : '';
-
   const history = runs.length
     ? runs
         .map(
@@ -530,7 +522,6 @@ ${hintHtml}
   <h2>最近一次结果</h2>
   ${task.lastRun ? `<p class="sub">${esc(task.lastRun.message)}</p>` : ''}
   ${result}
-  ${remaining}
 </section>
 
 ${taskConfigBody({ task: task, credential: credential })}
