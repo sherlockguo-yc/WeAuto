@@ -296,10 +296,9 @@ input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
 
 .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .stat {
-  --tone: transparent;
-  position: relative;
-  overflow: hidden;
-  background: var(--surface);
+  /* 默认同底色：混进 12% surface 等于没混，但让 ok/bad 只改 --tone 就能整卡上色 */
+  --tone: var(--surface);
+  background: color-mix(in srgb, var(--tone) 12%, var(--surface));
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 12px 13px;
@@ -308,20 +307,7 @@ input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
   gap: 1px;
   box-shadow: var(--shadow-sm);
 }
-/* 右上角一团同色光晕：只为了在四张卡里一眼认出「哪张是要看的」 */
-.stat::after {
-  content: '';
-  position: absolute;
-  top: -32px;
-  right: -28px;
-  width: 92px;
-  height: 92px;
-  border-radius: 50%;
-  background: var(--tone);
-  opacity: 0.16;
-  filter: blur(8px);
-  pointer-events: none;
-}
+/* ── 语气色：改 --tone 就同时决定整卡的底色与描边 ── */
 .stat b {
   font-size: 26px;
   font-weight: 650;
@@ -329,6 +315,11 @@ input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
   font-variant-numeric: tabular-nums;
 }
 .stat span { color: var(--dim); font-size: 12.5px; letter-spacing: 0.02em; }
+/* 有语义的那两张：整卡铺一层同色浅底 + 同色描边，一眼认出「哪张是要看的」 */
+.stat-ok,
+.stat-bad {
+  border-color: color-mix(in srgb, var(--tone) 34%, var(--border));
+}
 .stat-ok { --tone: var(--ok); }
 .stat-ok b { color: var(--ok); }
 .stat-bad { --tone: var(--bad); }
