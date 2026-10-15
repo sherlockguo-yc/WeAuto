@@ -341,14 +341,25 @@ export function createServer({
     );
   });
 
-  function detailOf(taskName, { includeSkipped = false, userId, role } = {}) {
+  function detailOf(taskName, { includeSkipped = false, userId, role, accountKey = '' } = {}) {
     const task = tasks.get(taskName);
     if (!task) return null;
     // internal 模板对非 admin 视同不存在
     if (task.visibility === 'internal' && role !== 'admin') return null;
     const mine = store.forUser(userId);
-    const summary = summarizeTask({ task, store: mine, nowMs: now() });
-    const all = mine.runsOfTask(taskName, { limit: 50 });
+    const sub = mine.getSubscription(taskName);
+    const acc = sub?.accounts.find((a) => a.accountKey === accountKey) ?? sub?.accounts[0] ?? null;
+    const summary = summarizeTask({
+      task,
+      store: mine,
+      nowMs: now(),
+      accountKey: acc?.accountKey ?? '',
+      accountLabel: acc?.label ?? '',
+      accountCount: sub?.accounts.length ?? 1,
+      accountEnabled: acc?.enabled ?? true,
+    });
+    // 指定账号时只看这个账号的历史；不指定就全部账号
+    const all = mine.runsOfTask(taskName, { accountKey: acc?.accountKey ?? null, limit: 50 });
     // 历史默认隐藏 skipped：间隔类任务跑顺之后，跳过记录会把有用的行挤下去
     const runs = includeSkipped ? all : all.filter((r) => r.status !== 'skipped');
     const lastCompleted = all.find((r) => r.status !== 'skipped') ?? null;
@@ -364,7 +375,12 @@ export function createServer({
   }
 
   app.get('/tasks/:name', requireLogin, (req, res) => {
-    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1', userId: req.user.id, role: req.user.role });
+    const d = detailOf(req.params.name, {
+      includeSkipped: req.query.all === '1',
+      userId: req.user.id,
+      role: req.user.role,
+      accountKey: String(req.query.account ?? ''),
+    });
     if (!d) return res.status(404).type('html').send(render.layout({ title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>', user: req.user }));
     res.type('html').send(
       render.layout({
@@ -522,7 +538,12 @@ export function createServer({
   );
 
   app.get('/api/tasks/:name', requireLogin, (req, res) => {
-    const d = detailOf(req.params.name, { includeSkipped: req.query.all === '1', userId: req.user.id, role: req.user.role });
+    const d = detailOf(req.params.name, {
+      includeSkipped: req.query.all === '1',
+      userId: req.user.id,
+      role: req.user.role,
+      accountKey: String(req.query.account ?? ''),
+    });
     if (!d) return res.status(404).json({ error: '没有这个任务' });
     res.json({
       task: d.summary,
@@ -535,11 +556,14 @@ export function createServer({
 
   app.post('/api/tasks/:name/run', requireLogin, (req, res) => {
     const name = req.params.name;
+    const accountKey = String(req.body?.accountKey ?? '');
     if (!tasks.has(name)) return res.status(404).json({ error: '没有这个任务' });
-    if (scheduler.isRunning(name, req.user.id)) return res.status(409).json({ error: '该任务正在执行中' });
+    if (scheduler.isRunning(name, req.user.id, accountKey)) {
+      return res.status(409).json({ error: '该任务正在执行中' });
+    }
     try {
       // 不 await：任务可能跑几十秒，让前端轮询结果
-      scheduler.trigger(name, { userId: req.user.id });
+      scheduler.trigger(name, { userId: req.user.id, accountKey });
     } catch (err) {
       // 没订阅就触发是常见误操作（比如在模板市场点了运行），给 400 而不是 500
       return res.status(400).json({ error: err.message });

@@ -77,10 +77,11 @@
   };
 
   /** 任务跑起来后轮询它是否结束，结束就刷新页面 */
-  async function waitForTask(name) {
+  async function waitForTask(name, accountKey) {
+    var qs = accountKey ? '?account=' + encodeURIComponent(accountKey) : '';
     for (var i = 0; i < 40; i++) {
       await sleep(2000);
-      var d = await api('GET', '/api/tasks/' + encodeURIComponent(name));
+      var d = await api('GET', '/api/tasks/' + encodeURIComponent(name) + qs);
       if (!d.running) {
         location.reload();
         return;
@@ -100,9 +101,10 @@
     btn.disabled = true;
     try {
       if (action === 'run') {
-        await api('POST', '/api/tasks/' + encodeURIComponent(name) + '/run');
+        var accountKey = btn.dataset.account || '';
+        await api('POST', '/api/tasks/' + encodeURIComponent(name) + '/run', { accountKey: accountKey });
         hint('已开始执行…');
-        await waitForTask(name);
+        await waitForTask(name, accountKey);
       } else if (action === 'toggle') {
         var enabled = btn.dataset.enabled === '1';
         await api('PATCH', '/api/tasks/' + encodeURIComponent(name), { enabled: !enabled });

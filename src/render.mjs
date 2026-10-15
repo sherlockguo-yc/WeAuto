@@ -252,10 +252,16 @@ export function pageOverview(data) {
 
 /* ─────────────────── 任务列表 ─────────────────── */
 
-/** 已启用实例的一行（可点进详情） */
+/**
+ * 已启用实例的一行（可点进详情）。
+ * 多账号模板每个账号一行，标题带上账号名——否则两行长得一模一样，分不清哪个失败了。
+ */
 function taskRow(t) {
-  return `<a class="row" href="/tasks/${esc(t.name)}">
-        <span class="row-main">${esc(t.displayName)}</span>
+  const title =
+    t.accountCount > 1 ? `${t.displayName} · ${t.accountLabel || '默认'}` : t.displayName;
+  const href = t.accountKey ? `/tasks/${esc(t.name)}?account=${esc(t.accountKey)}` : `/tasks/${esc(t.name)}`;
+  return `<a class="row" href="${href}">
+        <span class="row-main">${esc(title)}</span>
         ${statusBadge(t.todayStatus)}
         <span class="row-sub">${esc(t.scheduleLabel)}${
           t.todayTargetLabel ? ` · 今日 ${esc(t.todayTargetLabel)}` : ''
@@ -345,12 +351,12 @@ export function pageTaskDetail({ task, view, runs, canRun, hiddenSkipped = 0, in
 
   return `
 <section class="card">
-  <h2>${esc(task.displayName)} ${statusBadge(task.todayStatus)}</h2>
+  <h2>${esc(task.accountCount > 1 ? `${task.displayName} · ${task.accountLabel || '默认'}` : task.displayName)} ${statusBadge(task.todayStatus)}</h2>
   <p class="sub">${esc(task.description ?? task.name)}</p>
   <div class="actions">
-    <button class="primary" data-action="run" data-task="${esc(task.name)}" ${
-      canRun ? '' : 'disabled'
-    }>立即执行</button>
+    <button class="primary" data-action="run" data-task="${esc(task.name)}" data-account="${esc(
+      task.accountKey ?? '',
+    )}" ${canRun ? '' : 'disabled'}>立即执行</button>
     <button data-action="toggle" data-task="${esc(task.name)}" data-enabled="${
       task.enabled ? '1' : '0'
     }">${task.enabled ? '停用' : '启用'}</button>

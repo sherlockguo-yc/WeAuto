@@ -435,6 +435,82 @@ describe('停用要即时生效', () => {
   });
 });
 
+describe('多账号展示', () => {
+  it('一个订阅两个账号 → 列表里两行', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    const extra = store.forUser(USER_ID).addAccount('demo-task', { label: '小号' });
+
+    const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
+    assert.equal(list.tasks.length, 2, '每个账号一行');
+    assert.deepEqual(
+      list.tasks.map((t) => t.accountKey).sort(),
+      ['', extra].sort(),
+    );
+    assert.equal(list.tasks.find((t) => t.accountKey === extra).accountLabel, '小号');
+  });
+
+  it('各账号状态独立：一个成功不影响另一个', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    const extra = store.forUser(USER_ID).addAccount('demo-task', { label: '小号' });
+    store.forUser(USER_ID).appendRun({
+      taskName: 'demo-task',
+      accountKey: '',
+      date: '2026-10-14',
+      ts: NOW,
+      status: 'success',
+    });
+
+    const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
+    const main = list.tasks.find((t) => t.accountKey === '');
+    const second = list.tasks.find((t) => t.accountKey === extra);
+    assert.equal(main.todayStatus, 'success');
+    assert.notEqual(second.todayStatus, 'success', '另一个账号不该被当成已完成');
+  });
+
+  it('详情页按账号过滤历史', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    const extra = store.forUser(USER_ID).addAccount('demo-task', { label: '小号' });
+    store.forUser(USER_ID).appendRun({
+      taskName: 'demo-task',
+      accountKey: '',
+      date: '2026-10-14',
+      ts: NOW,
+      status: 'success',
+      message: '默认账号',
+    });
+    store.forUser(USER_ID).appendRun({
+      taskName: 'demo-task',
+      accountKey: extra,
+      date: '2026-10-14',
+      ts: NOW + 1,
+      status: 'failed',
+      message: '小号',
+    });
+
+    const main = await (await fetch(`${base}/api/tasks/demo-task`, { headers: { cookie } })).json();
+    assert.equal(main.runs.length, 1);
+    assert.equal(main.runs[0].message, '默认账号');
+
+    const other = await (
+      await fetch(`${base}/api/tasks/demo-task?account=${extra}`, { headers: { cookie } })
+    ).json();
+    assert.equal(other.runs.length, 1);
+    assert.equal(other.runs[0].message, '小号');
+  });
+
+  it('任务页里多账号的标题带账号名', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    store.forUser(USER_ID).addAccount('demo-task', { label: '小号' });
+
+    const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.match(html, /演示任务 · 小号/);
+  });
+});
+
 describe('账号删除', () => {
   it('删号会连带清掉他的一切（订阅、凭据、历史）', async () => {
     const { base, db, store, auth, invites } = await startServer();

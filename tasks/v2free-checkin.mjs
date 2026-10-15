@@ -60,6 +60,9 @@ export default {
   tags: ['签到', '机场'],
   requires: ['V2FREE_EMAIL', 'V2FREE_PASSWORD'],
 
+  /** 允许一个人配多个 v2free 账号，各自独立签到 */
+  accounts: true,
+
   /** 北京时间窗口；实际执行时刻由种子化随机决定，每天不同 */
   schedule: { window: { start: '09:00', end: '09:50' } },
 

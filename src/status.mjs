@@ -35,10 +35,20 @@ export function describeSchedule(schedule) {
  * @param {string} [accountKey] 多账号模板要按账号分别统计；单账号模板用 ''
  * @returns {object} 供 API 与页面直接使用
  */
-export function summarizeTask({ task, store, nowMs, random = Math.random, accountKey = '' }) {
+export function summarizeTask({
+  task,
+  store,
+  nowMs,
+  random = Math.random,
+  accountKey = '',
+  accountLabel = '',
+  accountCount = 1,
+  accountEnabled = true,
+}) {
   const override = store.getOverride(task.name);
   // 未订阅 = 不存在这个实例，界面上就是「未启用」（不再是旧的「默认启用」）
-  const enabled = override?.enabled ?? false;
+  // 多账号时每个账号还能单独停用
+  const enabled = (override?.enabled ?? false) && accountEnabled;
   const { schedule, overrideInvalid } = effectiveSchedule(task, override);
   const effectiveTask = { ...task, schedule };
 
@@ -68,6 +78,9 @@ export function summarizeTask({ task, store, nowMs, random = Math.random, accoun
   return {
     name: task.name,
     displayName: task.displayName,
+    accountKey,
+    accountLabel,
+    accountCount,
     description: task.description,
     group: task.group,
     tags: task.tags,
@@ -99,10 +112,39 @@ export function summarizeTask({ task, store, nowMs, random = Math.random, accoun
   };
 }
 
+/**
+ * 全部模板的当前状态。
+ *
+ * 粒度是**账号**而不是模板：一个订阅下配了 3 个账号就产出 3 项，
+ * 各自有自己的今日状态与历史。这样列表里「每个账号一行」不需要前端再拆，
+ * 单账号的模板仍然只有一项，跟以前看到的一样。
+ *
+ * 未订阅的模板也产出一项（`subscribed: false`），供模板市场显示「启用」按钮。
+ */
 export function summarizeAll({ tasks, store, nowMs = Date.now(), random = Math.random }) {
-  const items = [...tasks.values()]
-    .map((task) => summarizeTask({ task, store, nowMs, random }))
-    .sort((a, b) => a.group.localeCompare(b.group, 'zh') || a.name.localeCompare(b.name));
+  const items = [];
+  for (const task of [...tasks.values()].sort((a, b) =>
+    a.group.localeCompare(b.group, 'zh') || a.name.localeCompare(b.name),
+  )) {
+    const sub = store.getSubscription(task.name);
+    if (!sub) {
+      items.push(summarizeTask({ task, store, nowMs, random, accountKey: '' }));
+      continue;
+    }
+    for (const acc of sub.accounts) {
+      items.push(
+        summarizeTask({
+          task,
+          store,
+          nowMs,
+          random,
+          accountKey: acc.accountKey,
+          accountLabel: acc.label,
+          accountCount: sub.accounts.length,
+        }),
+      );
+    }
+  }
 
   const today = dateInTZ(new Date(nowMs));
   const byStatus = {
