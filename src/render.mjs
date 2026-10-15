@@ -286,9 +286,17 @@ export function pageOverview(data) {
         .map((r) => {
           // r.time 是 "YYYY-MM-DD HH:MM:SS"（北京时间），概览里省掉年份，完整值留在 title 上
           const short = r.time ? r.time.slice(5) : '';
-          const sub = [r.message, short].filter(Boolean).join(' · ');
+          // 与任务详情「执行历史」同一口径：时间在前、结果在后，两处能逐条对上
+          const sub = [short, r.message].filter(Boolean).join(' · ');
+          /*
+           * 概览是跨账号流水，只写模板名的话多账号下四条记录长得一模一样。
+           * 所以多账号时把账号名一起写上——与任务页「任务名 · 账号名」同一个口径。
+           * taskLabel 由 status.mjs 补齐；模板已从注册表移除时只有 r.task，退回它。
+           */
+          const label = r.taskLabel ?? r.task;
+          const title = r.multiAccount ? `${label} · ${r.accountLabel || '默认'}` : label;
           return `<div class="row row-plain">
-            <span class="row-main">${esc(r.task)}</span>
+            <span class="row-main">${esc(title)}</span>
             <span class="badges">${runBadge(r.status)}</span>
             <span class="row-sub"${r.time ? ` title="${esc(r.time)}"` : ''}>${esc(sub)}</span>
           </div>`;
