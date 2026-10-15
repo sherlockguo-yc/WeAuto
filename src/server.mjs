@@ -361,7 +361,10 @@ export function createServer({
         username: req.user.username,
         role: req.user.role,
         system: {
-          version: process.env.WEAUTO_VERSION || 'dev',
+          // 显示构建时间（commit 时间，北京时间）而不是短 sha：这一行要回答的是
+          // 「我刚刚推的那版上没上线」，08159b6 这种串只有对着 Git 才认得出。
+          // sha 没丢 —— 它在 /healthz 里，排查时还能查到。
+          version: process.env.WEAUTO_BUILD_TIME || process.env.WEAUTO_VERSION || 'dev',
           uptime: humanDuration(process.uptime() * 1000),
           // 报「看得见的模板数」而不是实例数：这里回答的是「平台上有几个自动化」，
           // 没必要为此把全部订阅和账号再汇总一遍
@@ -605,7 +608,9 @@ export function createServer({
     // 多租户后「有几个任务需要注意」是 per-user 的，在这里算不出来也不该算。
     res.json({
       ok: true,
+      // 这里是给部署校验和监控看的，保持 sha 不变：它是 Release tag 与产物路径的唯一标识
       version: process.env.WEAUTO_VERSION || 'dev',
+      buildTime: process.env.WEAUTO_BUILD_TIME || null,
       templates: tasks.size,
       time: new Date(now()).toISOString(),
     });

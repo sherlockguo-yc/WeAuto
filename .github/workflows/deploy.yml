@@ -29,7 +29,12 @@ jobs:
 
       - name: Get version
         id: ver
-        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          # 页面「版本」显示提交时间（北京时间）而不是短 sha：08159b6 这种串只有
+          # 对着 Git 才认得出，而那一条回答的是「我刚刚推的那版上没上线」。
+          # 部署标识仍必须是 sha —— 它是 Release tag、R2 产物路径和 webhook 的 version。
+          echo "time=$(TZ=Asia/Shanghai git log -1 --date=format-local:'%Y-%m-%d %H:%M' --format=%cd)" >> $GITHUB_OUTPUT
 
       # WeAuto 是常驻服务，只打包源码；运行时依赖由 N150 的 restart.sh 现场安装。
       #
@@ -56,6 +61,7 @@ jobs:
           cp restart.sh package.json package-lock.json secrets.age pkg/
 
           echo "${{ steps.ver.outputs.sha }}" > pkg/.version
+          echo "${{ steps.ver.outputs.time }}" > pkg/.build-time
           tar -czf weauto.tar.gz -C pkg .
           ls -lh weauto.tar.gz
 

@@ -24,12 +24,23 @@ import { DATA_DIR, ROOT } from '../src/util.mjs';
 
 const DAY_MS = 86_400_000;
 
-function readVersion() {
+/** 读包内的单行文本；文件不存在返回空串（本地跑没有打包步骤） */
+function readPkgFile(name) {
   try {
-    return fs.readFileSync(path.join(ROOT, '.version'), 'utf8').trim();
+    return fs.readFileSync(path.join(ROOT, name), 'utf8').trim();
   } catch {
-    return 'dev';
+    return '';
   }
+}
+
+/** 部署标识：短 sha。Release tag / R2 路径 / webhook 都用它，不能换 */
+function readVersion() {
+  return readPkgFile('.version') || 'dev';
+}
+
+/** 页面显示用：CI 打包时写入的 commit 时间（北京时间，形如 2026-10-15 20:19） */
+function readBuildTime() {
+  return readPkgFile('.build-time');
 }
 
 /** 进程静默消失是这类常驻服务最难查的故障，所以异常要落盘而不只是进 stderr */
@@ -50,6 +61,8 @@ function installCrashLogger() {
 async function main() {
   installCrashLogger();
   process.env.WEAUTO_VERSION = process.env.WEAUTO_VERSION || readVersion();
+  // 环境变量可覆盖：本地开发没有 .build-time，也能手动指定验证渲染
+  process.env.WEAUTO_BUILD_TIME = process.env.WEAUTO_BUILD_TIME || readBuildTime();
 
   const config = loadConfig();
   const db = openDb();
@@ -96,7 +109,8 @@ async function main() {
   const server = app.listen(config.port, config.host, () => {
     const users = auth.countUsers();
     console.log(`[weauto] HTTP 已启动 http://${config.host}:${config.port}`);
-    console.log(`[weauto] 版本 ${process.env.WEAUTO_VERSION}，任务 ${tasks.size} 个，账号 ${users} 个`);
+    const built = process.env.WEAUTO_BUILD_TIME ? `（构建于 ${process.env.WEAUTO_BUILD_TIME}）` : '';
+  console.log(`[weauto] 版本 ${process.env.WEAUTO_VERSION}${built}，任务 ${tasks.size} 个，账号 ${users} 个`);
     console.log(`[weauto] 数据库 ${DB_FILE}`);
     if (users === 0) console.log('[weauto] 还没有账号：打开首页会引导创建第一个管理员');
   });
