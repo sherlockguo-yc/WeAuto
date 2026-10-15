@@ -10,3 +10,6 @@ node_modules/
 .DS_Store
 
 # 注意：secrets.age 是密文，需要纳入版本控制，不在此忽略
+
+# CodeBuddy 项目数据（设计过程产物、会话相关文件）
+.codebuddy/
