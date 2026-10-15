@@ -27,6 +27,7 @@
   --ok: #3fd08d;
   --bad: #ff6b6b;
   --wait: #e9b93f;
+  --wait-soft: var(--wait); /* 铺底专用淡黄：--wait 是按文字对比度挑的，直接按比例混会发灰 */
   --off: #7d8798;
 
   --radius: 14px;
@@ -66,6 +67,7 @@
     --ok: #0f8a5c;
     --bad: #d43b3b;
     --wait: #9a6d09;
+    --wait-soft: #f2c744;
     --off: #78828f;
     --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
     --shadow-md: 0 12px 28px -20px rgba(16, 24, 40, 0.35), 0 1px 2px rgba(16, 24, 40, 0.05);
@@ -88,6 +90,7 @@
   --ok: #0f8a5c;
   --bad: #d43b3b;
   --wait: #9a6d09;
+  --wait-soft: #f2c744;
   --off: #78828f;
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-md: 0 12px 28px -20px rgba(16, 24, 40, 0.35), 0 1px 2px rgba(16, 24, 40, 0.05);
@@ -109,6 +112,7 @@
   --ok: #3fd08d;
   --bad: #ff6b6b;
   --wait: #e9b93f;
+  --wait-soft: var(--wait);
   --off: #7d8798;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
   --shadow-md: 0 14px 34px -22px rgba(0, 0, 0, 0.9), 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -315,15 +319,21 @@ input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
   font-variant-numeric: tabular-nums;
 }
 .stat span { color: var(--dim); font-size: 12.5px; letter-spacing: 0.02em; }
-/* 有语义的那两张：整卡铺一层同色浅底 + 同色描边，一眼认出「哪张是要看的」 */
+/* 有语义的那几张：整卡铺一层同色浅底 + 同色描边，一眼认出「哪张是要看的」 */
 .stat-ok,
-.stat-bad {
+.stat-bad,
+.stat-wait,
+.stat-off {
   border-color: color-mix(in srgb, var(--tone) 34%, var(--border));
 }
 .stat-ok { --tone: var(--ok); }
 .stat-ok b { color: var(--ok); }
 .stat-bad { --tone: var(--bad); }
 .stat-bad b { color: var(--bad); }
+.stat-wait { --tone: var(--wait-soft); }
+.stat-wait b { color: var(--wait); }
+.stat-off { --tone: var(--off); }
+.stat-off b { color: var(--off); }
 
 /* ── 列表行 ── */
 .row {
@@ -347,6 +357,43 @@ a.row:hover .row-main { color: var(--accent); }
   line-height: 1.5;
 }
 .row-plain { grid-template-columns: 1fr auto; }
+/* 行内操作：主按钮靠左、图标按钮靠右。任务列表每行都有，所以只占一行的高度 */
+.row-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.row-actions-minor {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.btn-sm {
+  padding: 7px 13px;
+  font-size: 13.5px;
+  gap: 5px;
+}
+.btn-sm svg { width: 14px; height: 14px; }
+/* 小图标按钮：没有文字，语义靠 aria-label/title，所以 hover 要把颜色提上来 */
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--dim);
+}
+.icon-btn svg { width: 17px; height: 17px; }
+.icon-btn:hover:not(:disabled) { color: var(--text); }
+.icon-btn-danger:hover:not(:disabled) {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 42%, var(--border));
+  background: color-mix(in srgb, var(--bad) 10%, var(--surface-2));
+}
+a.row-main { color: inherit; text-decoration: none; }
+a.row-main:hover { color: var(--accent); }
+/* 顶栏是 sticky 的，锚点跳转要留出它的高度，否则目标标题被压在顶栏下面 */
+.card[id] { scroll-margin-top: 66px; }
 .badges {
   display: flex;
   flex-wrap: wrap;
