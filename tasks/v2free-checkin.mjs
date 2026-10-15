@@ -222,9 +222,12 @@ export default {
         before: info?.remainTraffic,
         after: latest?.remainTraffic,
       });
+      // message 用固定短句而不是站点原文：详情页的「最近一次结果」同时渲染 message
+      // 与 view 行，站点的「获得了 313MB 流量」会和「本次获得」说同一件事两遍。
+      // 数字交给结构化字段，message 只负责一句话结论。
       return {
         status: 'success',
-        message: checkJson.msg ?? '签到成功',
+        message: '签到成功',
         data: gain ? { ...data, gainedTraffic: gain } : data,
       };
     }
