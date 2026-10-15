@@ -77,10 +77,6 @@ const ICON = {
     '<svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.7 6.4A9.7 9.7 0 0 1 12 6.2c6 0 9.8 5.8 9.8 5.8a17.6 17.6 0 0 1-3.2 3.8"/><path d="M6.5 8.3A16.6 16.6 0 0 0 2.2 12S6 17.8 12 17.8a9.8 9.8 0 0 0 3.6-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
   play:
     '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7.5 4.6a1 1 0 0 1 1.52-.86l9.1 6.4a1 1 0 0 1 0 1.72l-9.1 6.4a1 1 0 0 1-1.52-.86z"/></svg>',
-  power:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 3.4v8.3"/><path d="M6.9 6.7a8 8 0 1 0 10.2 0"/></svg>',
-  gear:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.9v2.7M12 18.4v2.7M21.1 12h-2.7M5.6 12H2.9M18.4 5.6l-1.9 1.9M7.5 16.5l-1.9 1.9M18.4 18.4l-1.9-1.9M7.5 7.5 5.6 5.6"/></svg>',
 };
 
 /**
@@ -325,21 +321,23 @@ export function pageOverview(data) {
 /* ─────────────────── 任务列表 ─────────────────── */
 
 /**
- * 行内小图标按钮。
+ * 行内小文字按钮。
  *
- * 列表里每一行都要带三个操作，写成文字按钮的话一行放不下、一屏滚不到几个任务；
- * 但纯图标没有文字，语义只能靠 aria-label + title 补回来，
- * 所以这里强制要求传 title——少一个图标按钮说不清自己是干什么的。
+ * 图标按钮是省地方，但语义只能靠 title/aria-label 补回来——一个电源图标
+ * 既像「停用」又像「立即执行」，猜错一次就是误操作。这里宁可多占几个字：
+ * 文字自己就说完了，不需要用户 hover 上去读提示。
+ *
+ * tone 目前只有 danger：停用是这一行里唯一会改变任务是否在运行的操作，
+ * 用常驻的红色标出来，不等 hover 才提示。
  */
-function iconAction({ href = '', action = '', task = '', account = '', enabled = '', title, icon, tone = '' }) {
+function textAction({ href = '', action = '', task = '', account = '', enabled = '', label, tone = '' }) {
   const attrs = href
     ? ` href="${esc(href)}"`
     : ` type="button" data-action="${esc(action)}" data-task="${esc(task)}"` +
       (account ? ` data-account="${esc(account)}"` : '') +
       (enabled !== '' ? ` data-enabled="${esc(enabled)}"` : '');
-  return `<${href ? 'a' : 'button'} class="icon-btn${tone ? ' icon-btn-' + esc(tone) : ''}"${attrs} title="${esc(
-    title,
-  )}" aria-label="${esc(title)}">${icon}</${href ? 'a' : 'button'}>`;
+  const cls = `btn-sm${href ? ' btn-link' : ''}${tone ? ' btn-' + esc(tone) : ''}`;
+  return `<${href ? 'a' : 'button'} class="${cls}"${attrs}>${esc(label)}</${href ? 'a' : 'button'}>`;
 }
 
 /** 任务行的链接（点它 = 看这个任务的详细配置）。多账号时带上 account，否则会落到第一个账号 */
@@ -363,7 +361,7 @@ function taskTitle(t) {
  * 多账号模板每个账号一行，标题带上账号名——否则两行长得一模一样，分不清哪个失败了。
  *
  * 主次是刻意分开的：「立即执行」是最常用的，给实心主按钮；
- * 「停用」会改变任务是否在跑、「配置」是进下一层，两者收成右侧的小图标。
+ * 「停用」会改变任务是否在跑、「配置」是进下一层，两者收成右侧的小文字按钮。
  */
 function taskRow(t) {
   const title = taskTitle(t);
@@ -382,16 +380,15 @@ function taskRow(t) {
             t.name,
           )}" data-account="${esc(t.accountKey ?? '')}">${ICON.play}立即执行</button>
           <span class="row-actions-minor">
-            ${iconAction({
+            ${textAction({
               action: 'toggle',
               task: t.name,
               account: t.accountKey ?? '',
               enabled: t.enabled ? '1' : '0',
-              title: t.enabled ? '停用' : '启用',
-              icon: ICON.power,
+              label: t.enabled ? '停用' : '启用',
               tone: t.enabled ? 'danger' : '',
             })}
-            ${iconAction({ href: href, title: '配置', icon: ICON.gear })}
+            ${textAction({ href: href, label: '配置' })}
           </span>
         </span>
       </div>`;
@@ -518,13 +515,13 @@ ${hintHtml}
   <p class="hint" id="action-hint"></p>
 </section>
 
+${taskConfigBody({ task: task, credential: credential })}
+
 <section class="card">
   <h2>最近一次结果</h2>
   ${task.lastRun ? `<p class="sub">${esc(task.lastRun.message)}</p>` : ''}
   ${result}
 </section>
-
-${taskConfigBody({ task: task, credential: credential })}
 
 <section class="card">
   <h2>执行历史</h2>
