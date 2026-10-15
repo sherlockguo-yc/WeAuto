@@ -543,6 +543,11 @@ we-auth 已完成并测试过的代码（用户库、密码校验、JWT、40 个
 > （部署目录之外，`rsync --delete` 管不到），再用软链接把 `node_modules`
 > 接回部署目录。走 npmmirror（实测 3.5MB/s），首次约 2 分钟，
 > `package-lock.json` 未变则 0.3 秒跳过。
+>
+> 同日另一项改动：CI 把产物同步上传到 **Cloudflare R2**
+> （`dl.sherlockguo.com/<项目>/<sha>/<产物>`），N150 优先从那里拉（实测 3.05MB/s），
+> `ghproxy.net` → GitHub 直连降级为兜底。启用开关是 N150 上的
+> `~/.deploy-artifact-base`（一行域名），文件不存在则该分支不生效。
 
 ### 14.4 auth 代码的去向（§13.4 的落地）
 
