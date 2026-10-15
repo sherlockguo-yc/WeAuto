@@ -47,11 +47,43 @@
     applyTheme(btn.getAttribute('data-theme-value'));
   });
 
+  /**
+   * 页面级提示。只有任务详情页有 #action-hint（就在按钮旁边，最合适）；
+   * 设置页、任务配置页、管理页都没有，以前会静默丢掉消息——
+   * 所以找不到容器时退化成浮层 toast，保证任何情况下都看得见结果。
+   */
   function hint(msg, tone) {
     var el = document.getElementById('action-hint');
-    if (!el) return;
+    if (el) {
+      el.textContent = msg || '';
+      el.className = 'hint' + (tone ? ' ' + tone : '');
+      return;
+    }
+    toast(msg, tone);
+  }
+
+  var TOAST_MS = 3000;
+
+  function toast(msg, tone) {
+    var el = document.getElementById('action-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'action-toast';
+      el.className = 'toast';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      document.body.appendChild(el);
+    }
     el.textContent = msg || '';
-    el.className = 'hint' + (tone ? ' ' + tone : '');
+    el.classList.toggle('toast-error', tone === 'error');
+    el.classList.remove('toast-show');
+    void el.offsetWidth; // 强制回流，让连续两次提示都能重新播一次淡入
+    el.classList.add('toast-show');
+
+    clearTimeout(el._toastTimer);
+    el._toastTimer = setTimeout(function () {
+      el.classList.remove('toast-show');
+    }, TOAST_MS);
   }
 
   /* ── 按钮内联反馈 ──────────────────────────────────────
