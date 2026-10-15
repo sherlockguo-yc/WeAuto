@@ -773,7 +773,7 @@ describe('管理页（仅 admin）', () => {
     assert.match(html, /href="\/admin\/users"/);
   });
 
-  it('账号管理页独立于设置页，设置页只给管理员留一个入口', async () => {
+  it('账号管理只在管理页，设置页不再有管理卡片', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
@@ -782,7 +782,11 @@ describe('管理页（仅 admin）', () => {
 
     const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
     assert.equal(settings.includes('data-action="create-user"'), false, '设置页不该再有新建账号');
-    assert.match(settings, /href="\/admin\/users"/);
+    assert.equal(
+      settings.includes('href="/admin/users"'),
+      false,
+      '设置页不该再重复一个账号管理入口：管理员导航里已有「管理」页',
+    );
   });
 
   it('自己的账号行不给停用与删除按钮', async () => {

@@ -545,7 +545,6 @@ export function createServer({
         title: '设置',
         active: 'settings',
         body: render.pageSettings({
-          isAdmin: req.user.role === 'admin',
           system: {
             version: process.env.WEAUTO_VERSION || 'dev',
             dataDir: DATA_DIR,

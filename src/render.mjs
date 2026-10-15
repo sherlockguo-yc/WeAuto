@@ -798,8 +798,12 @@ ${
 
 /* ─────────────────── 设置 ─────────────────── */
 
-/** 设置页只放个人偏好与只读信息；账号管理在 /admin/users */
-export function pageSettings({ system, isAdmin = false }) {
+/**
+ * 设置页只放个人偏好与只读信息。
+ * 这里不再放「管理」入口卡片：管理员导航里已经有「管理」页（/admin），
+ * 两处入口重复，且设置页是个人页，不该掺平台级操作。
+ */
+export function pageSettings({ system }) {
   return `
 <section class="card">
   <h2>外观</h2>
@@ -810,18 +814,6 @@ export function pageSettings({ system, isAdmin = false }) {
   </div>
   <p class="hint">默认跟随系统深浅色；选择后会记住，下次打开仍然生效。</p>
 </section>
-${
-  isAdmin
-    ? `
-<section class="card">
-  <h2>管理</h2>
-  <a class="row" href="/admin/users">
-    <span class="row-main">管理账号</span>
-    <span class="row-sub">新建账号、停用 / 启用、删除，以及邀请码</span>
-  </a>
-</section>`
-    : ''
-}
 
 <section class="card">
   <h2>系统</h2>
