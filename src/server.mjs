@@ -180,6 +180,25 @@ export function createServer({
     return out;
   };
 
+  /**
+   * 列表/概览的统一入口：可见模板 + 我的数据 + 每个账号缺哪些凭据。
+   *
+   * 凭据缺失在这里就算出来，是为了让列表能给「待填凭据」打标——
+   * 取消凭据页之后，这是唯一能一眼看到哪些实例还没配好的地方。
+   */
+  const summarizeFor = (req) =>
+    summarizeAll({
+      tasks: visibleTasks(req),
+      store: mine(req),
+      nowMs: now(),
+      missingCredentials: userSecrets
+        ? (taskName, accountKey) => {
+            const task = tasks.get(taskName);
+            return task ? userSecrets.missing(req.user.id, taskName, accountKey, task.requires) : [];
+          }
+        : null,
+    });
+
   /* ───────── 登录 / 首次初始化 ───────── */
   app.get('/login', (req, res) => {
     if (req.user) return res.redirect('/');
@@ -325,12 +344,12 @@ export function createServer({
 
   /* ───────── 页面 ───────── */
   app.get('/', requireLogin, (req, res) => {
-    const data = summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() });
+    const data = summarizeFor(req);
     res.type('html').send(render.layout({ title: '概览', active: 'home', body: render.pageOverview(data), user: req.user }));
   });
 
   app.get('/tasks', requireLogin, (req, res) => {
-    const data = summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() });
+    const data = summarizeFor(req);
     res.type('html').send(
       render.layout({
         title: '任务',
@@ -448,11 +467,21 @@ export function createServer({
             subscribed: !!sub,
             accountKey: acc?.accountKey ?? '',
             accountLabel: acc?.label ?? '',
+            multiAccount: !!task.accounts,
             fields: task.requires.map((key) => ({
               key,
               set: userSecrets
                 ? !!userSecrets.fieldStatus(req.user.id, task.name, acc?.accountKey ?? '', [key])[key]
                 : false,
+            })),
+            /* 这个实例下的全部账号：凭据页取消后，加/删/停用账号都在这里做 */
+            accounts: (sub?.accounts ?? []).map((a) => ({
+              accountKey: a.accountKey,
+              label: a.label,
+              enabled: a.enabled,
+              missing: userSecrets
+                ? userSecrets.missing(req.user.id, task.name, a.accountKey, task.requires)
+                : [],
             })),
           },
         }),
@@ -462,48 +491,12 @@ export function createServer({
   });
 
   /**
-   * 凭据页：**只列这个人自己订阅过的模板**，按账号分组。
+   * 凭据页已取消：凭据在任务自己的配置页里填（`/tasks/:name/config`）。
    *
-   * 多租户前这里是「全站一份凭据、只有 admin 能改」，现在每个人有自己的一份，
-   * 所以权限判断从「是不是 admin」变成「是不是他自己的」。
+   * 这里保留一条重定向，是为了让旧书签和旧链接不至于 404。
    */
   app.get('/credentials', requireLogin, (req, res) => {
-    const groups = [];
-    for (const sub of mine(req).listSubscriptions()) {
-      const task = tasks.get(sub.taskName);
-      if (!task) continue; // 模板已下线：保留订阅行，但不显示（没有字段可填）
-      const accounts = sub.accounts.map((acc) => ({
-        accountKey: acc.accountKey,
-        label: acc.label,
-        enabled: acc.enabled,
-        fields: task.requires.map((key) => ({
-          key,
-          set: userSecrets
-            ? !!userSecrets.fieldStatus(req.user.id, sub.taskName, acc.accountKey, [key])[key]
-            : false,
-        })),
-      }));
-      groups.push({
-        name: task.displayName,
-        description: task.description,
-        taskName: sub.taskName,
-        requires: task.requires,
-        multiAccount: !!task.accounts,
-        accounts,
-      });
-    }
-
-    res.type('html').send(
-      render.layout({
-        title: '凭据',
-        active: 'creds',
-        body: render.pageCredentials({
-          groups,
-          secretsError: userSecrets ? null : '凭据存储未就绪（缺少主密钥）',
-        }),
-        user: req.user,
-      }),
-    );
+    res.redirect('/tasks');
   });
 
   /** 平台概览（admin）：跨用户的只读统计。普通用户看不到入口也访问不了 */
@@ -530,7 +523,7 @@ export function createServer({
   });
 
   app.get('/settings', requireLogin, (req, res) => {
-    const data = summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() });
+    const data = summarizeFor(req);
     res.type('html').send(
       render.layout({
         title: '设置',
@@ -571,11 +564,11 @@ export function createServer({
   });
 
   app.get('/api/overview', requireLogin, (req, res) =>
-    res.json(summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() })),
+    res.json(summarizeFor(req)),
   );
 
   app.get('/api/tasks', requireLogin, (req, res) =>
-    res.json({ tasks: summarizeAll({ tasks: visibleTasks(req), store: mine(req), nowMs: now() }).items }),
+    res.json({ tasks: summarizeFor(req).items }),
   );
 
   app.get('/api/tasks/:name', requireLogin, (req, res) => {

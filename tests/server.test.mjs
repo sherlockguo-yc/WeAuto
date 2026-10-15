@@ -289,13 +289,12 @@ describe('接口行为', () => {
     assert.equal(after.tasks[0].enabled, false);
   });
 
-  it('凭据接口只返回字段名与是否已设置，绝不返回值', async () => {
+  it('配置页只给出凭据字段名与是否已设置，绝不返回值', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
-    const html = await (await fetch(`${base}/credentials`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
     assert.match(html, /DEMO_TOKEN/);
-    // 本机没有 age 私钥/密文，页面应给出可读的原因而不是崩掉
-    assert.match(html, /凭据不可用|已设置|缺失/);
+    assert.match(html, /未设置/);
   });
 });
 
@@ -479,6 +478,40 @@ describe('凭据就近配置', () => {
   });
 });
 
+describe('凭据页已取消', () => {
+  it('/credentials 重定向到任务页，旧链接不失效', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const res = await fetch(`${base}/credentials`, { headers: { cookie }, redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), '/tasks');
+  });
+
+  it('导航里不再有凭据入口', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.equal(html.includes('href="/credentials"'), false);
+  });
+
+  it('没填凭据的实例在列表里标出来', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+
+    const before = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.match(before, /待填凭据/);
+
+    await fetch(`${base}/api/credentials`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskName: 'demo-task', accountKey: '', fields: { DEMO_TOKEN: 'x' } }),
+    });
+    const after = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.equal(after.includes('待填凭据'), false, '填过之后标记应消失');
+  });
+});
+
 describe('配置错误的提示', () => {
   it('任务报 config-error 时，详情页直接说可能是凭据问题', async () => {
     const { base, store } = await startServer();
@@ -532,12 +565,12 @@ describe('账号级启停', () => {
     assert.equal(list.tasks.find((t) => t.accountKey === '').enabled, true);
   });
 
-  it('凭据页把停用的账号标出来', async () => {
+  it('配置页把停用的账号标出来', async () => {
     const { base, store } = await startServer();
     const cookie = await login(base);
     store.forUser(USER_ID).setAccountEnabled('demo-task', '', false);
 
-    const html = await (await fetch(`${base}/credentials`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
     assert.match(html, /已停用/);
   });
 });
@@ -1007,7 +1040,7 @@ describe('凭据接口（每人一份）', () => {
     const cookie = await login(base);
     await post(base, cookie, { taskName: 'demo-task', fields: { DEMO_TOKEN: 'top-secret' } });
 
-    const html = await (await fetch(`${base}/credentials`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
     assert.match(html, /DEMO_TOKEN/);
     assert.equal(html.includes('top-secret'), false);
     assert.match(html, /已设置/);

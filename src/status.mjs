@@ -44,6 +44,8 @@ export function summarizeTask({
   accountLabel = '',
   accountCount = 1,
   accountEnabled = true,
+  /** 这个账号还缺哪些凭据字段。由调用方传入——本模块不碰凭据存储 */
+  missingCredentials = [],
 }) {
   const override = store.getOverride(task.name);
   // 未订阅 = 不存在这个实例，界面上就是「未启用」（不再是旧的「默认启用」）
@@ -93,6 +95,7 @@ export function summarizeTask({
     subscribed: !!override,
     overrideInvalid,
     hasOverride: !!override,
+    missingCredentials,
     schedule,
     scheduleLabel: describeSchedule(schedule),
     today,
@@ -121,7 +124,14 @@ export function summarizeTask({
  *
  * 未订阅的模板也产出一项（`subscribed: false`），供模板市场显示「启用」按钮。
  */
-export function summarizeAll({ tasks, store, nowMs = Date.now(), random = Math.random }) {
+export function summarizeAll({
+  tasks,
+  store,
+  nowMs = Date.now(),
+  random = Math.random,
+  /** (taskName, accountKey) => string[]，用于标出「还没填凭据」的实例 */
+  missingCredentials = null,
+}) {
   const items = [];
   for (const task of [...tasks.values()].sort((a, b) =>
     a.group.localeCompare(b.group, 'zh') || a.name.localeCompare(b.name),
@@ -142,6 +152,9 @@ export function summarizeAll({ tasks, store, nowMs = Date.now(), random = Math.r
           accountLabel: acc.label,
           accountCount: sub.accounts.length,
           accountEnabled: acc.enabled,
+          missingCredentials: missingCredentials
+            ? missingCredentials(task.name, acc.accountKey)
+            : [],
         }),
       );
     }

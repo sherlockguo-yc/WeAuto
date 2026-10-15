@@ -59,7 +59,6 @@ export function runBadge(status) {
 const NAV = [
   { href: '/', label: '概览', key: 'home' },
   { href: '/tasks', label: '任务', key: 'tasks' },
-  { href: '/credentials', label: '凭据', key: 'creds' },
   { href: '/settings', label: '设置', key: 'settings' },
   /** 只有管理员看得到：普通用户看平台全局没有意义，也是信息泄露 */
   { href: '/admin', label: '平台', key: 'admin', adminOnly: true },
@@ -260,9 +259,13 @@ function taskRow(t) {
   const title =
     t.accountCount > 1 ? `${t.displayName} · ${t.accountLabel || '默认'}` : t.displayName;
   const href = t.accountKey ? `/tasks/${esc(t.name)}?account=${esc(t.accountKey)}` : `/tasks/${esc(t.name)}`;
+  // 没填凭据就直接标出来：取消凭据页之后，这是唯一能一眼看出哪些实例没配好的地方
+  const credBadge =
+    t.subscribed && t.missingCredentials?.length ? '<span class="badge badge-off">待填凭据</span>' : '';
   return `<a class="row" href="${href}">
         <span class="row-main">${esc(title)}</span>
         ${statusBadge(t.todayStatus)}
+        ${credBadge}
         <span class="row-sub">${esc(t.scheduleLabel)}${
           t.todayTargetLabel ? ` · 今日 ${esc(t.todayTargetLabel)}` : ''
         }</span>
@@ -407,6 +410,32 @@ function beijingInputValue(ms) {
   return new Date(ms + 8 * 36e5).toISOString().slice(0, 16);
 }
 
+/** 一个账号行：可切换查看、可停用、可删除（默认账号不能删） */
+function accountRow(task, acc, currentKey) {
+  const isCurrent = acc.accountKey === currentKey;
+  return `<div class="account-row${isCurrent ? ' current' : ''}">
+    <a class="row-main" href="/tasks/${esc(task.name)}/config?account=${esc(
+      acc.accountKey,
+    )}">${esc(acc.label || '默认账号')}</a>
+    ${acc.enabled ? '' : '<span class="badge badge-off">已停用</span>'}
+    ${acc.missing?.length ? '<span class="badge badge-off">待填凭据</span>' : ''}
+    <span class="invite-actions">
+      <button class="link-btn" data-action="toggle-account" data-task="${esc(
+        task.name,
+      )}" data-account="${esc(acc.accountKey)}" data-enabled="${
+        acc.enabled ? '1' : '0'
+      }">${acc.enabled ? '停用' : '启用'}</button>
+      ${
+        acc.accountKey
+          ? `<button class="link-danger" data-action="remove-account" data-task="${esc(
+              task.name,
+            )}" data-account="${esc(acc.accountKey)}">删除</button>`
+          : ''
+      }
+    </span>
+  </div>`;
+}
+
 export function pageTaskConfig({ task, credential = null }) {
   const retention = task.retention ?? {};
   // 有效调度 = 订阅里改过的（若有）否则模板默认。表单要能表达「我改过哪一种」
@@ -477,24 +506,38 @@ export function pageTaskConfig({ task, credential = null }) {
     !credential || !credential.subscribed
       ? `<p class="empty">先启用这个模板，才能填自己的账号。</p>
          <button data-action="subscribe" data-task="${esc(task.name)}">启用</button>`
-      : task.requires.length
-        ? `<form class="inline-form cred-form" data-action="save-credentials"
-                data-task="${esc(task.name)}" data-account="${esc(credential.accountKey)}">
-             ${credential.fields
-               .map(
-                 (f) =>
-                   `<label>${esc(f.key)}<input type="password" name="${esc(
-                     f.key,
-                   )}" autocomplete="new-password" placeholder="${
-                     f.set ? '已设置，留空表示不修改' : '未设置'
-                   }"></label>`,
-               )
-               .join('')}
-             <button type="submit">保存</button>
-           </form>
-           <p class="hint">留空表示不修改。这里填的账号密码<b>加密后存在本站</b>，
-             <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
-        : '<p class="hint">这个模板不需要凭据</p>'
+      : `<!-- 账号块始终显示：单账号时也能看到它被停用、也能停用它 -->
+         <div class="accounts">
+           ${credential.accounts.map((a) => accountRow(task, a, credential.accountKey)).join('')}
+         </div>
+         ${
+           credential.multiAccount
+             ? `<form class="inline-form add-account" data-action="add-account" data-task="${esc(task.name)}">
+                  <label>再加一个账号<input name="label" placeholder="例如：小号" maxlength="32"></label>
+                  <button type="submit">添加账号</button>
+                </form>`
+             : ''
+         }
+         ${
+           task.requires.length
+             ? `<form class="inline-form cred-form" data-action="save-credentials"
+                    data-task="${esc(task.name)}" data-account="${esc(credential.accountKey)}">
+                 ${credential.fields
+                   .map(
+                     (f) =>
+                       `<label>${esc(f.key)}<input type="password" name="${esc(
+                         f.key,
+                       )}" autocomplete="new-password" placeholder="${
+                         f.set ? '已设置，留空表示不修改' : '未设置'
+                       }"></label>`,
+                   )
+                   .join('')}
+                 <button type="submit">保存</button>
+               </form>
+               <p class="hint">留空表示不修改。这里填的账号密码<b>加密后存在本站</b>，
+                 <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
+             : '<p class="hint">这个模板不需要凭据</p>'
+         }`
   }
 </section>
 
@@ -507,89 +550,6 @@ export function pageTaskConfig({ task, credential = null }) {
     <dt>任务标识</dt><dd class="mono">${esc(task.name)}</dd>
   </dl>
 </section>`;
-}
-
-/* ─────────────────── 凭据 ─────────────────── */
-
-/**
- * 我的凭据：按「模板 × 账号」分组，每个账号一组输入框。
- *
- * 与单租户版的三点不同：
- *   · 只列**我订阅过的**模板（不再是全站一份）
- *   · 支持多账号（模板声明 accounts: true 时可以加号）
- *   · 明确写出「管理员技术上能解密」——不能让人误以为这是端到端加密
- */
-export function pageCredentials({ groups = [], secretsError = null }) {
-  const bannerHtml = secretsError ? banner(`凭据不可用：${secretsError}`, 'bad') : '';
-
-  const body = groups.length
-    ? groups
-        .map(
-          (g) => `<section class="card">
-  <h2>${esc(g.name)}</h2>
-  ${g.description ? `<p class="sub">${esc(g.description)}</p>` : ''}
-  ${g.accounts
-    .map(
-      (acc) => `<div class="cred">
-        <div class="cred-title">${esc(acc.label)}${
-          acc.accountKey ? '' : '（默认）'
-        }${acc.enabled ? '' : '<span class="badge badge-off">已停用</span>'}</div>
-        ${
-          g.requires.length
-            ? `<form class="inline-form cred-form" data-action="save-credentials"
-                    data-task="${esc(g.taskName)}" data-account="${esc(acc.accountKey)}">
-                 ${g.requires
-                   .map((key) => {
-                     const set = acc.fields.find((f) => f.key === key)?.set;
-                     return `<label>${esc(key)}<input type="password" name="${esc(
-                       key,
-                     )}" autocomplete="new-password" placeholder="${
-                       set ? '已设置，留空表示不修改' : '未设置'
-                     }"></label>`;
-                   })
-                   .join('')}
-                 <button type="submit">保存</button>
-               </form>`
-            : '<p class="hint">这个模板不需要凭据</p>'
-        }
-        <span class="invite-actions">
-          <button class="link-btn" data-action="toggle-account" data-task="${esc(
-            g.taskName,
-          )}" data-account="${esc(acc.accountKey)}" data-enabled="${
-            acc.enabled ? '1' : '0'
-          }">${acc.enabled ? '停用' : '启用'}</button>
-          ${
-            acc.accountKey
-              ? `<button class="link-danger" data-action="remove-account" data-task="${esc(
-                  g.taskName,
-                )}" data-account="${esc(acc.accountKey)}">删除这个账号</button>`
-              : ''
-          }
-        </span>
-      </div>`,
-    )
-    .join('')}
-  ${
-    g.multiAccount
-      ? `<form class="inline-form add-account" data-action="add-account" data-task="${esc(g.taskName)}">
-           <label>再加一个账号<input name="label" placeholder="例如：小号" maxlength="32"></label>
-           <button type="submit">添加账号</button>
-         </form>`
-      : ''
-  }
-</section>`,
-        )
-        .join('')
-    : '<section class="card"><p class="empty">还没有启用任何模板。先去「任务」页启用一个，再来这里填自己的账号。</p></section>';
-
-  return `${bannerHtml}
-<section class="card">
-  <h2>我的凭据</h2>
-  <p class="sub">只显示字段名与是否已设置，<b>凭据值永远不会出现在网页上</b>。</p>
-  <p class="hint">留空表示不修改，填新值即覆盖。这里填的账号密码<b>加密后存在本站</b>，
-    <b>站点管理员在技术上可以解密</b>。请不要填写你在别处复用的重要密码。</p>
-</section>
-${body}`;
 }
 
 /* ─────────────────── 平台概览（admin） ─────────────────── */

@@ -252,6 +252,16 @@ label { display: grid; gap: 5px; font-size: 14px; color: var(--dim); }
 .schedule-form label.radio input { width: auto; margin: 0; }
 .schedule-fields { display: grid; gap: 10px; }
 
+/* 账号列表（任务配置页内）：当前查看的那个加粗 */
+.account-row {
+  display: grid;
+  gap: 4px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.account-row.current .row-main { font-weight: 600; }
+.account-row .row-main { color: var(--text); }
+
 /* 邀请码行：链接很长，单独占一行并允许换行 */
 .invite-row {
   display: grid;
