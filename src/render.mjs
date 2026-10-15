@@ -56,12 +56,33 @@ export function runBadge(status) {
   return `<span class="badge badge-${s.tone}">${esc(s.text)}</span>`;
 }
 
+/* ── 图标 ────────────────────────────────────────────────
+   全部内联 SVG，不引外部资源也不装图标库：部署时少一个失效点。
+   统一 24 视口、描边风格，颜色跟着 currentColor 走。
+   ------------------------------------------------------ */
+const ICON = {
+  brand:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 5.5v6h-6"/></svg>',
+  home:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg>',
+  tasks:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="M3.8 6.5l1.1 1.1L7 5.4"/><path d="M3.8 12l1.1 1.1L7 10.9"/><path d="M3.8 17.5l1.1 1.1L7 16.4"/></svg>',
+  settings:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h7.5M17 7h3M4 17h2.5M12 17h8"/><circle cx="14.4" cy="7" r="2.4"/><circle cx="9.6" cy="17" r="2.4"/></svg>',
+  admin:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2l7 2.8v5.6c0 4.4-2.9 7.4-7 8.9-4.1-1.5-7-4.5-7-8.9V6l7-2.8z"/><path d="M9.4 11.9l1.9 1.9 3.6-3.6"/></svg>',
+  eye:
+    '<svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.2 12S6 6.2 12 6.2 21.8 12 21.8 12 18 17.8 12 17.8 2.2 12 2.2 12z"/><circle cx="12" cy="12" r="2.7"/></svg>',
+  eyeOff:
+    '<svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.7 6.4A9.7 9.7 0 0 1 12 6.2c6 0 9.8 5.8 9.8 5.8a17.6 17.6 0 0 1-3.2 3.8"/><path d="M6.5 8.3A16.6 16.6 0 0 0 2.2 12S6 17.8 12 17.8a9.8 9.8 0 0 0 3.6-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
+};
+
 const NAV = [
-  { href: '/', label: '概览', key: 'home' },
-  { href: '/tasks', label: '任务', key: 'tasks' },
-  { href: '/settings', label: '设置', key: 'settings' },
+  { href: '/', label: '概览', key: 'home', icon: ICON.home },
+  { href: '/tasks', label: '任务', key: 'tasks', icon: ICON.tasks },
+  { href: '/settings', label: '设置', key: 'settings', icon: ICON.settings },
   /** 只有管理员看得到：普通用户看平台全局没有意义，也是信息泄露 */
-  { href: '/admin', label: '管理', key: 'admin', adminOnly: true },
+  { href: '/admin', label: '管理', key: 'admin', icon: ICON.admin, adminOnly: true },
 ];
 
 /**
@@ -82,13 +103,16 @@ export function layout({ title, active, body, user = null, banner = '' }) {
   const nav = NAV.filter((n) => !n.adminOnly || user?.role === 'admin')
     .map(
       (n) =>
-        `<a class="nav-item ${active === n.key ? 'active' : ''}" href="${n.href}">${esc(n.label)}</a>`,
+        `<a class="nav-item ${active === n.key ? 'active' : ''}" href="${n.href}">` +
+        `<span class="nav-icon">${n.icon}</span><span class="nav-label">${esc(n.label)}</span></a>`,
     )
     .join('');
 
   const logout = user
     ? `<form class="logout" method="post" action="/logout">
-         <span class="who">${esc(user.username)}</span>
+         <span class="who"><span class="avatar">${esc(
+           String(user.username ?? '').slice(0, 1).toUpperCase(),
+         )}</span>${esc(user.username)}</span>
          <button type="submit" class="link-btn">退出</button>
        </form>`
     : '';
@@ -108,7 +132,7 @@ export function layout({ title, active, body, user = null, banner = '' }) {
 <body>
 ${banner}
 <header class="topbar">
-  <span class="brand">WeAuto</span>
+  <span class="brand"><span class="brand-mark">${ICON.brand}</span>WeAuto</span>
   ${logout}
 </header>
 <main class="page">
@@ -143,8 +167,11 @@ export function authPage({ mode, error = '', redirect = '/', hasUsers = true }) 
 </head>
 <body class="auth-body">
 <form class="card auth-card" method="post" action="${isSetup ? '/setup' : '/login'}">
-  <h1>WeAuto</h1>
-  <p class="sub">${esc(title)}</p>
+  <div class="auth-head">
+    <span class="brand-mark brand-mark-lg">${ICON.brand}</span>
+    <h1>WeAuto</h1>
+    <p class="sub">${esc(title)}</p>
+  </div>
   ${hint ? `<p class="hint">${esc(hint)}</p>` : ''}
   ${error ? `<p class="error">${esc(error)}</p>` : ''}
   <input type="hidden" name="redirect" value="${esc(redirect)}">
@@ -152,7 +179,7 @@ export function authPage({ mode, error = '', redirect = '/', hasUsers = true }) 
   <label>密码<input type="password" name="password" autocomplete="${
     isSetup ? 'new-password' : 'current-password'
   }" required>${isSetup ? '<span class="hint">至少 8 位</span>' : ''}</label>
-  <button type="submit">${esc(title)}</button>
+  <button type="submit" class="primary">${esc(title)}</button>
 </form>
 </body>
 </html>`;
@@ -169,8 +196,11 @@ export function registerPage({ code = '', error = '', fatal = '', username = '' 
     ? `<p class="error">${esc(fatal)}</p>
        <p class="hint">找管理员要一个新的邀请链接。</p>`
     : `<form class="card auth-card" method="post" action="/register">
-  <h1>WeAuto</h1>
-  <p class="sub">创建账号</p>
+  <div class="auth-head">
+    <span class="brand-mark brand-mark-lg">${ICON.brand}</span>
+    <h1>WeAuto</h1>
+    <p class="sub">创建账号</p>
+  </div>
   ${error ? `<p class="error">${esc(error)}</p>` : ''}
   <input type="hidden" name="code" value="${esc(code)}">
   <label>用户名<input name="username" value="${esc(username)}" autocomplete="username" autocapitalize="off" required></label>
@@ -178,7 +208,7 @@ export function registerPage({ code = '', error = '', fatal = '', username = '' 
   <p class="hint"><b>先说清楚一件事</b>：你之后在任务里填的账号密码会加密存在本站，
     但<b>站点管理员在技术上可以解密它</b>（密钥在服务器上，这是自建部署的固有性质，不是缺陷）。
     请不要填写你在别处复用的重要密码。</p>
-  <button type="submit">创建账号</button>
+  <button type="submit" class="primary">创建账号</button>
 </form>`;
 
   return `<!doctype html>
@@ -212,7 +242,7 @@ export function pageOverview(data) {
         .map(
           (t) => `<a class="row" href="/tasks/${esc(t.name)}">
             <span class="row-main">${esc(t.displayName)}</span>
-            ${statusBadge(t.todayStatus)}
+            <span class="badges">${statusBadge(t.todayStatus)}</span>
             <span class="row-sub">${esc(t.planReason)}</span>
           </a>`,
         )
@@ -224,7 +254,7 @@ export function pageOverview(data) {
         .map(
           (r) => `<div class="row row-plain">
             <span class="row-main">${esc(r.task)}</span>
-            ${runBadge(r.status)}
+            <span class="badges">${runBadge(r.status)}</span>
             <span class="row-sub">${esc(r.message)}</span>
           </div>`,
         )
@@ -264,8 +294,7 @@ function taskRow(t) {
     t.subscribed && t.missingCredentials?.length ? '<span class="badge badge-off">待填凭据</span>' : '';
   return `<a class="row" href="${href}">
         <span class="row-main">${esc(title)}</span>
-        ${statusBadge(t.todayStatus)}
-        ${credBadge}
+        <span class="badges">${statusBadge(t.todayStatus)}${credBadge}</span>
         <span class="row-sub">${esc(t.scheduleLabel)}${
           t.todayTargetLabel ? ` · 今日 ${esc(t.todayTargetLabel)}` : ''
         }</span>
@@ -356,7 +385,7 @@ export function pageTaskDetail({ task, view, runs, canRun, hiddenSkipped = 0, in
         .map(
           (r) => `<div class="row row-plain">
             <span class="row-main">${esc(r.time ?? '')}</span>
-            ${runBadge(r.status)}
+            <span class="badges">${runBadge(r.status)}</span>
             <span class="row-sub">${esc(r.message)}${
               r.dur ? ` · ${Math.round(r.dur / 1000)}s` : ''
             }${r.trigger === 'manual' ? ' · 手动' : ''}</span>
@@ -410,16 +439,64 @@ function beijingInputValue(ms) {
   return new Date(ms + 8 * 36e5).toISOString().slice(0, 16);
 }
 
+/**
+ * 凭据字段的中文名。
+ *
+ * 模板只给 V2FREE_EMAIL 这种键，界面上不能原样怼给用户看；
+ * 但排错时又需要知道键名，所以中文名后面再跟一个小号的原始键。
+ * 规则只认常见的词尾，认不出来就退化成「去掉任务名前缀后的首字母大写」——
+ * 以后加新任务不用回来改这张表。
+ */
+const FIELD_LABEL_RULES = [
+  [/(^|_)EMAIL$/, '邮箱'],
+  [/(_|^)(PASSWORD|PASSWD|PASS)$/, '密码'],
+  [/(_|^)(USERNAME|USER)$/, '用户名'],
+  [/TOKEN/, '令牌'],
+  [/COOKIE/, 'Cookie'],
+  [/_?KEY$/, '密钥'],
+  [/(PHONE|MOBILE|TEL)/, '手机号'],
+  [/_?URL$/, '地址'],
+];
+
+function fieldLabel(key) {
+  for (const [re, text] of FIELD_LABEL_RULES) {
+    if (re.test(key)) return text;
+  }
+  // 兜底：V2FREE_API_HOST → API HOST → "Api Host"（第一段通常是任务名前缀）
+  const parts = String(key).split('_').filter(Boolean);
+  const rest = parts.length > 1 ? parts.slice(1) : parts;
+  return rest.map((w) => w.charAt(0) + w.slice(1).toLowerCase()).join(' ');
+}
+
+/** 一个凭据字段：中文名 + 原始键名 + 密码可显隐 */
+function credentialField(f) {
+  return `<label class="field">
+    <span class="field-label">${esc(fieldLabel(f.key))}<code class="field-key">${esc(
+      f.key,
+    )}</code></span>
+    <span class="field-control">
+      <input type="password" name="${esc(f.key)}" autocomplete="new-password" placeholder="${
+        f.set ? '已设置，留空表示不修改' : '未设置'
+      }">
+      <button type="button" class="reveal" data-action="toggle-reveal" aria-label="显示密码" title="显示密码">
+        ${ICON.eye}${ICON.eyeOff.replace('<svg', '<svg hidden')}
+      </button>
+    </span>
+  </label>`;
+}
+
 /** 一个账号行：可切换查看、可停用、可删除（默认账号不能删） */
 function accountRow(task, acc, currentKey) {
   const isCurrent = acc.accountKey === currentKey;
   return `<div class="account-row${isCurrent ? ' current' : ''}">
-    <a class="row-main" href="/tasks/${esc(task.name)}/config?account=${esc(
+    <a class="account-name" href="/tasks/${esc(task.name)}/config?account=${esc(
       acc.accountKey,
     )}">${esc(acc.label || '默认账号')}</a>
-    ${acc.enabled ? '' : '<span class="badge badge-off">已停用</span>'}
-    ${acc.missing?.length ? '<span class="badge badge-off">待填凭据</span>' : ''}
-    <span class="invite-actions">
+    <span class="badges">
+      ${acc.enabled ? '' : '<span class="badge badge-off">已停用</span>'}
+      ${acc.missing?.length ? '<span class="badge badge-off">待填凭据</span>' : ''}
+    </span>
+    <span class="account-actions">
       <button class="link-btn" data-action="toggle-account" data-task="${esc(
         task.name,
       )}" data-account="${esc(acc.accountKey)}" data-enabled="${
@@ -485,7 +562,7 @@ export function pageTaskConfig({ task, credential = null }) {
       <label>时刻（北京时间）<input type="datetime-local" name="at" value="${esc(onceAt)}"></label>
       <p class="hint">超过计划时刻 5 分钟还没跑就判为「已错过」，不会自动补跑</p>
     </div>
-    <button type="submit">保存调度</button>
+    <button type="submit" class="primary">保存调度</button>
   </form>
   <div class="actions">
     <button data-action="toggle" data-task="${esc(task.name)}" data-enabled="${
@@ -505,7 +582,7 @@ export function pageTaskConfig({ task, credential = null }) {
   ${
     !credential || !credential.subscribed
       ? `<p class="empty">先启用这个模板，才能填自己的账号。</p>
-         <button data-action="subscribe" data-task="${esc(task.name)}">启用</button>`
+         <button class="primary" data-action="subscribe" data-task="${esc(task.name)}">启用</button>`
       : `<!-- 账号块始终显示：单账号时也能看到它被停用、也能停用它 -->
          <div class="accounts">
            ${credential.accounts.map((a) => accountRow(task, a, credential.accountKey)).join('')}
@@ -522,17 +599,8 @@ export function pageTaskConfig({ task, credential = null }) {
            task.requires.length
              ? `<form class="inline-form cred-form" data-action="save-credentials"
                     data-task="${esc(task.name)}" data-account="${esc(credential.accountKey)}">
-                 ${credential.fields
-                   .map(
-                     (f) =>
-                       `<label>${esc(f.key)}<input type="password" name="${esc(
-                         f.key,
-                       )}" autocomplete="new-password" placeholder="${
-                         f.set ? '已设置，留空表示不修改' : '未设置'
-                       }"></label>`,
-                   )
-                   .join('')}
-                 <button type="submit">保存</button>
+                 ${credential.fields.map(credentialField).join('')}
+                 <button type="submit" class="primary">保存</button>
                </form>
                <p class="hint">留空表示不修改。这里填的账号密码<b>加密后存在本站</b>，
                  <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
@@ -681,7 +749,7 @@ export function pageAdminUsers({
     <label>用户名<input name="username" autocapitalize="off" required></label>
     <label>密码<input type="password" name="password" autocomplete="new-password" required><span class="hint">至少 8 位</span></label>
     <label>角色<select name="role"><option value="user">普通</option><option value="admin">管理员</option></select></label>
-    <button type="submit">创建</button>
+    <button type="submit" class="primary">创建</button>
   </form>
 </section>
 ${
@@ -694,7 +762,7 @@ ${
     <label>备注（给谁的，备查）<input name="note" maxlength="60" placeholder="例如：给小明"></label>
     <label>有效期（天，0 = 长期）<input type="number" name="expiresInDays" value="7" min="0" step="1"></label>
     <label>可用次数<input type="number" name="maxUses" value="1" min="1" step="1"></label>
-    <button type="submit">生成邀请链接</button>
+    <button type="submit" class="primary">生成邀请链接</button>
   </form>
   <div class="invites" data-invite-list>
     ${

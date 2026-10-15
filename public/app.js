@@ -207,6 +207,23 @@
     var action = btn.dataset.action;
     if (action === 'create-user') return; // 表单用 submit 事件处理
 
+    // 密码显隐：纯就地操作，不进 API、也不要被下面的 disabled 闪一下
+    if (action === 'toggle-reveal') {
+      e.preventDefault();
+      var field = btn.closest('.field-control') || btn.parentNode;
+      var pwd = field && field.querySelector('input');
+      if (!pwd) return;
+      var show = pwd.type === 'password';
+      pwd.type = show ? 'text' : 'password';
+      btn.classList.toggle('on', show);
+      var eye = btn.querySelector('.icon-eye');
+      var eyeOff = btn.querySelector('.icon-eye-off');
+      if (eye) eye.hidden = show;
+      if (eyeOff) eyeOff.hidden = !show;
+      btn.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+      return;
+    }
+
     var name = btn.dataset.task;
     btn.disabled = true;
     try {
