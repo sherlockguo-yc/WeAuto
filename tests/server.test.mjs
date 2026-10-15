@@ -1163,7 +1163,26 @@ describe('外观（主题）', () => {
 
     const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     assert.equal(html.includes('href="/settings"'), false, '底部导航里不该再有设置');
-    assert.match(html, /id="user-menu"/, '骨架里要有账号弹层');
+
+    const panel = /<aside class="user-panel"[\s\S]*?<\/aside>/.exec(html)?.[0] ?? '';
+    assert.match(panel, /id="user-menu"/, '骨架里要有账号弹层');
+  });
+
+  it('弹层的系统信息只留「版本 / 运行时长 / 任务模板」', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    const panel = /<aside class="user-panel"[\s\S]*?<\/aside>/.exec(html)?.[0] ?? '';
+
+    // 留着的三项回答的是同一个问题：这次部署生效了吗
+    for (const label of ['版本', '运行时长', '任务模板']) {
+      assert.ok(panel.includes(label), `缺少 ${label}`);
+    }
+    // 数据目录/数据库只有 SSH 到机器上才用得上，在网页里还向普通用户透了路径
+    assert.equal(panel.includes('数据目录'), false, '不该再暴露服务器路径');
+    assert.equal(panel.includes('数据库'), false, '不该再暴露数据库文件名');
+    // 「调度器：运行中」是写死的，scheduler 拿不到真启停状态，假状态不如不显示
+    assert.equal(panel.includes('调度器'), false, '拿不到真值就不要显示');
   });
 
   it('主题脚本内联在 <head> 里（避免先按系统画一遍再翻转的闪屏）', async () => {

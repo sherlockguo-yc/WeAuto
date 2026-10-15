@@ -904,8 +904,15 @@ ${
  * 只放个人偏好与只读信息。这里不再放「管理」入口：管理员导航里已经有
  * 「管理」页（/admin），两处入口重复，且这是个人弹层，不该掺平台级操作。
  *
- * 系统信息默认折叠：换主题是高频动作，看数据目录这种一年一次，
- * 平铺会让弹层高到在手机上顶到屏幕顶端。
+ * 系统信息默认折叠，而且只留三项：版本、运行时长、任务模板。
+ * 它们回答的是同一个问题——「我刚刚那次部署生效了吗」（版本对不对、
+ * 是不是刚重启过、tasks/ 里的文件有没有被加载）。折叠是因为换主题是高频动作，
+ * 看这些一年也没几次，平铺会让弹层在手机上顶到屏幕顶端。
+ *
+ * 被删掉的三项各有各的毛病：数据目录与数据库文件名只有 SSH 到机器上才用得上，
+ * 放在网页里既没人看，又向普通用户透了服务器路径；「调度器」原本是写死的
+ * 「运行中」——scheduler 没有暴露启停状态，那行字在调度真停了的时候会反向误导排查。
+ * 与其显示一个假状态，不如不显示。
  *
  * 代价要说清楚：这块内容只在 JS 可用时打不开——按钮没有 href 可去。
  * 主题切换本来也依赖 JS，所以这里不是能力退化，只是多了一层依赖。
@@ -935,10 +942,7 @@ export function settingsPanel({ username = '', role = '', system }) {
   <summary>系统信息</summary>
   <dl class="kv">
     <dt>版本</dt><dd class="mono">${esc(system.version)}</dd>
-    <dt>数据目录</dt><dd class="mono">${esc(system.dataDir)}</dd>
-    <dt>数据库</dt><dd class="mono">${esc(system.dbFile)}</dd>
     <dt>运行时长</dt><dd>${esc(system.uptime)}</dd>
-    <dt>调度器</dt><dd>${esc(system.scheduler)}</dd>
     <dt>任务模板</dt><dd>${system.taskCount}</dd>
   </dl>
 </details>

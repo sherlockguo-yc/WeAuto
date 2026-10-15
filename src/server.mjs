@@ -15,8 +15,7 @@ import { renderView } from './format.mjs';
 import * as render from './render.mjs';
 import { describeSchedule, summarizeAll, summarizeTask } from './status.mjs';
 import { normalizeSchedule } from './task-contract.mjs';
-import { DB_FILE } from './db.mjs';
-import { DATA_DIR, ROOT, dateInTZ, humanDuration } from './util.mjs';
+import { ROOT, dateInTZ, humanDuration } from './util.mjs';
 
 const COOKIE = 'wa_session';
 
@@ -363,10 +362,7 @@ export function createServer({
         role: req.user.role,
         system: {
           version: process.env.WEAUTO_VERSION || 'dev',
-          dataDir: DATA_DIR,
-          dbFile: path.basename(DB_FILE),
           uptime: humanDuration(process.uptime() * 1000),
-          scheduler: '运行中',
           // 报「看得见的模板数」而不是实例数：这里回答的是「平台上有几个自动化」，
           // 没必要为此把全部订阅和账号再汇总一遍
           taskCount: visibleTasks(req).size,
