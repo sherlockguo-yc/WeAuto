@@ -114,6 +114,17 @@ async function startServer({
   return { base: `http://127.0.0.1:${server.address().port}`, store, auth, scheduler, invites, db };
 }
 
+/** 用 admin 身份生成一个邀请码（多个 describe 都要用，所以放模块级） */
+async function makeInvite(base, cookie, opts = {}) {
+  const res = await fetch(`${base}/api/invites`, {
+    method: 'POST',
+    headers: { cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note: '测试用', ...opts }),
+  });
+  assert.equal(res.status, 200);
+  return await res.json();
+}
+
 /**
  * 拿到会话 cookie。
  * 默认走 `/login`（账号由 startServer 预建）；`viaSetup` 走「首次初始化创建管理员」这条路。
@@ -468,6 +479,41 @@ describe('凭据就近配置', () => {
   });
 });
 
+describe('配置错误的提示', () => {
+  it('任务报 config-error 时，详情页直接说可能是凭据问题', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    store.forUser(USER_ID).appendRun({
+      taskName: 'demo-task',
+      date: '2026-10-14',
+      ts: NOW,
+      status: 'config-error',
+      message: '缺少凭据字段：DEMO_TOKEN（账号「默认」）',
+    });
+
+    const html = await (await fetch(`${base}/tasks/demo-task`, { headers: { cookie } })).text();
+    assert.match(html, /去填写或更新凭据/);
+  });
+});
+
+describe('指定不存在的账号', () => {
+  it('返回 404，而不是静默回退到第一个账号', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    assert.equal(
+      (await fetch(`${base}/api/tasks/demo-task?account=nope`, { headers: { cookie } })).status,
+      404,
+    );
+    assert.equal(
+      (await fetch(`${base}/tasks/demo-task/config?account=nope`, { headers: { cookie } })).status,
+      404,
+    );
+    // 不指定则正常
+    assert.equal((await fetch(`${base}/api/tasks/demo-task`, { headers: { cookie } })).status, 200);
+  });
+});
+
 describe('账号级启停', () => {
   it('停用某个账号，不影响同一订阅下的其他账号', async () => {
     const { base, store } = await startServer();
@@ -600,6 +646,40 @@ describe('账号删除', () => {
     assert.equal(left, 0, '执行历史不该留下没有主人的孤儿行');
   });
 
+  it('删掉用邀请码注册进来的用户不会失败', async () => {
+    const { base, auth, invites } = await startServer();
+    const cookie = await login(base);
+    const { invite } = await makeInvite(base, cookie);
+
+    await fetch(`${base}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ code: invite.code, username: 'todelete', password: 'pass-word-1' }),
+      redirect: 'manual',
+    });
+    const victim = auth.listUsers().find((u) => u.username === 'todelete');
+    assert.ok(victim, '应该注册成功');
+
+    // invites.used_by 指向他，外键没有 ON DELETE —— 不先处理就会删不掉
+    const res = await fetch(`${base}/api/users/${victim.id}`, { method: 'DELETE', headers: { cookie } });
+    assert.equal(res.status, 200);
+    assert.equal(auth.listUsers().some((u) => u.username === 'todelete'), false);
+  });
+
+  it('删掉发过邀请码的管理员不会失败', async () => {
+    const { base, auth, invites } = await startServer();
+    const cookie = await login(base);
+    // 用户名只允许字母数字下划线中文，不能有连字符
+    auth.register({ username: 'otheradmin', password: 'pass-word-1', role: 'admin' });
+    const other = auth.listUsers().find((u) => u.username === 'otheradmin');
+    // 用他的身份发一个码
+    invites.create({ createdBy: other.id, note: '他发的' });
+
+    const res = await fetch(`${base}/api/users/${other.id}`, { method: 'DELETE', headers: { cookie } });
+    assert.equal(res.status, 200);
+    assert.equal(invites.list(10).some((i) => i.note === '他发的'), false, '他发的码应一起清掉');
+  });
+
   it('不能删除自己', async () => {
     const { base, auth } = await startServer();
     const cookie = await login(base);
@@ -675,16 +755,6 @@ describe('注销与改密', () => {
 });
 
 describe('邀请注册', () => {
-  async function makeInvite(base, cookie, opts = {}) {
-    const res = await fetch(`${base}/api/invites`, {
-      method: 'POST',
-      headers: { cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note: '测试用', ...opts }),
-    });
-    assert.equal(res.status, 200);
-    return await res.json();
-  }
-
   const signUp = (base, code, username, password) =>
     fetch(`${base}/register`, {
       method: 'POST',

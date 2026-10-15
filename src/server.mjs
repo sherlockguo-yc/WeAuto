@@ -348,7 +348,12 @@ export function createServer({
     if (task.visibility === 'internal' && role !== 'admin') return null;
     const mine = store.forUser(userId);
     const sub = mine.getSubscription(taskName);
-    const acc = sub?.accounts.find((a) => a.accountKey === accountKey) ?? sub?.accounts[0] ?? null;
+    // 指定了账号却找不到 → 当作不存在。静默回退到第一个账号的话，
+    // 用户会以为自己看的是那个账号，实际是另一个
+    const acc = accountKey
+      ? sub?.accounts.find((a) => a.accountKey === accountKey) ?? null
+      : sub?.accounts[0] ?? null;
+    if (accountKey && !acc) return null;
     const summary = summarizeTask({
       task,
       store: mine,
@@ -405,7 +410,15 @@ export function createServer({
     const mineStore = mine(req);
     const accountKey = String(req.query.account ?? '');
     const sub = mineStore.getSubscription(task.name);
-    const acc = sub?.accounts.find((a) => a.accountKey === accountKey) ?? sub?.accounts[0] ?? null;
+    const acc = accountKey
+      ? sub?.accounts.find((a) => a.accountKey === accountKey) ?? null
+      : sub?.accounts[0] ?? null;
+    if (accountKey && !acc) {
+      return res
+        .status(404)
+        .type('html')
+        .send(render.layout({ title: '未找到', active: 'tasks', body: '<p class="empty">没有这个账号</p>', user: req.user }));
+    }
     const summary = summarizeTask({
       task,
       store: mineStore,
@@ -792,6 +805,8 @@ export function createServer({
     if (!auth.getUser(id)) return res.status(404).json({ error: '没有这个账号' });
 
     try {
+      // invites 的两条外键没有级联，必须单独清；顺序在删账号之前
+      if (invites) invites.purgeUser(id);
       store.purgeUser(id);
       if (userSecrets) userSecrets.removeUser(id);
       auth.removeUser(id);

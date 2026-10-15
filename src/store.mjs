@@ -197,6 +197,12 @@ export function createStore(db, { limits = {} } = {}) {
     countRunsToday: db.prepare(
       `SELECT COUNT(*) AS n FROM runs WHERE user_id = ? AND date = ? AND status <> 'skipped'`,
     ),
+    /** 配额超限的提示当天只记一次，否则每 30 秒一条 */
+    countQuotaSkips: db.prepare(
+      `SELECT COUNT(*) AS n FROM runs
+       WHERE user_id = ? AND date = ? AND task_name = ? AND account_key = ?
+         AND status = 'skipped' AND message LIKE '%配额%'`,
+    ),
 
     /* ───────── 日志 ───────── */
     insertLog: db.prepare(
@@ -544,6 +550,9 @@ export function createStore(db, { limits = {} } = {}) {
       hasScheduledRun,
       /** 今日已执行次数（配额用） */
       countRunsToday: (date) => s.countRunsToday.get(userId, date).n,
+      /** 当天是否已记过一条「配额超限」（避免每轮 tick 都写） */
+      countQuotaSkips: (date, taskName, accountKey = '') =>
+        s.countQuotaSkips.get(userId, date, taskName, accountKey).n,
       appendLogs,
       logsOfRun: (runId) => s.logsOfRun.all(runId),
       getRun: (id) => rowToRun(s.runById.get(id)),

@@ -317,7 +317,20 @@ export function pageTasks({ items, groups }) {
 
 /* ─────────────────── 任务详情 ─────────────────── */
 
+/**
+ * 配置错误多半是凭据没填、或者用户自己改了密码。
+ * 不明说的话，用户只能对着一个 config-error 猜。
+ */
+function credentialHint(task) {
+  const broken = task.todayStatus === 'config-error' || task.lastRun?.status === 'config-error';
+  if (!broken) return '';
+  const href = `/tasks/${esc(task.name)}/config${task.accountKey ? `?account=${esc(task.accountKey)}` : ''}`;
+  return `<div class="banner banner-bad">这个任务报了配置错误，通常是账号密码没填，
+    或者你在别处改过密码。<a href="${href}">去填写或更新凭据</a></div>`;
+}
+
 export function pageTaskDetail({ task, view, runs, canRun, hiddenSkipped = 0, includeSkipped = false }) {
+  const hintHtml = credentialHint(task);
   const result = view.rows.length
     ? `<dl class="kv">${view.rows
         .map(
@@ -350,6 +363,7 @@ export function pageTaskDetail({ task, view, runs, canRun, hiddenSkipped = 0, in
     : '<p class="empty">还没有执行记录</p>';
 
   return `
+${hintHtml}
 <section class="card">
   <h2>${esc(task.accountCount > 1 ? `${task.displayName} · ${task.accountLabel || '默认'}` : task.displayName)} ${statusBadge(task.todayStatus)}</h2>
   <p class="sub">${esc(task.description ?? task.name)}</p>

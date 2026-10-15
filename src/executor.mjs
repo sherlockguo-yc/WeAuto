@@ -79,6 +79,8 @@ export function createExecutor({
       const used = mine.countRunsToday(date);
       if (used >= quotaPerDay) {
         log(`[quota] 用户 ${userId} 今日已执行 ${used} 次，达到上限 ${quotaPerDay}`);
+        // 提示当天只写一条：否则每 30 秒一次 tick，一天能攒出近三千条一样的记录
+        if (mine.countQuotaSkips(date, task.name, accountKey) > 0) return null;
         return mine.appendRun({
           taskName: task.name,
           accountKey,

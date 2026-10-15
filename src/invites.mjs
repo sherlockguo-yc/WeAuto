@@ -37,6 +37,9 @@ export function createInvites(db) {
        WHERE code = ? AND revoked_at IS NULL AND used_count < max_uses`,
     ),
     revoke: db.prepare('UPDATE invites SET revoked_at = ? WHERE code = ? AND revoked_at IS NULL'),
+    /* 删号用：invites 的两条外键都没有 ON DELETE，不先处理就删不掉账号 */
+    deleteByCreator: db.prepare('DELETE FROM invites WHERE created_by = ?'),
+    clearUsedBy: db.prepare('UPDATE invites SET used_by = NULL WHERE used_by = ?'),
   };
 
   /**
@@ -92,6 +95,21 @@ export function createInvites(db) {
     return st.recent.all(limit);
   }
 
+  /**
+   * 删号前必须调用：否则 `DELETE FROM users` 会被 invites 的外键挡下（500）。
+   *
+   * 两种引用的处理不同：
+   *   · 他发的码 —— 主人没了，码也该消失
+   *   · 他用过的码 —— 码是别人发的，只把 used_by 置空，码本身留着
+   */
+  function purgeUser(userId) {
+    const tx = db.transaction(() => {
+      st.deleteByCreator.run(userId);
+      st.clearUsedBy.run(userId);
+    });
+    tx();
+  }
+
   function revoke(code) {
     return st.revoke.run(Date.now(), code).changes > 0;
   }
@@ -116,5 +134,5 @@ export function createInvites(db) {
     };
   }
 
-  return { create, check, consume, list, revoke, describe };
+  return { create, check, consume, list, revoke, describe, purgeUser };
 }

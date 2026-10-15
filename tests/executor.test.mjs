@@ -109,6 +109,21 @@ describe('配额', () => {
     assert.equal(store.forUser(USER_ID).countRunsToday('2026-10-14'), 2);
   });
 
+  it('超限提示当天只写一条（否则每 30 秒一条，一天近三千条）', async () => {
+    const { store } = fresh();
+    const ex = createExecutor({ store, quotaPerDay: 1, now: () => NOW });
+
+    await ex(task, { trigger: 'manual', userId: USER_ID });
+    const first = await ex(task, { trigger: 'manual', userId: USER_ID });
+    assert.equal(first.status, 'skipped');
+
+    const second = await ex(task, { trigger: 'manual', userId: USER_ID });
+    assert.equal(second, null, '之后再触发就不再写记录');
+
+    const runs = store.forUser(USER_ID).runsOfTask('t', { limit: 20 });
+    assert.equal(runs.filter((r) => r.status === 'skipped').length, 1);
+  });
+
   it('配额按用户分开', async () => {
     const { store } = fresh();
     const ex = createExecutor({ store, quotaPerDay: 1, now: () => NOW });
