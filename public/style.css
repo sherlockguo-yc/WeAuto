@@ -633,10 +633,25 @@ button.flash-error { color: var(--bad); }
 }
 
 .inline-form { display: grid; gap: 12px; }
+/* 表单里的按钮按字数收缩，不再被 grid 拉成整行宽 */
+.inline-form button, .schedule-form button[type='submit'] {
+  width: auto;
+  justify-self: start;
+}
 label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
 
-/* ── 字段：中文名在上，原始键名以小号等宽跟在后面（排错时还要用） ── */
-.field { gap: 7px; }
+/* ── 字段：标签在左、控件在右，同一行；控件限宽，不再拉满整张卡片 ──
+   两列都用变量，调度表单的文案更长、控件更短，只改变量不改结构。 */
+.field,
+.schedule-fields label {
+  display: grid;
+  grid-template-columns: var(--label-w, 132px) minmax(0, var(--control-w, 420px));
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 6px;
+  width: 100%;
+}
+.schedule-fields { --label-w: 176px; --control-w: 240px; }
 .field-label {
   display: flex;
   align-items: baseline;
@@ -889,6 +904,11 @@ select {
 .auth-card .sub { margin: 0; text-align: center; }
 .auth-card button { margin-top: 4px; }
 .error { color: var(--bad); font-size: 14px; margin: 0; }
+
+@media (max-width: 639px) {
+  /* 窄屏放不下「标签 + 限宽控件」两列，退回标签在上、控件全宽 */
+  .field, .schedule-fields label { grid-template-columns: 1fr; }
+}
 
 @media (min-width: 640px) {
   .grid { grid-template-columns: repeat(4, 1fr); }

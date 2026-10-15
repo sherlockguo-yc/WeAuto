@@ -700,7 +700,10 @@ function taskConfigBody({ task, credential = null }) {
          ${
            credential.multiAccount
              ? `<form class="inline-form add-account" data-action="add-account" data-task="${esc(task.name)}">
-                  <label>再加一个账号<input name="label" placeholder="例如：小号" maxlength="32"></label>
+                  <label class="field">
+                    <span class="field-label">再加一个账号</span>
+                    <input name="label" placeholder="例如：小号" maxlength="32">
+                  </label>
                   <button type="submit">添加账号</button>
                 </form>`
              : ''
