@@ -78,6 +78,29 @@
   }
 
   /**
+   * 生成邀请后不刷新页面：克隆页面里那个 <template> 造一行插到列表最上面。
+   * 行结构只在 render.mjs 里维护一份，这里只填内容。
+   * @returns {boolean} 页面上没有列表容器时返回 false（调用方退回刷新）
+   */
+  function addInviteRow(made) {
+    var list = document.querySelector('[data-invite-list]');
+    var tpl = document.getElementById('invite-row-tpl');
+    if (!list || !tpl || !made || !made.invite) return false;
+
+    var frag = tpl.content.cloneNode(true);
+    var row = frag.querySelector('.invite-row');
+    row.querySelector('.row-main').textContent = made.invite.note || '（无备注）';
+    row.querySelector('.invite-url').textContent = made.url;
+    row.querySelector('[data-action="copy-invite"]').dataset.url = made.url;
+    row.querySelector('[data-action="revoke-invite"]').dataset.code = made.invite.code;
+
+    var empty = list.querySelector('.empty');
+    if (empty) empty.remove();
+    list.insertBefore(row, list.firstChild);
+    return true;
+  }
+
+  /**
    * 复制文本。navigator.clipboard 只在 HTTPS / localhost 下存在，
    * HTTP 自建部署里它是 undefined，直接调用会抛 TypeError，
    * 所以退回到隐藏 textarea + execCommand（iOS 还要补 setSelectionRange）。
@@ -324,11 +347,20 @@
           expiresInDays: Number(ifd.get('expiresInDays')),
           maxUses: Number(ifd.get('maxUses')),
         });
-        hint('已生成：' + made.url);
-        location.reload();
+        if (!addInviteRow(made)) {
+          location.reload(); // 页面上没有列表容器就退回原来的刷新
+          return;
+        }
+        inviteForm.reset();
+        if (invBtn) {
+          invBtn.disabled = false;
+          flash(invBtn, '已生成 ✓', 'ok');
+        }
       } catch (err) {
-        hint(err.message, 'error');
-        if (invBtn) invBtn.disabled = false;
+        if (invBtn) {
+          invBtn.disabled = false;
+          flash(invBtn, err.message, 'error');
+        }
       }
       return;
     }
@@ -349,8 +381,11 @@
       });
       location.reload();
     } catch (err) {
-      hint(err.message, 'error');
-      if (btn) btn.disabled = false;
+      // 设置页没有 #action-hint，hint() 会静默丢掉，所以也在按钮上说一句
+      if (btn) {
+        btn.disabled = false;
+        flash(btn, err.message, 'error');
+      }
     }
   });
 })();

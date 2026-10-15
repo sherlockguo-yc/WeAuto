@@ -61,7 +61,7 @@ const NAV = [
   { href: '/tasks', label: '任务', key: 'tasks' },
   { href: '/settings', label: '设置', key: 'settings' },
   /** 只有管理员看得到：普通用户看平台全局没有意义，也是信息泄露 */
-  { href: '/admin', label: '平台', key: 'admin', adminOnly: true },
+  { href: '/admin', label: '管理', key: 'admin', adminOnly: true },
 ];
 
 /**
@@ -552,10 +552,29 @@ export function pageTaskConfig({ task, credential = null }) {
 </section>`;
 }
 
-/* ─────────────────── 平台概览（admin） ─────────────────── */
+/* ─────────────────── 管理（admin） ─────────────────── */
 
-/** 账号行：管理员可在设置页与平台页复用（后者带删除，前者不带） */
-function adminUserRow(u, { deletable = false } = {}) {
+/**
+ * 账号行，只给账号管理页用。
+ *
+ * 停用与删除都对自己不渲染：停用自己等于把自己锁在门外，删除自己会让请求
+ * 在半途把自己的会话注销掉——服务端各拦一道，这里直接不给按钮，
+ * 免得「点了才报错」。
+ */
+function adminUserRow(u, { currentUserId = null, canDelete = false } = {}) {
+  const actions =
+    u.id === currentUserId
+      ? ''
+      : `<span class="invite-actions">
+        <button class="link-btn" data-action="toggle-user" data-user="${u.id}" data-status="${esc(
+          u.status,
+        )}">${u.status === 'active' ? '停用' : '启用'}</button>
+        ${
+          canDelete
+            ? `<button class="link-danger" data-action="delete-user" data-user="${u.id}">删除</button>`
+            : ''
+        }
+      </span>`;
   return `<div class="user-row">
         <span class="row-main">${esc(u.username)}</span>
         <span class="badges">
@@ -571,15 +590,12 @@ function adminUserRow(u, { deletable = false } = {}) {
             ? esc(new Date(u.lastLoginAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }))
             : '从未'
         }</span>
-        ${
-          deletable
-            ? `<button class="link-danger" data-action="delete-user" data-user="${u.id}">删除</button>`
-            : ''
-        }
+        ${actions}
       </div>`;
 }
 
-export function pageAdmin({ users = [], subs = {}, today = {}, ranking = [], currentUserId = null }) {
+/** 管理首页：跨用户的只读统计 + 各管理功能的入口 */
+export function pageAdmin({ users = [], subs = {}, today = {}, ranking = [] }) {
   const rankingHtml = ranking.length
     ? ranking
         .map(
@@ -591,10 +607,6 @@ export function pageAdmin({ users = [], subs = {}, today = {}, ranking = [], cur
         .join('')
     : '<p class="empty">最近一周没有失败记录</p>';
 
-  const userRows = users
-    .map((u) => adminUserRow(u, { deletable: u.id !== currentUserId }))
-    .join('');
-
   return `
 <section class="grid">
   <div class="stat"><b>${users.length}</b><span>账号</span></div>
@@ -604,72 +616,37 @@ export function pageAdmin({ users = [], subs = {}, today = {}, ranking = [], cur
 </section>
 
 <section class="card">
-  <h2>最近 7 天失败最多</h2>
-  ${rankingHtml}
+  <h2>账号</h2>
+  <a class="row" href="/admin/users">
+    <span class="row-main">管理账号</span>
+    <span class="row-sub">新建账号、停用 / 启用、删除，以及邀请码</span>
+  </a>
 </section>
 
 <section class="card">
-  <h2>账号</h2>
-  ${userRows}
-  <p class="hint">删除会连同他的订阅、凭据和执行历史一起清掉，不可恢复。</p>
+  <h2>最近 7 天失败最多</h2>
+  ${rankingHtml}
 </section>`;
 }
 
-/* ─────────────────── 设置 ─────────────────── */
-
-export function pageSettings({
-  users,
-  canCreateUser,
-  system,
-  invites = [],
+/** 账号管理（admin）：账号的增删改 + 邀请码。与设置页分开，设置页只放个人偏好 */
+export function pageAdminUsers({
+  users = [],
+  canCreateUser = false,
+  /** null = 未启用邀请码（此时整块不渲染） */
+  invites = null,
   baseUrl = '',
   currentUserId = null,
 }) {
-  // 账号行单独一套栅格：两个徽章归到右上角，操作按钮独占一行。
-  // 用通用 .row 时徽章与按钮会挤在同一格里，手机上看起来是错乱的。
   const list = users
-    .map(
-      (u) => `<div class="user-row">
-        <span class="row-main">${esc(u.username)}</span>
-        <span class="badges">
-          <span class="badge badge-${u.role === 'admin' ? 'ok' : 'off'}">${esc(
-            u.role === 'admin' ? '管理员' : '普通',
-          )}</span>
-          <span class="badge badge-${u.status === 'active' ? 'ok' : 'bad'}">${esc(
-            u.status === 'active' ? '正常' : '已停用',
-          )}</span>
-        </span>
-        <span class="row-sub">最近登录 ${
-          u.lastLoginAt ? esc(new Date(u.lastLoginAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })) : '从未'
-        }</span>
-        <span class="invite-actions">
-          <button class="link-btn" data-action="toggle-user" data-user="${u.id}" data-status="${esc(
-            u.status,
-          )}">${u.status === 'active' ? '停用' : '启用'}</button>
-          ${
-            canCreateUser && u.id !== currentUserId
-              ? `<button class="link-danger" data-action="delete-user" data-user="${u.id}">删除</button>`
-              : ''
-          }
-        </span>
-      </div>`,
-    )
+    .map((u) => adminUserRow(u, { currentUserId: currentUserId, canDelete: canCreateUser }))
     .join('');
 
   return `
 <section class="card">
-  <h2>外观</h2>
-  <div class="segmented" data-theme-picker>
-    <button type="button" data-theme-value="system" class="active">跟随系统</button>
-    <button type="button" data-theme-value="light">浅色</button>
-    <button type="button" data-theme-value="dark">深色</button>
-  </div>
-  <p class="hint">默认跟随系统深浅色；选择后会记住，下次打开仍然生效。</p>
-</section>
-
-<section class="card">
   <h2>账号</h2>
   ${list}
+  <p class="hint">停用只拒绝登录、不再参与调度，订阅与历史都留着，随时可以启用；删除会连同他的订阅、凭据和执行历史一起清掉，不可恢复。</p>
 </section>
 
 <section class="card">
@@ -681,10 +658,10 @@ export function pageSettings({
     <button type="submit">创建</button>
   </form>
 </section>
-
 ${
-  canCreateUser
-    ? `<section class="card">
+  invites
+    ? `
+<section class="card">
   <h2>邀请码</h2>
   <p class="sub">新用户只能凭邀请链接注册。默认单次使用、7 天过期，随时可撤销。</p>
   <form class="inline-form" data-action="create-invite">
@@ -693,38 +670,87 @@ ${
     <label>可用次数<input type="number" name="maxUses" value="1" min="1" step="1"></label>
     <button type="submit">生成邀请链接</button>
   </form>
-  ${
-    invites.length
-      ? `<div class="invites">
-    ${invites
-      .map((i) => {
-        const url = `${baseUrl}/register?code=${encodeURIComponent(i.code)}`;
-        const label = {
-          unused: '未使用',
-          partial: `已用 ${i.usedCount}/${i.maxUses}`,
-          used: '已用完',
-          expired: '已过期',
-          revoked: '已撤销',
-        }[i.state];
-        const canRevoke = i.state === 'unused' || i.state === 'partial';
-        return `<div class="invite-row">
-      <span class="row-main mono">${esc(i.note || '（无备注）')}</span>
-      <span class="badges"><span class="badge badge-${i.state === 'unused' ? 'ok' : 'off'}">${esc(label)}</span></span>
+  <div class="invites" data-invite-list>
+    ${
+      invites.length
+        ? invites
+            .map((i) => {
+              const url = `${baseUrl}/register?code=${encodeURIComponent(i.code)}`;
+              const label = {
+                unused: '未使用',
+                partial: `已用 ${i.usedCount}/${i.maxUses}`,
+                used: '已用完',
+                expired: '已过期',
+                revoked: '已撤销',
+              }[i.state];
+              return inviteRowHtml({
+                note: i.note,
+                label: label,
+                url: url,
+                code: i.code,
+                tone: i.state === 'unused' ? 'ok' : 'off',
+                canRevoke: i.state === 'unused' || i.state === 'partial',
+              });
+            })
+            .join('')
+        : '<p class="empty">还没有生成过邀请码</p>'
+    }
+  </div>
+  ${inviteRowTemplate()}
+</section>`
+    : ''
+}`;
+}
+
+/* ─────────────────── 设置 ─────────────────── */
+
+/**
+ * 一行邀请码。列表由服务端渲染，但「生成后不刷新页面、直接把新行插到最上面」
+ * 也需要在前端造出同样结构的 DOM —— 两边各写一遍结构迟早会走样，
+ * 所以页面里再带一个由本函数渲染的空壳 <template>，前端克隆它、只填内容。
+ */
+function inviteRowHtml({ note = '', label = '未使用', url = '', code = '', tone = 'ok', canRevoke = true }) {
+  return `<div class="invite-row">
+      <span class="row-main mono">${esc(note || '（无备注）')}</span>
+      <span class="badges"><span class="badge badge-${tone === 'ok' ? 'ok' : 'off'}">${esc(label)}</span></span>
       <span class="row-sub mono invite-url">${esc(url)}</span>
       <span class="invite-actions">
         <button class="link-btn" data-action="copy-invite" data-url="${esc(url)}">复制链接</button>
         ${
           canRevoke
-            ? `<button class="link-danger" data-action="revoke-invite" data-code="${esc(i.code)}">撤销</button>`
+            ? `<button class="link-danger" data-action="revoke-invite" data-code="${esc(code)}">撤销</button>`
             : ''
         }
       </span>
     </div>`;
-      })
-      .join('')}
-  </div>`
-      : '<p class="empty">还没有生成过邀请码</p>'
-  }
+}
+
+/** 给前端克隆用的空壳。刚生成的码必然是「未使用 + 可撤销」，徽章不用改 */
+function inviteRowTemplate() {
+  return `<template id="invite-row-tpl">${inviteRowHtml({})}</template>`;
+}
+
+/** 设置页只放个人偏好与只读信息；账号管理在 /admin/users */
+export function pageSettings({ system, isAdmin = false }) {
+  return `
+<section class="card">
+  <h2>外观</h2>
+  <div class="segmented" data-theme-picker>
+    <button type="button" data-theme-value="system" class="active">跟随系统</button>
+    <button type="button" data-theme-value="light">浅色</button>
+    <button type="button" data-theme-value="dark">深色</button>
+  </div>
+  <p class="hint">默认跟随系统深浅色；选择后会记住，下次打开仍然生效。</p>
+</section>
+${
+  isAdmin
+    ? `
+<section class="card">
+  <h2>管理</h2>
+  <a class="row" href="/admin/users">
+    <span class="row-main">管理账号</span>
+    <span class="row-sub">新建账号、停用 / 启用、删除，以及邀请码</span>
+  </a>
 </section>`
     : ''
 }
