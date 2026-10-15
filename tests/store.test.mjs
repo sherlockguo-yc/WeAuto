@@ -208,85 +208,93 @@ describe('调度状态', () => {
   });
 });
 
-describe('订阅（用户 × 模板：没订阅就没有这个实例）', () => {
-  it('未订阅时没有实例，也不是启用状态', () => {
+describe('任务（一个任务 = 一个账号）', () => {
+  it('没建任务时列表是空的', () => {
     const store = fresh();
-    assert.equal(store.getSubscription('t'), null);
-    assert.equal(store.isEnabled('t'), false);
+    assert.deepEqual(store.listTasks(), []);
+    assert.equal(store.getTask(1), null);
   });
 
-  it('订阅后默认启用，并自动建一个默认账号', () => {
+  it('建任务默认启用，并自带一个账号', () => {
     const store = fresh();
-    const sub = store.subscribe('t');
-    assert.equal(sub.enabled, true);
-    assert.deepEqual(sub.accounts.map((a) => a.accountKey), ['']);
-    assert.equal(store.isEnabled('t'), true);
+    const t = store.createTask('t', { label: '主号' });
+    assert.equal(t.enabled, true);
+    assert.equal(t.label, '主号');
+    assert.ok(t.accountKey.length > 0 || t.accountKey === '', '每个任务都有自己的账号维度');
+    assert.equal(store.listTasks().length, 1);
+  });
+
+  it('同一个模板可以建多个任务，账号互不相同', () => {
+    const store = fresh();
+    const a = store.createTask('t', { label: '主号' });
+    const b = store.createTask('t', { label: '小号' });
+    assert.notEqual(a.id, b.id);
+    assert.notEqual(a.accountKey, b.accountKey);
+    assert.equal(store.tasksOfTemplate('t').length, 2);
   });
 
   it('只改 enabled 不会抹掉已设置的调度', () => {
     const store = fresh();
-    store.subscribe('t', { schedule: { kind: 'every', every: { minutes: 5 } } });
-    store.setSubscription('t', { enabled: false });
+    const t = store.createTask('t', { schedule: { kind: 'every', every: { minutes: 5 } } });
+    store.updateTask(t.id, { enabled: false });
 
-    const o = store.getSubscription('t');
+    const o = store.getTask(t.id);
     assert.equal(o.enabled, false);
     assert.equal(o.schedule.every.minutes, 5);
   });
 
   it('只改调度不会把 enabled 翻回默认', () => {
     const store = fresh();
-    store.subscribe('t');
-    store.setSubscription('t', { enabled: false });
-    store.setSubscription('t', { timeoutMs: 5000 });
-    assert.equal(store.getSubscription('t').enabled, false);
+    const t = store.createTask('t');
+    store.updateTask(t.id, { enabled: false });
+    store.updateTask(t.id, { timeoutMs: 5000 });
+    assert.equal(store.getTask(t.id).enabled, false);
   });
 
-  it('取消订阅后实例消失', () => {
+  it('删掉任务后它就不在了；再删一次什么也没发生', () => {
     const store = fresh();
-    store.subscribe('t', { enabled: false });
-    assert.equal(store.unsubscribe('t'), true);
-    assert.equal(store.getSubscription('t'), null);
-    assert.equal(store.isEnabled('t'), false);
-    assert.equal(store.unsubscribe('t'), false); // 再删一次什么也没发生
+    const t = store.createTask('t');
+    assert.equal(store.deleteTask(t.id), true);
+    assert.equal(store.getTask(t.id), null);
+    assert.equal(store.deleteTask(t.id), false);
+  });
+
+  it('拿不到别人的任务：getTask 只认自己的', () => {
+    const root = freshRoot();
+    const a = root.forUser(1);
+    const b = root.forUser(2);
+    const t = a.createTask('t');
+    assert.equal(b.getTask(t.id), null);
+    assert.equal(b.updateTask(t.id, { enabled: false }), null);
+    assert.equal(b.deleteTask(t.id), false);
+    assert.equal(a.getTask(t.id).enabled, true, '别人的操作没碰到我的任务');
   });
 });
 
-describe('多账号', () => {
-  it('同一模板下可以配多个账号，互不干扰', () => {
-    const store = fresh();
-    store.subscribe('t');
-    const k1 = store.addAccount('t', { label: '主号' });
-    const k2 = store.addAccount('t', { label: '小号' });
-    assert.notEqual(k1, k2);
-    assert.equal(store.activeAccounts('t').length, 3); // 默认账号 + 两个
-    assert.equal(store.removeAccount('t', k2), true);
-    assert.equal(store.activeAccounts('t').length, 2);
-  });
-
+describe('每个任务的历史各自独立', () => {
   /**
-   * 这是多账号最容易踩的坑：幂等如果只按「任务 + 日期」判断，
-   * A 账号成功后 B 账号会被判「今日已完成」而跳过。
+   * 这是最容易踩的坑：幂等如果只按「模板 + 日期」判断，
+   * A 任务成功后 B 任务会被判「今日已完成」而跳过。
    */
-  it('今日是否成功按账号区分：A 成功不代表 B 成功', () => {
+  it('今日是否成功按任务区分：A 成功不代表 B 成功', () => {
     const store = fresh();
-    store.subscribe('t');
-    const b = store.addAccount('t', { label: '小号' });
-    store.appendRun({ taskName: 't', accountKey: b, date: '2026-10-14', ts: 1, status: 'success' });
+    const a = store.createTask('t', { label: '主号' });
+    const b = store.createTask('t', { label: '小号' });
+    store.appendRun({ taskName: 't', accountKey: b.accountKey, date: '2026-10-14', ts: 1, status: 'success' });
 
-    assert.equal(store.hasSuccessOn('t', '2026-10-14', b), true);
-    assert.equal(store.hasSuccessOn('t', '2026-10-14', ''), false);
-    assert.equal(store.hasSuccessOn('t', '2026-10-14'), false);
+    assert.equal(store.hasSuccessOn('t', '2026-10-14', b.accountKey), true);
+    assert.equal(store.hasSuccessOn('t', '2026-10-14', a.accountKey), false);
   });
 
-  it('历史可以按账号筛选', () => {
+  it('历史按任务（账号）分开查', () => {
     const store = fresh();
-    store.subscribe('t');
-    const b = store.addAccount('t', { label: '小号' });
-    store.appendRun({ taskName: 't', accountKey: '', date: '2026-10-14', ts: 1, status: 'success' });
-    store.appendRun({ taskName: 't', accountKey: b, date: '2026-10-14', ts: 2, status: 'success' });
+    const a = store.createTask('t', { label: '主号' });
+    const b = store.createTask('t', { label: '小号' });
+    store.appendRun({ taskName: 't', accountKey: a.accountKey, date: '2026-10-14', ts: 1, status: 'success' });
+    store.appendRun({ taskName: 't', accountKey: b.accountKey, date: '2026-10-14', ts: 2, status: 'success' });
 
-    assert.equal(store.runsOfTask('t', { accountKey: b, limit: 10 }).length, 1);
-    assert.equal(store.runsOfTask('t', { limit: 10 }).length, 2); // 不传就是全部账号
+    assert.equal(store.runsOfTask('t', { accountKey: b.accountKey, limit: 10 }).length, 1);
+    assert.equal(store.runsOfTask('t', { limit: 10 }).length, 2); // 不传就是这个模板下全部任务
   });
 });
 
@@ -295,8 +303,8 @@ describe('多租户隔离', () => {
     const root = freshRoot();
     const a = root.forUser(1);
     const b = root.forUser(2);
-    a.subscribe('t');
-    b.subscribe('t');
+    a.createTask('t');
+    b.createTask('t');
     a.appendRun({ taskName: 't', date: '2026-10-14', ts: 1, status: 'success', message: 'a' });
     b.appendRun({ taskName: 't', date: '2026-10-14', ts: 2, status: 'failed', message: 'b' });
 
@@ -307,8 +315,8 @@ describe('多租户隔离', () => {
 
   it('调度状态也按用户 × 账号分开', () => {
     const root = freshRoot();
-    root.forUser(1).subscribe('t');
-    root.forUser(2).subscribe('t');
+    root.forUser(1).createTask('t');
+    root.forUser(2).createTask('t');
     root.forUser(1).saveState('t', '', { today_target_ts: 111 });
     root.forUser(2).saveState('t', '', { today_target_ts: 222 });
 
@@ -316,19 +324,19 @@ describe('多租户隔离', () => {
     assert.equal(root.forUser(2).stateOf('t').today_target_ts, 222);
   });
 
-  it('调度器能跨用户遍历全部订阅', () => {
+  it('调度器能跨用户遍历全部任务', () => {
     const root = freshRoot();
-    root.forUser(1).subscribe('t');
-    root.forUser(2).subscribe('u');
-    const subs = root.allSubscriptions();
+    root.forUser(1).createTask('t');
+    root.forUser(2).createTask('u');
+    const subs = root.allTasks();
     assert.equal(subs.length, 2);
     assert.deepEqual([...new Set(subs.map((s) => s.userId))].sort(), [1, 2]);
   });
 
   it('删号清理只影响那个人', () => {
     const root = freshRoot();
-    root.forUser(1).subscribe('t');
-    root.forUser(2).subscribe('t');
+    root.forUser(1).createTask('t');
+    root.forUser(2).createTask('t');
     root.forUser(1).appendRun({ taskName: 't', date: '2026-10-14', ts: 1, status: 'success' });
     root.forUser(2).appendRun({ taskName: 't', date: '2026-10-14', ts: 2, status: 'success' });
 
@@ -339,38 +347,39 @@ describe('多租户隔离', () => {
 });
 
 describe('资源上限（由装配层注入，本模块不读环境变量）', () => {
-  it('订阅数达到上限后拒绝', () => {
+  it('任务数达到上限后拒绝', () => {
     const root = freshRoot({ maxSubscriptions: 2 });
     const mine = root.forUser(USER_ID);
-    mine.subscribe('a');
-    mine.subscribe('b');
-    assert.throws(() => mine.subscribe('c'), /上限/);
-    // 已订阅的是更新，不该被名额挡住
-    assert.equal(mine.subscribe('a', { enabled: false }).enabled, false);
+    mine.createTask('a');
+    mine.createTask('b');
+    assert.throws(() => mine.createTask('c'), /上限/);
+    // 改已有任务是更新，不该被名额挡住
+    const a = mine.tasksOfTemplate('a')[0];
+    assert.equal(mine.updateTask(a.id, { enabled: false }).enabled, false);
   });
 
   it('间隔低于下限直接拒绝保存', () => {
     const root = freshRoot({ minIntervalMinutes: 5 });
     const mine = root.forUser(USER_ID);
     assert.throws(
-      () => mine.subscribe('t', { schedule: { kind: 'every', every: { minutes: 1 } } }),
+      () => mine.createTask('t', { schedule: { kind: 'every', every: { minutes: 1 } } }),
       /不能小于 5 分钟/,
     );
-    const ok = mine.subscribe('t', { schedule: { kind: 'every', every: { minutes: 10 } } });
+    const ok = mine.createTask('t', { schedule: { kind: 'every', every: { minutes: 10 } } });
     assert.equal(ok.schedule.every.minutes, 10);
     assert.throws(
-      () => mine.setSubscription('t', { schedule: { kind: 'every', every: { minutes: 1 } } }),
+      () => mine.updateTask(ok.id, { schedule: { kind: 'every', every: { minutes: 1 } } }),
       /不能小于 5 分钟/,
     );
   });
 
-  it('一个订阅下的账号数量有上限', () => {
-    const root = freshRoot({ maxAccountsPerSubscription: 3 });
+  it('同一个模板能建几个任务，也受任务总数上限约束', () => {
+    const root = freshRoot({ maxSubscriptions: 3 });
     const mine = root.forUser(USER_ID);
-    mine.subscribe('t'); // 自带一个默认账号
-    mine.addAccount('t', { label: '二号' });
-    mine.addAccount('t', { label: '三号' });
-    assert.throws(() => mine.addAccount('t', { label: '四号' }), /最多配 3 个账号/);
+    mine.createTask('t', { label: '一号' });
+    mine.createTask('t', { label: '二号' });
+    mine.createTask('t', { label: '三号' });
+    assert.throws(() => mine.createTask('t', { label: '四号' }), /上限/);
   });
 
   it('countRunsToday 不计入 skipped（它不代表真的发出过请求）', () => {

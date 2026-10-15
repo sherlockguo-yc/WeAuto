@@ -1,9 +1,9 @@
 /**
- * 数据访问层 —— 订阅、账号、执行记录、运行日志、调度状态、每日统计
+ * 数据访问层 —— 任务配置、账号、执行记录、运行日志、调度状态、每日统计
  *
  * 【单租户 → 多租户的结构性变化】
  *   以前所有方法都以 `task_name` 为唯一维度，任务属于「这台机器」。
- *   现在任务实例属于某个用户，所以本模块对外**只提供绑定了用户的视图**：
+ *   现在「这个任务在我这儿怎么跑」属于某个用户，所以本模块对外**只提供绑定了用户的视图**：
  *
  *     const store = createStore(db);
  *     const mine = store.forUser(req.user.id);
@@ -14,7 +14,11 @@
  *   靠每个调用点记得传参数迟早会漏一个。绑定视图让调用方**拿不到不带用户的 store**，
  *   漏过滤在结构上就不可能发生。
  *
- *   全局对象只保留后台必需的三个入口：`forUser` / `allSubscriptions` / `allUserIds`
+ *   `subscriptions` 这张表存的就是「我的任务配置」：启停、调度、超时，
+ *   以及我在这个任务下配的账号。表名沿用建表时的叫法（迁移只追加不改），
+ *   对外一律叫「任务配置」——用户视角里没有「订阅」这个概念。
+ *
+ *   全局对象只保留后台必需的三个入口：`forUser` / `allConfigs` / `allUserIds`
  *   （调度器与保留策略要跨用户遍历），以及 `purgeUser`（删号清理）。
  *
  * 两条与保留策略相关的约定（沿用）：
@@ -49,7 +53,7 @@ function rowToRun(row) {
     task: row.task_name,
     /*
      * 归一成字符串。account_key 在迁移 2 里是可空列，命令行时代导入的历史记录是 NULL，
-     * 而订阅账号里「默认」账号的 key 是 ''——一 NULL 一 '' 会拼出两个不同的 map key，
+     * 而账号表里「默认」账号的 key 是 ''——一 NULL 一 '' 会拼出两个不同的 map key，
      * status.mjs 匹配不上就回退显示原始任务名（2026-10-15 生产实测）。
      * 读出来统一成 '' 之后不会再出现这种错配。
      */
@@ -66,7 +70,8 @@ function rowToRun(row) {
   };
 }
 
-function rowToSubscription(row) {
+/** 一行订阅 = 一个任务（一个账号）。account_key 保留：凭据、调度状态、历史都按它分 */
+function rowToTask(row) {
   if (!row) return null;
   let schedule = null;
   if (row.schedule_json) {
@@ -80,22 +85,14 @@ function rowToSubscription(row) {
     id: row.id,
     userId: row.user_id,
     taskName: row.task_name,
+    /** 凭据 / 调度状态 / 执行历史的维度——执行侧仍然需要它 */
+    accountKey: row.account_key ?? '',
+    label: row.label ?? '',
     enabled: !!row.enabled,
     schedule,
     timeoutMs: row.timeout_ms ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  };
-}
-
-function rowToAccount(row) {
-  return {
-    id: row.id,
-    subscriptionId: row.subscription_id,
-    accountKey: row.account_key,
-    label: row.label,
-    enabled: !!row.enabled,
-    createdAt: row.created_at,
   };
 }
 
@@ -117,52 +114,43 @@ export function createStore(db, { limits = {} } = {}) {
     }
   }
 
-  function assertSubscriptionAllowed(userId, taskName) {
-    if (s.subOf.get(userId, taskName)) return; // 已订阅 → 是更新，不占新名额
-    if (s.subsOfUser.all(userId).length >= maxSubscriptions) {
-      throw new Error(`订阅数已达上限（${maxSubscriptions} 个）`);
+  /** 任务总数上限：一个模板建多个任务也算多个，所以按这个用户已有的任务行数算 */
+  function assertTaskAllowed(userId) {
+    if (s.tasksOfUser.all(userId).length >= maxSubscriptions) {
+      throw new Error(`任务数已达上限（最多 ${maxSubscriptions} 个）`);
     }
   }
 
   const s = {
-    /* ───────── 订阅 ───────── */
-    subOf: db.prepare('SELECT * FROM subscriptions WHERE user_id = ? AND task_name = ?'),
-    subsOfUser: db.prepare('SELECT * FROM subscriptions WHERE user_id = ? ORDER BY task_name'),
+    /* ───────── 任务（一行 = 一个任务 = 一个账号） ───────── */
+    taskById: db.prepare('SELECT * FROM subscriptions WHERE id = ? AND user_id = ?'),
+    taskByKey: db.prepare(
+      'SELECT * FROM subscriptions WHERE user_id = ? AND task_name = ? AND account_key = ?',
+    ),
+    tasksOfUser: db.prepare('SELECT * FROM subscriptions WHERE user_id = ? ORDER BY id'),
+    tasksOfTemplate: db.prepare(
+      'SELECT * FROM subscriptions WHERE user_id = ? AND task_name = ? ORDER BY id',
+    ),
     allSubs: db.prepare('SELECT * FROM subscriptions ORDER BY user_id, task_name'),
-    // 调度器用：停用的账号不该继续往目标站点发请求
+    // 调度器用：停用用户的任务不该继续往目标站点发请求
     allSubsActive: db.prepare(
       `SELECT s.* FROM subscriptions s
        JOIN users u ON u.id = s.user_id
        WHERE u.status = 'active'
        ORDER BY s.user_id, s.task_name`,
     ),
-    insertSub: db.prepare(
-      `INSERT INTO subscriptions (user_id, task_name, enabled, schedule_json, timeout_ms, created_at, updated_at)
-       VALUES (@user_id, @task_name, @enabled, @schedule_json, @timeout_ms, @created_at, @updated_at)
-       ON CONFLICT(user_id, task_name) DO UPDATE SET
-         enabled = excluded.enabled, schedule_json = excluded.schedule_json,
-         timeout_ms = excluded.timeout_ms, updated_at = excluded.updated_at`,
+    insertTask: db.prepare(
+      `INSERT INTO subscriptions (user_id, task_name, account_key, label, enabled, schedule_json, timeout_ms, created_at, updated_at)
+       VALUES (@user_id, @task_name, @account_key, @label, @enabled, @schedule_json, @timeout_ms, @created_at, @updated_at)`,
     ),
-    deleteSub: db.prepare('DELETE FROM subscriptions WHERE user_id = ? AND task_name = ?'),
+    updateTask: db.prepare(
+      `UPDATE subscriptions SET
+         enabled = @enabled, schedule_json = @schedule_json, timeout_ms = @timeout_ms,
+         label = @label, updated_at = @updated_at
+       WHERE id = @id AND user_id = @user_id`,
+    ),
+    deleteTask: db.prepare('DELETE FROM subscriptions WHERE id = ? AND user_id = ?'),
     deleteSubsOfUser: db.prepare('DELETE FROM subscriptions WHERE user_id = ?'),
-
-    /* ───────── 账号 ───────── */
-    accountsOfSub: db.prepare(
-      'SELECT * FROM subscription_accounts WHERE subscription_id = ? ORDER BY id',
-    ),
-    accountOfSub: db.prepare(
-      'SELECT * FROM subscription_accounts WHERE subscription_id = ? AND account_key = ?',
-    ),
-    insertAccount: db.prepare(
-      `INSERT INTO subscription_accounts (subscription_id, account_key, label, enabled, created_at)
-       VALUES (@subscription_id, @account_key, @label, @enabled, @created_at)`,
-    ),
-    deleteAccount: db.prepare(
-      'DELETE FROM subscription_accounts WHERE subscription_id = ? AND account_key = ?',
-    ),
-    setAccountEnabled: db.prepare(
-      'UPDATE subscription_accounts SET enabled = ? WHERE subscription_id = ? AND account_key = ?',
-    ),
 
     /* ───────── 执行记录 ───────── */
     insertRun: db.prepare(
@@ -273,117 +261,54 @@ export function createStore(db, { limits = {} } = {}) {
       throw new Error(`forUser 需要正整数 userId，收到 ${userId}`);
     }
 
-    function getSubscription(taskName) {
-      const row = s.subOf.get(userId, taskName);
-      if (!row) return null;
-      const sub = rowToSubscription(row);
-      sub.accounts = s.accountsOfSub.all(row.id).map(rowToAccount);
-      return sub;
+    /** 我的全部任务（每行一个，跨模板） */
+    function listTasks() {
+      return s.tasksOfUser.all(userId).map(rowToTask);
+    }
+
+    /** 单个任务。取不到（不是我的 / 不存在）返回 null，绝不跨用户 */
+    function getTask(id) {
+      return rowToTask(s.taskById.get(Number(id), userId));
+    }
+
+    /** 我在这个模板下建了哪些任务 */
+    function tasksOfTemplate(taskName) {
+      return s.tasksOfTemplate.all(userId, taskName).map(rowToTask);
     }
 
     /**
-     * 订阅一个模板。幂等：已订阅则更新配置，不会重复建行。
-     * 首次订阅会自动建一个默认账号（account_key = ''）——单账号模板就用它，
-     * 否则用户还得先「添加账号」才能填凭据，多一步没必要的操作。
+     * 从一个模板建一个任务。
+     *
+     * 一个任务 = 一个账号，所以每个任务自带一个新的 account_key：
+     * 凭据、调度状态、执行历史都按 (user, task_name, account_key) 分开存，
+     * 两个任务之间不会互相覆盖。
      */
-    function subscribe(taskName, { enabled = true, schedule = null, timeoutMs = null } = {}) {
-      assertSubscriptionAllowed(userId, taskName);
+    function createTask(taskName, { label = '', enabled = true, schedule = null, timeoutMs = null, accountKey = null } = {}) {
+      assertTaskAllowed(userId);
       assertScheduleAllowed(schedule);
-      const prev = s.subOf.get(userId, taskName);
-      s.insertSub.run({
+      const info = s.insertTask.run({
         user_id: userId,
         task_name: taskName,
+        account_key: accountKey ?? newAccountKey(),
+        label: String(label || '').slice(0, 32),
         enabled: enabled ? 1 : 0,
         schedule_json: schedule ? JSON.stringify(schedule) : null,
         timeout_ms: timeoutMs,
-        created_at: prev?.created_at ?? Date.now(),
+        created_at: Date.now(),
         updated_at: Date.now(),
       });
-      const row = s.subOf.get(userId, taskName);
-      if (!s.accountsOfSub.all(row.id).length) {
-        s.insertAccount.run({
-          subscription_id: row.id,
-          account_key: '',
-          label: '默认',
-          enabled: 1,
-          created_at: Date.now(),
-        });
-      }
-      return getSubscription(taskName);
+      return getTask(info.lastInsertRowid);
     }
 
-    function unsubscribe(taskName) {
-      return s.deleteSub.run(userId, taskName).changes > 0;
-    }
-
-    function listSubscriptions() {
-      return s.subsOfUser.all(userId).map((row) => {
-        const sub = rowToSubscription(row);
-        sub.accounts = s.accountsOfSub.all(row.id).map(rowToAccount);
-        return sub;
-      });
-    }
-
-    /** 多账号模板才需要；单账号模板只有 account_key='' 那一条 */
-    function addAccount(taskName, { label = '', accountKey = null } = {}) {
-      const row = s.subOf.get(userId, taskName);
-      if (!row) throw new Error(`还没有订阅 "${taskName}"，无法添加账号`);
-      const existing = s.accountsOfSub.all(row.id);
-      if (existing.length >= maxAccounts) {
-        throw new Error(`这个模板最多配 ${maxAccounts} 个账号`);
-      }
-      const key = accountKey ?? newAccountKey();
-      s.insertAccount.run({
-        subscription_id: row.id,
-        account_key: key,
-        label: label || '未命名',
-        enabled: 1,
-        created_at: Date.now(),
-      });
-      return key;
-    }
-
-    function removeAccount(taskName, accountKey) {
-      const row = s.subOf.get(userId, taskName);
-      if (!row) return false;
-      return s.deleteAccount.run(row.id, accountKey).changes > 0;
-    }
-
-    /** 单个账号可以停用而不删除：凭据和历史都留着，只是不再参与调度 */
-    function setAccountEnabled(taskName, accountKey, enabled) {
-      const row = s.subOf.get(userId, taskName);
-      if (!row) return null;
-      s.setAccountEnabled.run(enabled ? 1 : 0, row.id, accountKey);
-      const acc = s.accountOfSub.get(row.id, accountKey);
-      return acc ? rowToAccount(acc) : null;
-    }
-
-    /** 该订阅下参与调度的账号（停用的除外） */
-    function activeAccounts(taskName) {
-      const row = s.subOf.get(userId, taskName);
-      if (!row) return [];
-      return s.accountsOfSub.all(row.id).filter((a) => a.enabled).map(rowToAccount);
-    }
-
-    function isEnabled(taskName) {
-      return !!s.subOf.get(userId, taskName)?.enabled;
-    }
-
-    /** 与旧版同名，但语义从「全站是否启用」变成「我是否订阅且启用」 */
-    function getOverride(taskName) {
-      const row = s.subOf.get(userId, taskName);
-      if (!row) return null;
-      return { taskName, enabled: !!row.enabled, schedule: rowToSubscription(row).schedule, timeoutMs: row.timeout_ms ?? null, updatedAt: row.updated_at };
-    }
-
-    function setSubscription(taskName, { enabled, schedule, timeoutMs } = {}) {
-      const prev = s.subOf.get(userId, taskName);
+    /** 改任务的启停 / 调度 / 超时 / 名字；只写传进来的字段 */
+    function updateTask(id, { enabled, schedule, timeoutMs, label } = {}) {
+      const prev = s.taskById.get(Number(id), userId);
       if (!prev) return null;
       assertScheduleAllowed(schedule);
       const prevSchedule = prev.schedule_json ? JSON.parse(prev.schedule_json) : null;
-      s.insertSub.run({
+      s.updateTask.run({
+        id: Number(id),
         user_id: userId,
-        task_name: taskName,
         enabled: (enabled ?? prev.enabled) ? 1 : 0,
         schedule_json: schedule === undefined
           ? (prevSchedule ? JSON.stringify(prevSchedule) : null)
@@ -391,10 +316,40 @@ export function createStore(db, { limits = {} } = {}) {
             ? JSON.stringify(schedule)
             : null,
         timeout_ms: timeoutMs === undefined ? prev.timeout_ms : timeoutMs,
-        created_at: prev.created_at,
+        label: label === undefined ? prev.label ?? '' : String(label || '').slice(0, 32),
         updated_at: Date.now(),
       });
-      return getSubscription(taskName);
+      return getTask(id);
+    }
+
+    /** 删掉这个任务（历史记录保留，那是发生过的事实） */
+    function deleteTask(id) {
+      return s.deleteTask.run(Number(id), userId).changes > 0;
+    }
+
+    /**
+     * 兼容入口：确保这个模板至少有一个任务（历史导入、启动回填用）。
+     * 不用于新建——用户建任务走 createTask()。
+     */
+    function ensureConfig(taskName, { enabled = true, schedule = null, timeoutMs = null } = {}) {
+      const existing = s.tasksOfTemplate.all(userId, taskName);
+      if (existing.length) return rowToTask(existing[0]);
+      return createTask(taskName, { enabled, schedule, timeoutMs });
+    }
+
+    /** 任务的启停 / 调度 / 超时；status 模块用它推导今日状态 */
+    function configOfTask(id) {
+      const row = s.taskById.get(Number(id), userId);
+      if (!row) return null;
+      return {
+        id: row.id,
+        taskName: row.task_name,
+        accountKey: row.account_key ?? '',
+        enabled: !!row.enabled,
+        schedule: rowToTask(row).schedule,
+        timeoutMs: row.timeout_ms ?? null,
+        updatedAt: row.updated_at,
+      };
     }
 
     function appendRun({
@@ -409,7 +364,8 @@ export function createStore(db, { limits = {} } = {}) {
       dur = 0,
       trigger = 'schedule',
     }) {
-      const subId = subscriptionId ?? s.subOf.get(userId, taskName)?.id ?? null;
+      const subId =
+        subscriptionId ?? s.taskByKey.get(userId, taskName, accountKey ?? '')?.id ?? null;
       const info = s.insertRun.run({
         user_id: userId,
         subscription_id: subId,
@@ -551,17 +507,14 @@ export function createStore(db, { limits = {} } = {}) {
 
     return {
       userId,
-      subscribe,
-      unsubscribe,
-      getSubscription,
-      listSubscriptions,
-      setSubscription,
-      addAccount,
-      removeAccount,
-      setAccountEnabled,
-      activeAccounts,
-      isEnabled,
-      getOverride,
+      listTasks,
+      getTask,
+      tasksOfTemplate,
+      createTask,
+      updateTask,
+      deleteTask,
+      ensureConfig,
+      configOfTask,
       appendRun,
       runsOfTask,
       recentRuns,
@@ -588,19 +541,15 @@ export function createStore(db, { limits = {} } = {}) {
     forUser: makeUserStore,
 
     /**
-     * 全部订阅及其账号。
-     * @param {boolean} [onlyActiveUsers] 调度器要传 true：停用的账号不应继续被调度
+     * 所有人的任务（调度器跨用户遍历用）。一行 = 一个任务 = 一个账号。
+     * @param {boolean} [onlyActiveUsers] 调度器要传 true：停用用户的任务不该继续发请求
      */
-    allSubscriptions({ onlyActiveUsers = false } = {}) {
+    allTasks({ onlyActiveUsers = false } = {}) {
       const rows = onlyActiveUsers ? s.allSubsActive.all() : s.allSubs.all();
-      return rows.map((row) => {
-        const sub = rowToSubscription(row);
-        sub.accounts = s.accountsOfSub.all(row.id).map(rowToAccount);
-        return sub;
-      });
+      return rows.map(rowToTask);
     },
 
-    /** 保留策略用：有哪些用户在库里有订阅 */
+    /** 保留策略用：有哪些用户在库里有任务配置 */
     allUserIds() {
       return [...new Set(s.allSubs.all().map((r) => r.user_id))];
     },
@@ -617,12 +566,13 @@ export function createStore(db, { limits = {} } = {}) {
       return out;
     },
 
-    subscriptionCounts() {
+    /** /admin 用：全平台有多少份任务配置、其中多少是启动状态 */
+    configCounts() {
       return { total: s.subCount.get().n, enabled: s.enabledSubCount.get().n };
     },
 
     /**
-     * 删号清理：订阅与账号靠 ON DELETE CASCADE，这里清掉没有外键兜底的历史数据。
+     * 删号清理：任务配置与账号靠 ON DELETE CASCADE，这里清掉没有外键兜底的历史数据。
      * runs 一并删除而不是留 user_id=NULL——否则统计里会出现没有主人的幽灵行
      * （需求文档 §8 风险 6）。凭据由 user-secrets 模块单独删。
      */

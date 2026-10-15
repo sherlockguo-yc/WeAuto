@@ -243,11 +243,10 @@
    * 进度交给 onProgress：详情页写在 #action-hint 上，列表页写在按钮上——
    * 列表页一个任务一个按钮，用浮层提示会连着弹一串行 toast。
    */
-  async function waitForTask(name, accountKey, onProgress) {
-    var qs = accountKey ? '?account=' + encodeURIComponent(accountKey) : '';
+  async function waitForTask(id, onProgress) {
     for (var i = 0; i < 40; i++) {
       await sleep(2000);
-      var d = await api('GET', '/api/tasks/' + encodeURIComponent(name) + qs);
+      var d = await api('GET', '/api/tasks/' + encodeURIComponent(id));
       if (!d.running) {
         location.reload();
         return;
@@ -298,46 +297,27 @@
     btn.disabled = true;
     try {
       if (action === 'run') {
-        var accountKey = btn.dataset.account || '';
         var hasHint = !!document.getElementById('action-hint');
         var report = function (msg) {
           if (hasHint) hint(msg);
           else setButtonHtml(btn, msg);
         };
-        await api('POST', '/api/tasks/' + encodeURIComponent(name) + '/run', { accountKey: accountKey });
+        await api('POST', '/api/tasks/' + encodeURIComponent(name) + '/run');
         report('已开始执行…');
-        await waitForTask(name, accountKey, report);
+        await waitForTask(name, report);
         restoreButton(btn);
       } else if (action === 'toggle') {
         var enabled = btn.dataset.enabled === '1';
         await api('PATCH', '/api/tasks/' + encodeURIComponent(name), { enabled: !enabled });
         location.reload();
-      } else if (action === 'clear-override') {
-        await api('DELETE', '/api/tasks/' + encodeURIComponent(name) + '/override');
-        location.reload();
-      } else if (action === 'subscribe') {
-        // 启用模板 = 建一个我自己的实例
-        await api('POST', '/api/subscriptions', { taskName: name });
-        location.reload();
-      } else if (action === 'remove-account') {
-        if (!window.confirm('删除这个账号？它的凭据会一起删掉，历史记录保留。')) return;
-        await api(
-          'DELETE',
-          '/api/subscriptions/' + encodeURIComponent(name) + '/accounts/' + encodeURIComponent(btn.dataset.account),
-        );
-        location.reload();
-      } else if (action === 'toggle-account') {
-        // 账号可以单独停用：凭据和历史都留着，只是不再参与调度
-        var enabled = btn.dataset.enabled === '1';
-        await api(
-          'PATCH',
-          '/api/subscriptions/' +
-            encodeURIComponent(name) +
-            '/accounts/' +
-            encodeURIComponent(btn.dataset.account),
-          { enabled: !enabled },
-        );
-        location.reload();
+      } else if (action === 'create-task') {
+        // 点模板 = 用这个模板建一个任务，建完直接进去填凭据
+        var created = await api('POST', '/api/tasks', { template: btn.dataset.template });
+        location.href = '/tasks/' + created.id;
+      } else if (action === 'delete-task') {
+        if (!window.confirm('删除这个任务？它的凭据会一起删掉，执行历史保留。')) return;
+        await api('DELETE', '/api/tasks/' + encodeURIComponent(name));
+        location.href = '/tasks';
       } else if (action === 'revoke-invite') {
         if (!window.confirm('撤销这个邀请码？已经注册成功的不受影响。')) return;
         await api('DELETE', '/api/invites/' + encodeURIComponent(btn.dataset.code));
@@ -393,8 +373,7 @@
       if (credBtn) credBtn.disabled = true;
       try {
         await api('POST', '/api/credentials', {
-          taskName: credForm.dataset.task,
-          accountKey: credForm.dataset.account || '',
+          taskId: Number(credForm.dataset.task),
           fields: fields,
         });
         location.reload();
@@ -437,25 +416,25 @@
       return;
     }
 
-    // 多账号模板：再加一个账号
-    var addForm = e.target.closest('[data-action="add-account"]');
-    if (addForm) {
+    // 改任务名
+    var renameForm = e.target.closest('[data-action="rename-task"]');
+    if (renameForm) {
       e.preventDefault();
-      var label = (addForm.elements.label.value || '').trim();
-      if (!label) {
-        hint('给这个账号起个名字', 'error');
+      var renameLabel = (renameForm.elements.label.value || '').trim();
+      if (!renameLabel) {
+        hint('给这个任务起个名字', 'error');
         return;
       }
-      var addBtn = addForm.querySelector('button[type="submit"]');
-      if (addBtn) addBtn.disabled = true;
+      var renameBtn = renameForm.querySelector('button[type="submit"]');
+      if (renameBtn) renameBtn.disabled = true;
       try {
-        await api('POST', '/api/subscriptions/' + encodeURIComponent(addForm.dataset.task) + '/accounts', {
-          label: label,
+        await api('PATCH', '/api/tasks/' + encodeURIComponent(renameForm.dataset.task), {
+          label: renameLabel,
         });
         location.reload();
       } catch (err) {
         hint(err.message, 'error');
-        if (addBtn) addBtn.disabled = false;
+        if (renameBtn) renameBtn.disabled = false;
       }
       return;
     }

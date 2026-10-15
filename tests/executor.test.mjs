@@ -46,7 +46,7 @@ function fresh({ limits } = {}) {
   ).run(USER_ID, 'tester', 'x', 'admin', 'active', 1);
   dbs.push(db);
   const store = createStore(db, { limits });
-  store.forUser(USER_ID).subscribe('t');
+  store.forUser(USER_ID).createTask('t', { accountKey: '' });
   return { db, store, userSecrets: createUserSecrets(db, generateMasterKey()) };
 }
 
@@ -70,7 +70,7 @@ describe('幂等', () => {
 
   it('按账号区分：一个账号成功不影响另一个账号', async () => {
     const { store } = fresh();
-    const b = store.forUser(USER_ID).addAccount('t', { label: '小号' });
+    const b = store.forUser(USER_ID).createTask('t', { label: '小号' }).accountKey;
     const ex = createExecutor({ store, now: () => NOW });
 
     assert.ok(await ex(task, { trigger: 'schedule', userId: USER_ID, accountKey: '' }));
@@ -169,7 +169,7 @@ describe('凭据', () => {
 
   it('账号各自的凭据不会串', async () => {
     const { store, userSecrets } = fresh();
-    const b = store.forUser(USER_ID).addAccount('t', { label: '小号' });
+    const b = store.forUser(USER_ID).createTask('t', { label: '小号' }).accountKey;
     userSecrets.set(USER_ID, 't', '', { TOKEN: 'main' });
     userSecrets.set(USER_ID, 't', b, { TOKEN: 'second' });
 

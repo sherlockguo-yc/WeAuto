@@ -226,6 +226,97 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 5,
+    description: '一任务一账号：账号上提到订阅行，同一个模板可以建多个任务',
+    up(db) {
+      /*
+       * 以前：订阅（用户 × 模板，唯一）+ 订阅下挂多个账号；
+       * 现在：一行订阅就是一个任务，自带 account_key 与 label，
+       *       同一个模板想跑第二个账号 = 再建一个任务。
+       *
+       * 之所以敢这么搬：runs / task_state / user_secrets 三张表早就按
+       * (user_id, task_name, account_key) 分，账号拆成任务后这些记录自动跟随，
+       * 不需要动它们，历史与凭据一条不丢。
+       *
+       * SQLite 改不了 UNIQUE 约束，只能建新表 → 搬数据 → 删旧表 → 改名。
+       * subscription_accounts 有指向 subscriptions(id) 的外键且外键是开启的，
+       * 所以必须在删旧表之前把子表的行清掉（数据已经搬进新表，不是丢失）。
+       */
+      db.exec(`
+        CREATE TABLE subscriptions_new (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          task_name     TEXT    NOT NULL,
+          account_key   TEXT    NOT NULL DEFAULT '',
+          label         TEXT    NOT NULL DEFAULT '',
+          enabled       INTEGER NOT NULL DEFAULT 1,
+          schedule_json TEXT,
+          timeout_ms    INTEGER,
+          created_at    INTEGER NOT NULL,
+          updated_at    INTEGER NOT NULL,
+          UNIQUE (user_id, task_name, account_key)
+        );
+
+        INSERT INTO subscriptions_new
+          (id, user_id, task_name, account_key, label, enabled, schedule_json, timeout_ms, created_at, updated_at)
+          SELECT s.id, s.user_id, s.task_name,
+                 '', COALESCE(a.label, ''),
+                 s.enabled, s.schedule_json, s.timeout_ms, s.created_at, s.updated_at
+            FROM subscriptions s
+            LEFT JOIN subscription_accounts a
+                   ON a.subscription_id = s.id AND a.account_key = '';
+      `);
+
+      /* 第 2 个及以后的账号 → 各自一条新任务行（沿用原订阅的调度与超时） */
+      const extras = db
+        .prepare(
+          `SELECT sa.account_key, sa.label, sa.enabled, sa.created_at,
+                  s.user_id, s.task_name, s.schedule_json, s.timeout_ms, s.updated_at
+             FROM subscription_accounts sa
+             JOIN subscriptions s ON s.id = sa.subscription_id
+            WHERE sa.account_key <> ''
+            ORDER BY sa.id`,
+        )
+        .all();
+      const insertExtra = db.prepare(
+        `INSERT INTO subscriptions_new
+           (user_id, task_name, account_key, label, enabled, schedule_json, timeout_ms, created_at, updated_at)
+         VALUES (@user_id, @task_name, @account_key, @label, @enabled, @schedule_json, @timeout_ms, @created_at, @updated_at)`,
+      );
+      for (const a of extras) {
+        insertExtra.run({
+          user_id: a.user_id,
+          task_name: a.task_name,
+          account_key: a.account_key,
+          label: a.label,
+          enabled: a.enabled,
+          schedule_json: a.schedule_json,
+          timeout_ms: a.timeout_ms,
+          created_at: a.created_at,
+          updated_at: a.updated_at,
+        });
+      }
+
+      db.exec(`
+        DELETE FROM subscription_accounts;
+        DROP TABLE subscriptions;
+        ALTER TABLE subscriptions_new RENAME TO subscriptions;
+        CREATE INDEX idx_subs_user ON subscriptions(user_id);
+        CREATE INDEX idx_subs_task ON subscriptions(task_name);
+      `);
+
+      /* 历史记录指回自己那个任务行：账号变成任务后 id 也变了 */
+      db.exec(`
+        UPDATE runs SET subscription_id =
+          (SELECT s.id FROM subscriptions s
+            WHERE s.user_id = runs.user_id
+              AND s.task_name = runs.task_name
+              AND s.account_key = COALESCE(runs.account_key, ''))
+         WHERE subscription_id IS NOT NULL;
+      `);
+    },
+  },
 ];
 
 /** 用 meta 表记录 schema 版本（用户表之外的第一张表，永远存在） */

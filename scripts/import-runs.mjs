@@ -100,7 +100,7 @@ for (const rec of records) {
   }
   // 有历史就说明用过这个任务，顺带把实例建出来；建不了（比如超上限）不影响导入
   try {
-    if (!mine.getSubscription(rec.taskName)) mine.subscribe(rec.taskName);
+    mine.ensureConfig(rec.taskName);
   } catch (err) {
     console.warn(`[warn] 无法为 ${rec.taskName} 建立订阅：${err.message}`);
   }

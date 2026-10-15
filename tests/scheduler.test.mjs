@@ -149,8 +149,8 @@ const USER_ID = 1;
 
 let seq = 0;
 /**
- * 默认把两个测试模板都订阅上：调度器只认「订阅 × 账号」，
- * 没有订阅的任务根本不进入调度目标（这正是多租户后的语义）。
+ * 默认把两个测试模板都建成任务：调度器只认「我建了的任务」，
+ * 没建过的模板根本不进入调度目标（这正是多租户后的语义）。
  */
 function fresh(subs = [windowTask.name, everyTask.name]) {
   const db = openDb(path.join(dir, `db-${++seq}.sqlite`));
@@ -159,7 +159,7 @@ function fresh(subs = [windowTask.name, everyTask.name]) {
   ).run(USER_ID, 'tester', 'not-a-real-hash', 'admin', 'active', 1);
   openDbs.push(db);
   const store = createStore(db);
-  for (const name of subs) store.forUser(USER_ID).subscribe(name);
+  for (const name of subs) store.forUser(USER_ID).createTask(name, { accountKey: '' });
   return { db, store };
 }
 
@@ -224,7 +224,7 @@ describe('调度循环', () => {
     sch.tick();
     const during = sch.tick();
     assert.deepEqual(during.started, [], '执行中不应再次启动');
-    assert.equal(sch.isRunning('w-task', USER_ID), true);
+    assert.equal(sch.isRunning(1, USER_ID), true);
     await sch.waitForIdle();
     assert.equal(calls.length, 1);
   });
@@ -235,7 +235,7 @@ describe('调度循环', () => {
     const tasks = new Map([[windowTask.name, windowTask]]);
     const sch = createScheduler({ store, tasks, execute, now: () => windowTargetMs + 1000 });
 
-    store.forUser(USER_ID).setSubscription('w-task', { enabled: false });
+    store.forUser(USER_ID).updateTask(1, { enabled: false });
     sch.tick();
     await sch.waitForIdle();
     assert.equal(calls.length, 0);
@@ -280,7 +280,7 @@ describe('调度循环', () => {
 
     // 远未到窗口，调度器不会跑；手动可以
     assert.deepEqual(sch.tick(), { started: [] });
-    await sch.trigger('w-task', { userId: USER_ID });
+    await sch.trigger(1, { userId: USER_ID });
     await sch.waitForIdle();
     assert.equal(calls.length, 1);
     assert.equal(calls[0].trigger, 'manual');
@@ -288,8 +288,8 @@ describe('调度循环', () => {
     // 手动执行期间再点一次会被互斥挡住
     const slow = fakeExecute(store, { delayMs: 30 });
     const sch2 = createScheduler({ store, tasks, execute: slow.execute, now: () => NOON });
-    const p1 = sch2.trigger('w-task', { userId: USER_ID });
-    assert.equal(sch2.trigger('w-task', { userId: USER_ID }), null);
+    const p1 = sch2.trigger(1, { userId: USER_ID });
+    assert.equal(sch2.trigger(1, { userId: USER_ID }), null);
     await p1;
     await sch2.waitForIdle();
     assert.equal(slow.calls.length, 1);
@@ -299,7 +299,7 @@ describe('调度循环', () => {
     const { store } = fresh();
     const { execute } = fakeExecute(store);
     const sch = createScheduler({ store, tasks: new Map(), execute, now: () => NOON });
-    assert.throws(() => sch.trigger('nope', { userId: USER_ID }), /未知任务/);
+    assert.throws(() => sch.trigger(999, { userId: USER_ID }), /没有这个任务/);
   });
 
   it('执行器抛异常不会让调度器停摆', async () => {
@@ -319,13 +319,13 @@ describe('调度循环', () => {
     await sch.waitForIdle();
     // 异常被兜住：状态里不写入 last_run_id，但调度器仍可继续工作
     assert.equal(store.forUser(USER_ID).stateOf('w-task').last_run_id, null);
-    assert.equal(sch.isRunning('w-task', USER_ID), false);
+    assert.equal(sch.isRunning(1, USER_ID), false);
   });
 
-  it('订阅里配的调度覆盖模板默认（否则「配自己的时间」形同虚设）', async () => {
+  it('任务里配的调度覆盖模板默认（否则「配自己的时间」形同虚设）', async () => {
     const { store } = fresh();
-    // 模板是 every 30 分钟，用户在订阅里改成 10 分钟
-    store.forUser(USER_ID).setSubscription('e-task', {
+    // 模板是 every 30 分钟，我在任务里改成 10 分钟（e-task 是第二个建的任务）
+    store.forUser(USER_ID).updateTask(2, {
       schedule: { kind: 'every', every: { minutes: 10 } },
     });
     store.forUser(USER_ID).saveState('e-task', '', { next_due_ts: NOON - 1 });
@@ -365,8 +365,8 @@ describe('调度循环', () => {
 
   it('停用的账号不参与调度，另一个照常', async () => {
     const { store } = fresh();
-    const extra = store.forUser(USER_ID).addAccount('w-task', { label: '小号' });
-    store.forUser(USER_ID).setAccountEnabled('w-task', extra, false);
+    const extra = store.forUser(USER_ID).createTask('w-task', { label: '小号' });
+    store.forUser(USER_ID).updateTask(extra.id, { enabled: false });
 
     const { execute, calls } = fakeExecute(store);
     const sch = createScheduler({
@@ -378,15 +378,14 @@ describe('调度循环', () => {
 
     const r = sch.tick();
     await sch.waitForIdle();
-    assert.deepEqual(r.started, ['w-task:'], '只剩默认账号');
+    assert.equal(r.started.length, 1, '只剩另一个任务');
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].accountKey, '');
+    assert.notEqual(calls[0].accountKey, extra.accountKey);
   });
 
   it('同一用户串行：两个账号不会同时打出去', async () => {
     const { store } = fresh();
-    const extra = store.forUser(USER_ID).addAccount('w-task', { label: '小号' });
-    assert.ok(extra);
+    store.forUser(USER_ID).createTask('w-task', { label: '小号' });
 
     const { execute, calls } = fakeExecute(store, { delayMs: 40 });
     const sch = createScheduler({

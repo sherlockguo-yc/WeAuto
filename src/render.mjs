@@ -340,20 +340,42 @@ function textAction({ href = '', action = '', task = '', account = '', enabled =
   return `<${href ? 'a' : 'button'} class="${cls}"${attrs}>${esc(label)}</${href ? 'a' : 'button'}>`;
 }
 
-/** 任务行的链接（点它 = 看这个任务的详细配置）。多账号时带上 account，否则会落到第一个账号 */
+/** 任务行的链接：任务的自增 id，不再有「模板名 + 账号」这种拼法 */
 function taskHref(t) {
-  return t.accountKey
-    ? `/tasks/${esc(t.name)}?account=${esc(t.accountKey)}`
-    : `/tasks/${esc(t.name)}`;
+  return `/tasks/${esc(t.id)}`;
 }
 
 /**
- * 任务在界面上的名字：多账号时把账号名带上。
- * 概览的「需要处理」与「最近执行」、任务列表、任务页头部四处都要它——
- * 同一个任务的两个账号不写账号名的话，两行长得一模一样，分不清哪条是哪个账号。
+ * 任务在界面上的名字 = 用户给这个任务起的名字。
+ *
+ * 一个任务只跑一个账号，所以不再需要「模板名 · 账号名」的拼法：
+ * 任务名本身就是区分两个同类任务的那个东西，没起名时退回模板名。
  */
 function taskTitle(t) {
-  return t.accountCount > 1 ? `${t.displayName} · ${t.accountLabel || '默认'}` : t.displayName;
+  return t.label || t.displayName;
+}
+
+/**
+ * 顶部模板轨道里的一张卡：点它 = 用这个模板建一个任务。
+ *
+ * 模板是平台给的（tasks/*.mjs），用户能做的是「建一个、配自己的时间与凭据」，
+ * 所以卡片只描述模板本身（名称 / 说明 / 标签 / 默认调度），
+ * 已经建了几个单独用角标标出来——数字比「已启用」更能说明还能不能再加一个。
+ */
+function templateCard(t) {
+  return `<button type="button" class="template-card" data-action="create-task" data-template="${esc(
+    t.name,
+  )}">
+    <span class="template-card-head">
+      <span class="template-card-name">${esc(t.displayName)}</span>
+      ${t.count ? `<span class="template-card-count">已建 ${esc(t.count)}</span>` : ''}
+    </span>
+    <span class="template-card-desc">${esc(t.description || '没有说明')}</span>
+    <span class="template-card-meta">
+      <span class="template-card-schedule">${esc(t.scheduleLabel)}</span>
+      ${t.requires.length ? `<span class="template-card-cred">要填凭据</span>` : ''}
+    </span>
+  </button>`;
 }
 
 /**
@@ -367,23 +389,21 @@ function taskRow(t) {
   const title = taskTitle(t);
   const href = taskHref(t);
   // 没填凭据就直接标出来：取消凭据页之后，这是唯一能一眼看出哪些实例没配好的地方
-  const credBadge =
-    t.subscribed && t.missingCredentials?.length ? '<span class="badge badge-off">待填凭据</span>' : '';
+  const credBadge = t.missingCredentials?.length ? '<span class="badge badge-off">待填凭据</span>' : '';
   return `<div class="row task-row">
         <a class="row-main" href="${href}">${esc(title)}</a>
         <span class="badges">${statusBadge(t.todayStatus)}${credBadge}</span>
-        <span class="row-sub">${esc(t.scheduleLabel)}${
+        <span class="row-sub">${esc(t.displayName)} · ${esc(t.scheduleLabel)}${
           t.todayTargetLabel ? ` · 今日 ${esc(t.todayTargetLabel)}` : ''
         }</span>
         <span class="row-actions">
           <button type="button" class="primary btn-sm" data-action="run" data-task="${esc(
-            t.name,
-          )}" data-account="${esc(t.accountKey ?? '')}">${ICON.play}立即执行</button>
+            t.id,
+          )}">${ICON.play}立即执行</button>
           <span class="row-actions-minor">
             ${textAction({
               action: 'toggle',
-              task: t.name,
-              account: t.accountKey ?? '',
+              task: t.id,
               enabled: t.enabled ? '1' : '0',
               label: t.enabled ? '停用' : '启用',
               tone: t.enabled ? 'danger' : '',
@@ -395,52 +415,40 @@ function taskRow(t) {
 }
 
 /**
- * 任务页 = 「我的实例」+「可以启用的模板」两栏。
+ * 任务页 = 顶部「模板」横向轨道 + 下方「我的任务」。
  *
- * 这里是操作的起点，不是目录：每行自带「立即执行 / 停用 / 配置」，
- * 最常用的事在这层就能做完。点标题或齿轮才进任务页（详情 + 配置）。
- *
- * 模板只能由平台提供（tasks/*.mjs），用户能做的是「启用一个、配自己的时间与凭据」，
- * 所以未启用的那些不显示状态、只给一个「启用」按钮。
+ * 上下两段的职责是分开的：模板回答「可以建什么」（平台提供，建了才进下面的列表），
+ * 任务回答「我建了什么在跑」（一人一份，一个任务只跑一个账号）。
+ * 以前两者混在一张列表里，未启用的模板也占一行「已停止」，新用户进来看到的是一堆
+ * 自己没启动过的东西。
  */
-export function pageTasks({ items, groups }) {
-  const mine = items.filter((t) => t.subscribed);
-  const market = items.filter((t) => !t.subscribed);
+export function pageTasks({ items, groups, templates = [] }) {
+  const rail = templates.length
+    ? `<section class="card templates">
+  <h2>模板 <span class="count">${templates.length}</span></h2>
+  <div class="template-rail">${templates.map(templateCard).join('')}</div>
+  <p class="hint">左右滑动看更多。点一个模板就建一个任务 —— 一个任务只跑一个账号，
+    想跑第二个账号就再建一个。</p>
+</section>`
+    : '';
 
   const mineHtml = groups
     .map((g) => {
-      const list = g.items.filter((t) => t.subscribed);
-      if (!list.length) return '';
+      if (!g.items.length) return '';
       return `<section class="card">
-  <h2>${esc(g.name)} <span class="count">${list.length}</span></h2>
-  ${list.map(taskRow).join('')}
+  <h2>${esc(g.name)} <span class="count">${g.items.length}</span></h2>
+  ${g.items.map(taskRow).join('')}
 </section>`;
     })
     .join('');
 
-  const marketHtml = market.length
-    ? `<section class="card">
-  <h2>可以启用的模板 <span class="count">${market.length}</span></h2>
-  ${market
-    .map(
-      (t) => `<div class="row row-plain">
-        <span class="row-main">${esc(t.displayName)}</span>
-        <span class="row-sub">${esc(t.description || t.scheduleLabel || '')}</span>
-        <button data-action="subscribe" data-task="${esc(t.name)}">启用</button>
-      </div>`,
-    )
-    .join('')}
-  <p class="hint">模板由平台提供，启用后你可以配自己的时间与账号；不能自己新建模板。</p>
-</section>`
-    : '';
-
-  if (!mine.length && !market.length) {
-    return `<section class="card"><p class="empty">还没有任何模板。模板由平台提供（tasks/ 下的 .mjs 文件）。</p></section>`;
+  if (!items.length) {
+    return (
+      rail +
+      `<section class="card"><p class="empty">还没有创建任务。从上面的模板里点一个，就能建一个任务。</p></section>`
+    );
   }
-  if (!mine.length) {
-    return `<section class="card"><p class="empty">还没启用任何模板。从下面挑一个启用，再点进去填自己的账号和时间。</p></section>${marketHtml}`;
-  }
-  return mineHtml + marketHtml;
+  return rail + mineHtml;
 }
 
 /* ─────────────────── 任务页（详情 + 配置合并） ─────────────────── */
@@ -456,7 +464,7 @@ function credentialHint(task) {
   const broken = task.todayStatus === 'config-error' || task.lastRun?.status === 'config-error';
   if (!broken) return '';
   return `<div class="banner banner-bad">这个任务报了配置错误，通常是账号密码没填，
-    或者你在别处改过密码。<a href="#accounts">去填写或更新凭据</a></div>`;
+    或者你在别处改过密码。<a href="#credentials">去填写或更新凭据</a></div>`;
 }
 
 /**
@@ -508,12 +516,15 @@ ${hintHtml}
   <h2>${esc(taskTitle(task))} ${statusBadge(task.todayStatus)}</h2>
   <p class="sub">${esc(task.description ?? task.name)}</p>
   <div class="actions">
-    <button class="primary" data-action="run" data-task="${esc(task.name)}" data-account="${esc(
-      task.accountKey ?? '',
-    )}" ${canRun ? '' : 'disabled'}>${ICON.play}立即执行</button>
-    <button data-action="toggle" data-task="${esc(task.name)}" data-enabled="${
+    <button class="primary" data-action="run" data-task="${esc(task.id)}" ${
+      canRun ? '' : 'disabled'
+    }">${ICON.play}立即执行</button>
+    <button data-action="toggle" data-task="${esc(task.id)}" data-enabled="${
       task.enabled ? '1' : '0'
     }">${task.enabled ? '停用此任务' : '启用此任务'}</button>
+    <button class="btn-danger" data-action="delete-task" data-task="${esc(
+      task.id,
+    )}">删除任务</button>
   </div>
   <p class="hint" id="action-hint"></p>
 </section>
@@ -593,37 +604,12 @@ function credentialField(f) {
   </label>`;
 }
 
-/** 一个账号行：可切换查看、可停用、可删除（默认账号不能删） */
-function accountRow(task, acc, currentKey) {
-  const isCurrent = acc.accountKey === currentKey;
-  return `<div class="account-row${isCurrent ? ' current' : ''}">
-    <a class="account-name" href="/tasks/${esc(task.name)}?account=${esc(
-      acc.accountKey,
-    )}">${esc(acc.label || '默认账号')}</a>
-    <span class="badges">
-      ${acc.enabled ? '' : '<span class="badge badge-off">已停用</span>'}
-      ${acc.missing?.length ? '<span class="badge badge-off">待填凭据</span>' : ''}
-    </span>
-    <span class="account-actions">
-      <button class="link-btn" data-action="toggle-account" data-task="${esc(
-        task.name,
-      )}" data-account="${esc(acc.accountKey)}" data-enabled="${
-        acc.enabled ? '1' : '0'
-      }">${acc.enabled ? '停用' : '启用'}</button>
-      ${
-        acc.accountKey
-          ? `<button class="link-danger" data-action="remove-account" data-task="${esc(
-              task.name,
-            )}" data-account="${esc(acc.accountKey)}">删除</button>`
-          : ''
-      }
-    </span>
-  </div>`;
-}
-
 /**
- * 配置区：调度 / 我的账号（含凭据）/ 执行参数。
+ * 配置区：调度 / 任务名与凭据 / 执行参数。
  * 不再是独立页面，而是任务页里的一段——见 pageTaskDetail。
+ *
+ * 没有「账号列表」了：一个任务只跑一个账号，想跑第二个账号就回任务页
+ * 再建一个任务。账号这个概念因此退到执行侧（凭据与历史按它分），界面不再暴露。
  */
 function taskConfigBody({ task, credential = null }) {
   const retention = task.retention ?? {};
@@ -644,7 +630,7 @@ function taskConfigBody({ task, credential = null }) {
     <dt>今日</dt><dd>${esc(task.planReason)}</dd>
   </dl>
   ${task.overrideInvalid ? '<p class="error">我保存的调度有问题，当前正按模板默认执行</p>' : ''}
-  <form class="schedule-form" data-action="save-schedule" data-task="${esc(task.name)}">
+  <form class="schedule-form" data-action="save-schedule" data-task="${esc(task.id)}">
     <fieldset>
       <legend>什么时候跑</legend>
       <label class="radio"><input type="radio" name="kind" value="default"${
@@ -676,49 +662,34 @@ function taskConfigBody({ task, credential = null }) {
     </div>
     <button type="submit" class="primary">保存调度</button>
   </form>
-  <!-- 停用/启用已经在页面顶部，这里不再重复一个；取消订阅只留在这块配置里 -->
-  <div class="actions">
-    <button data-action="clear-override" data-task="${esc(task.name)}"${
-      task.subscribed ? '' : ' disabled'
-    }>取消订阅</button>
-  </div>
-  <p class="hint">这里的设置只影响我自己这个实例，不影响别人，也不会改动模板本身（tasks/${esc(
+  <p class="hint">这里的设置只影响我自己这个任务，不影响别人，也不会改动模板本身（tasks/${esc(
     task.file ?? '?',
   )}）。</p>
 </section>
 
-<section class="card" id="accounts">
-  <h2>我的账号${credential && credential.accountCount > 1 ? `（${esc(credential.accountLabel || '默认')}）` : ''}</h2>
+<section class="card" id="credentials">
+  <h2>任务名与账号</h2>
+  <form class="inline-form rename-form" data-action="rename-task" data-task="${esc(task.id)}">
+    <label class="field">
+      <span class="field-label">任务名</span>
+      <input name="label" value="${esc(task.label || '')}" maxlength="32" placeholder="${esc(
+        task.displayName,
+      )}">
+    </label>
+    <button type="submit">保存名字</button>
+  </form>
   ${
-    !credential || !credential.subscribed
-      ? `<p class="empty">先启用这个模板，才能填自己的账号。</p>
-         <button class="primary" data-action="subscribe" data-task="${esc(task.name)}">启用</button>`
-      : `<!-- 账号块始终显示：单账号时也能看到它被停用、也能停用它 -->
-         <div class="accounts">
-           ${credential.accounts.map((a) => accountRow(task, a, credential.accountKey)).join('')}
-         </div>
-         ${
-           credential.multiAccount
-             ? `<form class="inline-form add-account" data-action="add-account" data-task="${esc(task.name)}">
-                  <label class="field">
-                    <span class="field-label">再加一个账号</span>
-                    <input name="label" placeholder="例如：小号" maxlength="32">
-                  </label>
-                  <button type="submit">添加账号</button>
-                </form>`
-             : ''
-         }
-         ${
-           task.requires.length
-             ? `<form class="inline-form cred-form" data-action="save-credentials"
-                    data-task="${esc(task.name)}" data-account="${esc(credential.accountKey)}">
-                 ${credential.fields.map(credentialField).join('')}
-                 <button type="submit" class="primary">保存</button>
-               </form>
-               <p class="hint">留空表示不修改。这里填的账号密码<b>加密后存在本站</b>，
-                 <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
-             : '<p class="hint">这个模板不需要凭据</p>'
-         }`
+    task.requires.length
+      ? `<form class="inline-form cred-form" data-action="save-credentials" data-task="${esc(
+          task.id,
+        )}">
+           ${(credential?.fields ?? []).map(credentialField).join('')}
+           <button type="submit" class="primary">保存</button>
+         </form>
+         <p class="hint">留空表示不修改。一个任务只跑这一个账号——想跑第二个账号，
+           回任务页用同一个模板再建一个任务。这里填的账号密码<b>加密后存在本站</b>，
+           <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
+      : '<p class="hint">这个模板不需要凭据</p>'
   }
 </section>
 
@@ -728,7 +699,7 @@ function taskConfigBody({ task, credential = null }) {
     <dt>超时</dt><dd>${Math.round(task.timeoutMs / 1000)} 秒</dd>
     <dt>记录保留</dt><dd>${esc(retention.days ?? '—')} 天 / 最多 ${esc(retention.maxRows ?? '—')} 条</dd>
     <dt>凭据字段</dt><dd>${task.requires.length ? esc(task.requires.join('、')) : '不需要'}</dd>
-    <dt>任务标识</dt><dd class="mono">${esc(task.name)}</dd>
+    <dt>模板</dt><dd class="mono">${esc(task.name)}</dd>
   </dl>
 </section>`;
 }

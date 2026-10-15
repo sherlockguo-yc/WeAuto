@@ -121,7 +121,7 @@ export const MAX_CONCURRENT_RUNS = 4;
 
 /**
  * @param {object} deps
- * @param {ReturnType<import('./store.mjs').createStore>} deps.store **根 store**（需要跨用户遍历订阅）
+ * @param {ReturnType<import('./store.mjs').createStore>} deps.store **根 store**（需要跨用户遍历任务配置）
  * @param {Map<string, object>} deps.tasks 已规范化的模板（registry.loadTasks 的结果）
  * @param {(task: object, opts: {trigger: string, userId: number, accountKey: string}) => Promise<object|null>} deps.execute
  * @param {() => number} [deps.now] 便于测试注入
@@ -140,7 +140,7 @@ export function createScheduler({
   random = Math.random,
   maxConcurrent = MAX_CONCURRENT_RUNS,
 }) {
-  /** key = `${subscriptionId}:${accountKey}` —— 同一个订阅的两个账号互不影响 */
+  /** key = `${configId}:${accountKey}` —— 同一个任务的两个账号互不影响 */
   const inFlight = new Map();
   /** 同一用户最多一个在飞：不希望一个人把自己的两个账号同时打向同一个站点 */
   const runningUsers = new Set();
@@ -148,25 +148,22 @@ export function createScheduler({
   let ticking = false;
 
   /**
-   * 待调度的目标 = 订阅 × 启用中的账号。
+   * 待调度的目标 = 已启动的任务。一个任务就是一个账号，不再有第二层循环。
    *
    * 模板已下线（代码里删了文件）时 `tasks.get()` 拿不到定义，直接跳过——
    * 没有定义就没有 schedule，留着只会每 30 秒打一条找不到任务的日志。
    */
   function targets() {
     const out = [];
-    // 停用的账号不参与调度：不然「停用」只是页面上的开关，请求照样在发
-    for (const sub of store.allSubscriptions({ onlyActiveUsers: true })) {
-      if (!sub.enabled) continue;
-      const task = tasks.get(sub.taskName);
+    // 停用的任务不参与调度：不然「停用」只是页面上的开关，请求照样在发
+    for (const cfg of store.allTasks({ onlyActiveUsers: true })) {
+      if (!cfg.enabled) continue;
+      const task = tasks.get(cfg.taskName);
       if (!task) continue;
-      // 用户在订阅里改过的调度与超时优先于模板默认值——不然「配自己的时间」没有意义
-      const { schedule } = effectiveSchedule(task, { schedule: sub.schedule });
-      const effectiveTask = { ...task, schedule, timeoutMs: sub.timeoutMs ?? task.timeoutMs };
-      for (const acc of sub.accounts) {
-        if (!acc.enabled) continue;
-        out.push({ sub, task: effectiveTask, acc, key: `${sub.id}:${acc.accountKey}` });
-      }
+      // 我在任务里改过的调度与超时优先于模板默认值——不然「配自己的时间」没有意义
+      const { schedule } = effectiveSchedule(task, { schedule: cfg.schedule });
+      const effectiveTask = { ...task, schedule, timeoutMs: cfg.timeoutMs ?? task.timeoutMs };
+      out.push({ cfg, task: effectiveTask, accountKey: cfg.accountKey, key: `${cfg.id}:${cfg.accountKey}` });
     }
     return out;
   }
@@ -180,44 +177,44 @@ export function createScheduler({
    */
   function normalizeOnStart() {
     const nowMs = now();
-    for (const { sub, task, acc } of targets()) {
+    for (const { cfg, task, accountKey } of targets()) {
       if (task.schedule?.kind !== 'every') continue;
-      const mine = store.forUser(sub.userId);
+      const mine = store.forUser(cfg.userId);
       const intervalMs = task.schedule.every.minutes * 60_000;
-      const next = mine.stateOf(sub.taskName, acc.accountKey).next_due_ts ?? null;
+      const next = mine.stateOf(cfg.taskName, accountKey).next_due_ts ?? null;
       if (next == null || next < nowMs) {
-        mine.saveState(sub.taskName, acc.accountKey, { next_due_ts: nowMs + intervalMs });
+        mine.saveState(cfg.taskName, accountKey, { next_due_ts: nowMs + intervalMs });
         if (next != null) {
-          log(`[scheduler] ${sub.taskName}/${acc.accountKey} 休息期间错过了 ${Math.round((nowMs - next) / 1000)}s，跳过本轮，重新计时`);
+          log(`[scheduler] ${cfg.taskName}/${accountKey} 休息期间错过了 ${Math.round((nowMs - next) / 1000)}s，跳过本轮，重新计时`);
         }
       }
     }
   }
 
   /** 启动/手动触发的执行入口：处理互斥、并发闸门、异常兜底与状态回写 */
-  function runNow({ sub, task, acc, key }, trigger) {
+  function runNow({ cfg, task, accountKey, key }, trigger) {
     if (inFlight.has(key)) return null;
     if (inFlight.size >= maxConcurrent) return null;
-    if (runningUsers.has(sub.userId)) return null;
+    if (runningUsers.has(cfg.userId)) return null;
 
-    const mine = store.forUser(sub.userId);
+    const mine = store.forUser(cfg.userId);
     const promise = (async () => {
       try {
-        const record = await execute(task, { trigger, userId: sub.userId, accountKey: acc.accountKey });
-        if (record?.id) mine.saveState(sub.taskName, acc.accountKey, { last_run_id: record.id });
+        const record = await execute(task, { trigger, userId: cfg.userId, accountKey });
+        if (record?.id) mine.saveState(cfg.taskName, accountKey, { last_run_id: record.id });
         return record;
       } catch (err) {
         // 执行器内部已兜住任务异常；能到这里说明是框架层的意外，绝不能让调度器停摆
-        log(`[error] ${sub.taskName} 执行时抛出异常：${err.message}`);
+        log(`[error] ${cfg.taskName} 执行时抛出异常：${err.message}`);
         return null;
       } finally {
         inFlight.delete(key);
-        runningUsers.delete(sub.userId);
+        runningUsers.delete(cfg.userId);
       }
     })();
 
     inFlight.set(key, promise);
-    runningUsers.add(sub.userId);
+    runningUsers.add(cfg.userId);
     return promise;
   }
 
@@ -230,29 +227,29 @@ export function createScheduler({
       const nowMs = now();
       const today = dateInTZ(new Date(nowMs));
       for (const target of targets()) {
-        const { sub, task, acc, key } = target;
+        const { cfg, task, accountKey, key } = target;
         if (inFlight.has(key)) continue;
         if (inFlight.size >= maxConcurrent) break;
 
-        const mine = store.forUser(sub.userId);
+        const mine = store.forUser(cfg.userId);
         const plan = planTask({
           task,
-          state: mine.stateOf(sub.taskName, acc.accountKey),
+          state: mine.stateOf(cfg.taskName, accountKey),
           nowMs,
           hasSuccessToday: task.schedule?.kind === 'window'
-            ? mine.hasSuccessOn(sub.taskName, today, acc.accountKey)
+            ? mine.hasSuccessOn(cfg.taskName, today, accountKey)
             : false,
           hasScheduledRun:
-            task.schedule?.kind === 'once' ? mine.hasScheduledRun(sub.taskName, acc.accountKey) : false,
+            task.schedule?.kind === 'once' ? mine.hasScheduledRun(cfg.taskName, accountKey) : false,
           random,
         });
 
         if (Object.keys(plan.nextState).length) {
-          mine.saveState(sub.taskName, acc.accountKey, plan.nextState);
+          mine.saveState(cfg.taskName, accountKey, plan.nextState);
         }
         if (!plan.due) continue;
 
-        if (runNow(target, 'schedule')) started.push(`${sub.taskName}:${acc.accountKey}`);
+        if (runNow(target, 'schedule')) started.push(`${cfg.taskName}:${accountKey}`);
       }
       return { started };
     } finally {
@@ -285,30 +282,29 @@ export function createScheduler({
      * 手动触发：跳过调度判断，但仍然受幂等、互斥与配额保护。
      * 必须带 userId——「跑谁的那个账号」在多租户下不能靠猜。
      */
-    trigger(taskName, { userId, accountKey = '' } = {}) {
-      const task = tasks.get(taskName);
-      if (!task) throw new Error(`未知任务 "${taskName}"`);
-      const sub = store.forUser(userId).getSubscription(taskName);
-      if (!sub) throw new Error(`用户 ${userId} 还没有订阅 "${taskName}"`);
-      const acc = sub.accounts.find((a) => a.accountKey === accountKey)
-        ?? (accountKey === '' ? sub.accounts[0] : null);
-      if (!acc) throw new Error(`账号 "${accountKey}" 不存在`);
+    /** @param {number} taskId 任务 id（URL /tasks/:id 里的那个） */
+    trigger(taskId, { userId } = {}) {
+      const mine = store.forUser(userId);
+      const sub = mine.getTask(taskId);
+      if (!sub) throw new Error(`没有这个任务（id=${taskId}）`);
+      const task = tasks.get(sub.taskName);
+      if (!task) throw new Error(`未知任务 "${sub.taskName}"`);
       const { schedule } = effectiveSchedule(task, { schedule: sub.schedule });
       return runNow(
         {
-          sub,
+          cfg: { ...sub, id: sub.id, userId, taskName: sub.taskName, accountKey: sub.accountKey },
           task: { ...task, schedule, timeoutMs: sub.timeoutMs ?? task.timeoutMs },
-          acc,
-          key: `${sub.id}:${acc.accountKey}`,
+          accountKey: sub.accountKey,
+          key: `${sub.id}:${sub.accountKey}`,
         },
         'manual',
       );
     },
 
-    isRunning: (taskName, userId, accountKey = '') => {
+    isRunning: (taskId, userId) => {
       if (userId == null) return false;
-      const sub = store.forUser(userId).getSubscription(taskName);
-      return sub ? inFlight.has(`${sub.id}:${accountKey}`) : false;
+      const sub = store.forUser(userId).getTask(taskId);
+      return sub ? inFlight.has(`${sub.id}:${sub.accountKey}`) : false;
     },
     /** 供测试与优雅退出使用 */
     waitForIdle: () => Promise.allSettled([...inFlight.values()]),

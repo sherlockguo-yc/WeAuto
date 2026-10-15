@@ -384,43 +384,60 @@ export function createServer({
       shell(req, {
         title: '任务',
         active: 'tasks',
-        body: render.pageTasks({ items: data.items, groups: groupByGroup(data.items) }),
+        body: render.pageTasks({
+          items: data.items,
+          groups: groupByGroup(data.items),
+          templates: templateCards(req, data.items),
+        }),
       }),
     );
   });
 
-  function detailOf(taskName, { includeSkipped = false, userId, role, accountKey = '' } = {}) {
-    const task = tasks.get(taskName);
+  /**
+   * 顶部模板轨道用的数据：平台提供的每个模板 + 我已经建了几个任务。
+   *
+   * 模板与任务是两件事：模板是「可以建什么」（平台提供，改不了），
+   * 任务是「我建了什么」（一人一份，一个任务只跑一个账号）。
+   * 所以这里只描述模板本身，数量单独带出去给用户看。
+   */
+  function templateCards(req, myItems = []) {
+    const countByTemplate = new Map();
+    for (const it of myItems) countByTemplate.set(it.name, (countByTemplate.get(it.name) ?? 0) + 1);
+    return [...visibleTasks(req).values()]
+      .map((t) => ({
+        name: t.name,
+        displayName: t.displayName,
+        description: t.description || '',
+        group: t.group,
+        tags: t.tags ?? [],
+        requires: t.requires ?? [],
+        scheduleLabel: describeSchedule(t.schedule),
+        count: countByTemplate.get(t.name) ?? 0,
+      }))
+      .sort((a, b) => a.group.localeCompare(b.group, 'zh') || a.name.localeCompare(b.name));
+  }
+
+  function detailOf(taskId, { includeSkipped = false, userId, role } = {}) {
+    const mine = store.forUser(userId);
+    const t = mine.getTask(taskId);
+    if (!t) return null;
+    const task = tasks.get(t.taskName);
     if (!task) return null;
     // internal 模板对非 admin 视同不存在
     if (task.visibility === 'internal' && role !== 'admin') return null;
-    const mine = store.forUser(userId);
-    const sub = mine.getSubscription(taskName);
-    // 指定了账号却找不到 → 当作不存在。静默回退到第一个账号的话，
-    // 用户会以为自己看的是那个账号，实际是另一个
-    const acc = accountKey
-      ? sub?.accounts.find((a) => a.accountKey === accountKey) ?? null
-      : sub?.accounts[0] ?? null;
-    if (accountKey && !acc) return null;
     const summary = summarizeTask({
       task,
       store: mine,
       nowMs: now(),
-      accountKey: acc?.accountKey ?? '',
-      accountLabel: acc?.label ?? '',
-      accountCount: sub?.accounts.length ?? 1,
-      accountEnabled: acc?.enabled ?? true,
+      id: t.id,
+      accountKey: t.accountKey,
+      label: t.label,
+      config: { enabled: t.enabled, schedule: t.schedule, timeoutMs: t.timeoutMs },
+      missingCredentials: userSecrets ? userSecrets.missing(userId, t.taskName, t.accountKey, task.requires) : [],
     });
-    /*
-     * 历史与顶部状态卡必须是同一个账号：不带 ?account= 时就是第一个账号
-     * （acc 的取值见上）。若让「不带参数 = 全部账号」，就会出现
-     * 「顶部写着今日已成功、下面第一条却是另一个账号失败」这种新的不一致。
-     * 首页「最近执行」是跨任务跨账号的流水，粒度本来就不同 ——
-     * 靠在那里标出账号名来对齐，而不是把详情页改成全账号。
-     */
-    const historyAccountKey = acc?.accountKey ?? null;
+    const historyAccountKey = t.accountKey;
     // 窗口 = 最近 50 条（含 skipped），用来算「其中被隐藏了几条 skipped」
-    const window = mine.runsOfTask(taskName, {
+    const window = mine.runsOfTask(t.taskName, {
       accountKey: historyAccountKey,
       limit: 50,
       includeSkipped: true,
@@ -428,7 +445,7 @@ export function createServer({
     // 展示口径与首页一致：先排除 skipped 再取 50 条
     const runs = includeSkipped
       ? window
-      : mine.runsOfTask(taskName, { accountKey: historyAccountKey, limit: 50, includeSkipped: false });
+      : mine.runsOfTask(t.taskName, { accountKey: historyAccountKey, limit: 50, includeSkipped: false });
     const lastCompleted = runs.find((r) => r.status !== 'skipped') ?? null;
     return {
       task,
@@ -443,35 +460,22 @@ export function createServer({
   }
 
   /**
-   * 配置区要用的数据：哪些凭据字段已填 + 这个实例下的账号列表。
+   * 配置区要用的数据：这个任务需要哪些凭据字段、已经填了哪些。
    *
-   * 单独抽出来而不是塞进 detailOf()，是因为 detailOf() 也被 /api/tasks/:name 用，
+   * 单独抽出来而不是塞进 detailOf()，是因为 detailOf() 也被 /api/tasks/:id 用，
    * 那里只要状态和历史，没必要为每个接口调用多查一遍凭据。
    */
-  function credentialOf({ userId, task, accountKey = '' }) {
-    const sub = store.forUser(userId).getSubscription(task.name);
-    const acc = accountKey
-      ? sub?.accounts.find((a) => a.accountKey === accountKey) ?? null
-      : sub?.accounts[0] ?? null;
+  function credentialOf({ userId, taskName, accountKey = '' }) {
+    const task = tasks.get(taskName);
     return {
-      account: acc ?? null,
       credential: {
-        subscribed: !!sub,
-        accountKey: acc?.accountKey ?? '',
-        accountLabel: acc?.label ?? '',
-        multiAccount: !!task.accounts,
-        fields: task.requires.map((key) => ({
+        subscribed: true,
+        accountKey,
+        fields: (task?.requires ?? []).map((key) => ({
           key,
           set: userSecrets
-            ? !!userSecrets.fieldStatus(userId, task.name, acc?.accountKey ?? '', [key])[key]
+            ? !!userSecrets.fieldStatus(userId, taskName, accountKey, [key])[key]
             : false,
-        })),
-        /* 这个实例下的全部账号：加/删/停用账号都在任务页里做 */
-        accounts: (sub?.accounts ?? []).map((a) => ({
-          accountKey: a.accountKey,
-          label: a.label,
-          enabled: a.enabled,
-          missing: userSecrets ? userSecrets.missing(userId, task.name, a.accountKey, task.requires) : [],
         })),
       },
     };
@@ -482,12 +486,11 @@ export function createServer({
    * 原来「列表 → 详情 → 配置」三层里，详情只多了结果和历史，
    * 却让用户为了改一个时间多点一次。
    */
-  app.get('/tasks/:name', requireLogin, (req, res) => {
-    const d = detailOf(req.params.name, {
+  app.get('/tasks/:id(\\d+)', requireLogin, (req, res) => {
+    const d = detailOf(Number(req.params.id), {
       includeSkipped: req.query.all === '1',
       userId: req.user.id,
       role: req.user.role,
-      accountKey: String(req.query.account ?? ''),
     });
     if (!d)
       return res
@@ -496,12 +499,12 @@ export function createServer({
         .send(shell(req, { title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>' }));
     const { credential } = credentialOf({
       userId: req.user.id,
-      task: d.task,
-      accountKey: String(req.query.account ?? ''),
+      taskName: d.task.name,
+      accountKey: d.summary.accountKey,
     });
     res.type('html').send(
       shell(req, {
-        title: d.task.displayName,
+        title: d.summary.label,
         active: 'tasks',
         body: render.pageTaskDetail({
           task: {
@@ -514,37 +517,16 @@ export function createServer({
           runs: d.runs,
           hiddenSkipped: d.hiddenSkipped,
           includeSkipped: d.includeSkipped,
-          canRun: !scheduler.isRunning(d.task.name, req.user.id),
+          canRun: !scheduler.isRunning(d.summary.id, req.user.id),
           credential,
         }),
       }),
     );
   });
 
-  /**
-   * 配置已并入任务页：/tasks/:name 本身就是配置页。
-   *
-   * 保留重定向是为了让旧书签和旧链接不至于 404。校验放在重定向之前——
-   * 否则「账号不存在」会先跳一次再 404，用户看到的 URL 就不是他点的那个。
-   */
-  app.get('/tasks/:name/config', requireLogin, (req, res) => {
-    const task = tasks.get(req.params.name);
-    const accountKey = String(req.query.account ?? '');
-    const notFound = (text) =>
-      res
-        .status(404)
-        .type('html')
-        .send(shell(req, { title: '未找到', active: 'tasks', body: `<p class="empty">${text}</p>` }));
-    if (!task || (task.visibility === 'internal' && req.user.role !== 'admin')) return notFound('没有这个任务');
-    if (accountKey) {
-      const sub = mine(req).getSubscription(task.name);
-      if (!sub?.accounts.some((a) => a.accountKey === accountKey)) return notFound('没有这个账号');
-    }
-    res.redirect(
-      `/tasks/${encodeURIComponent(req.params.name)}${
-        accountKey ? `?account=${encodeURIComponent(accountKey)}` : ''
-      }`,
-    );
+  /** 旧链接兼容：任务页合并后没有 /config 这一层，旧的 /tasks/:name 也不再有账号维度 */
+  app.get('/tasks/:name', requireLogin, (req, res) => {
+    res.redirect('/tasks');
   });
 
   /**
@@ -564,7 +546,7 @@ export function createServer({
         active: 'admin',
         body: render.pageAdmin({
           users: auth.listUsers(),
-          subs: store.subscriptionCounts(),
+          subs: store.configCounts(),
           today: store.platformStats(dateInTZ(new Date(now()))),
         }),
       }),
@@ -619,12 +601,38 @@ export function createServer({
     res.json({ tasks: summarizeFor(req).items }),
   );
 
-  app.get('/api/tasks/:name', requireLogin, (req, res) => {
-    const d = detailOf(req.params.name, {
+  /**
+   * 从一个模板建一个任务。
+   *
+   * 一个任务只跑一个账号：想跑第二个账号就再建一个任务，
+   * 所以同一模板可以建多个，每次都带一个新的 account_key。
+   *
+   * 校验顺序很关键：**不在 registry 里、或 internal 且非 admin，都返回 404**——
+   * 返回 403 会证实「这个名字存在但你不配用」，等于把 internal 模板的清单泄露出去。
+   */
+  app.post('/api/tasks', requireLogin, (req, res) => {
+    const template = String(req.body?.template ?? '');
+    const task = tasks.get(template);
+    if (!task || (task.visibility === 'internal' && req.user.role !== 'admin')) {
+      return res.status(404).json({ error: '没有这个模板' });
+    }
+    try {
+      const existing = mine(req).tasksOfTemplate(task.name);
+      // 名字默认取模板名，第二个往后自动加序号——用户可以在任务页改
+      const label = String(req.body?.label ?? '').trim().slice(0, 32)
+        || (existing.length ? `${task.displayName} ${existing.length + 1}` : task.displayName);
+      const t = mine(req).createTask(task.name, { label });
+      res.json({ ok: true, id: t.id, task: t });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/tasks/:id(\\d+)', requireLogin, (req, res) => {
+    const d = detailOf(Number(req.params.id), {
       includeSkipped: req.query.all === '1',
       userId: req.user.id,
       role: req.user.role,
-      accountKey: String(req.query.account ?? ''),
     });
     if (!d) return res.status(404).json({ error: '没有这个任务' });
     res.json({
@@ -632,46 +640,44 @@ export function createServer({
       view: d.view,
       runs: d.runs,
       hiddenSkipped: d.hiddenSkipped,
-      running: scheduler.isRunning(d.task.name, req.user.id),
+      running: scheduler.isRunning(d.summary.id, req.user.id),
     });
   });
 
-  app.post('/api/tasks/:name/run', requireLogin, (req, res) => {
-    const name = req.params.name;
-    const accountKey = String(req.body?.accountKey ?? '');
-    if (!tasks.has(name)) return res.status(404).json({ error: '没有这个任务' });
-    if (scheduler.isRunning(name, req.user.id, accountKey)) {
+  app.post('/api/tasks/:id(\\d+)/run', requireLogin, (req, res) => {
+    const id = Number(req.params.id);
+    if (scheduler.isRunning(id, req.user.id)) {
       return res.status(409).json({ error: '该任务正在执行中' });
     }
     try {
       // 不 await：任务可能跑几十秒，让前端轮询结果
-      scheduler.trigger(name, { userId: req.user.id, accountKey });
+      scheduler.trigger(id, { userId: req.user.id });
     } catch (err) {
-      // 没订阅就触发是常见误操作（比如在模板市场点了运行），给 400 而不是 500
       return res.status(400).json({ error: err.message });
     }
     res.json({ started: true });
   });
 
   /**
-   * 改订阅配置：启停、超时、调度时间。
+   * 改任务的启停 / 超时 / 调度 / 名字。
    *
-   * 调度时间是「每个用户配自己的」，所以必须能在这里写——调度器会优先用订阅里的值
+   * 调度是「每个任务配自己的」，所以必须能在这里写——调度器会优先用任务里的值
    * （见 scheduler.mjs 的 targets()），写不进去就等于这个功能是假的。
    *
-   * 权限：改的是**自己的**订阅，所以只要登录即可，不需要 admin。
-   * admin 与 user 在这条路上没有区别——多租户下「自己的任务自己配」是前提。
+   * 权限：改的是**自己的**任务，所以只要登录即可，不需要 admin。
    */
-  app.patch('/api/tasks/:name', requireLogin, (req, res) => {
-    const name = req.params.name;
-    if (!tasks.has(name)) return res.status(404).json({ error: '没有这个任务' });
+  app.patch('/api/tasks/:id(\\d+)', requireLogin, (req, res) => {
+    const id = Number(req.params.id);
+    const t = mine(req).getTask(id);
+    if (!t) return res.status(404).json({ error: '没有这个任务' });
 
     const patch = {};
     if (typeof req.body.enabled === 'boolean') patch.enabled = req.body.enabled;
+    if (typeof req.body.label === 'string') patch.label = req.body.label.trim().slice(0, 32);
     if (req.body.timeoutMs !== undefined) {
-      const t = Number(req.body.timeoutMs);
-      if (!Number.isInteger(t) || t <= 0) return res.status(400).json({ error: 'timeoutMs 必须是正整数' });
-      patch.timeoutMs = t;
+      const n = Number(req.body.timeoutMs);
+      if (!Number.isInteger(n) || n <= 0) return res.status(400).json({ error: 'timeoutMs 必须是正整数' });
+      patch.timeoutMs = n;
     }
     if (req.body.schedule !== undefined) {
       // null 表示「回到模板默认」
@@ -681,7 +687,7 @@ export function createServer({
         try {
           // 前端可能传原始声明（只有 window/once/every），也可能传规范化后的值（带 kind）
           const { kind, ...declared } = req.body.schedule;
-          const normalized = normalizeSchedule(name, declared);
+          const normalized = normalizeSchedule(t.taskName, declared);
           if (kind && normalized && normalized.kind !== kind) {
             return res.status(400).json({ error: '调度配置自相矛盾：kind 与内容不一致' });
           }
@@ -694,39 +700,41 @@ export function createServer({
     if (!Object.keys(patch).length) return res.status(400).json({ error: '没有可更新的字段' });
 
     try {
-      // 没有订阅就先建一个：admin 在「模板」视角下改配置是常见路径
-      if (!mine(req).getSubscription(name)) mine(req).subscribe(name);
-      mine(req).setSubscription(name, patch);
+      const updated = mine(req).updateTask(id, patch);
+      res.json({ ok: true, task: updated });
     } catch (err) {
-      // 间隔下限、订阅上限这类限制都在 store 里，转成 400 让界面直接显示原因
+      // 间隔下限、任务数上限这类限制都在 store 里，转成 400 让界面直接显示原因
       return res.status(400).json({ error: err.message });
     }
-    res.json({ ok: true, subscription: mine(req).getSubscription(name) });
   });
 
-  /** 取消订阅（原「清掉覆盖层」）。多租户下没有「回到全局默认」这回事了 */
-  app.delete('/api/tasks/:name/override', requireLogin, (req, res) => {
-    if (!tasks.has(req.params.name)) return res.status(404).json({ error: '没有这个任务' });
-    res.json({ ok: true, cleared: mine(req).unsubscribe(req.params.name) });
+  /** 删掉这个任务（历史记录保留，那是发生过的事实） */
+  app.delete('/api/tasks/:id(\\d+)', requireLogin, (req, res) => {
+    const t = mine(req).getTask(Number(req.params.id));
+    if (!t) return res.status(404).json({ error: '没有这个任务' });
+    if (userSecrets) userSecrets.removeAccount(req.user.id, t.taskName, t.accountKey);
+    res.json({ ok: true, deleted: mine(req).deleteTask(t.id) });
   });
 
   /**
-   * 写入**我自己**在某个模板某个账号下的凭据。
+   * 写入**我自己**某个任务的凭据。
    *
    * 三条硬约束：
    *   · 只能写这个模板声明过的字段（白名单）——否则凭据库会变成任意数据的垃圾桶
-   *   · 必须先订阅过——没有实例就不该有凭据
-   *   · 账号必须是这个订阅下的——防止拿别人的 accountKey 覆盖别人的凭据
-   *
-   * **留空表示不修改**：界面上不会因为一个空输入框就把已有凭据清掉。
+   *   · 任务必须是我自己的——传 id 而不是名字，避免拿别人的 accountKey 覆盖别人的凭据
+   *   · 留空表示不修改：界面上不会因为一个空输入框就把已有凭据清掉
    */
   app.post('/api/credentials', requireLogin, (req, res) => {
     if (!userSecrets) return res.status(503).json({ error: '凭据存储未就绪' });
 
-    const { taskName, accountKey = '', fields } = req.body ?? {};
-    if (typeof taskName !== 'string') return res.status(400).json({ error: '缺少 taskName' });
-    const task = tasks.get(taskName);
+    const id = Number(req.body?.taskId);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: '缺少 taskId' });
+    const t = mine(req).getTask(id);
+    if (!t) return res.status(404).json({ error: '没有这个任务' });
+    const task = tasks.get(t.taskName);
     if (!task) return res.status(404).json({ error: '没有这个模板' });
+
+    const fields = req.body?.fields;
     if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
       return res.status(400).json({ error: '缺少 fields 对象' });
     }
@@ -738,85 +746,12 @@ export function createServer({
     if (notString) return res.status(400).json({ error: `字段 ${notString} 的值必须是字符串` });
     if (!Object.keys(fields).length) return res.status(400).json({ error: '没有要修改的字段' });
 
-    const sub = mine(req).getSubscription(taskName);
-    if (!sub) return res.status(400).json({ error: '还没有启用这个模板' });
-    if (accountKey && !sub.accounts.some((a) => a.accountKey === accountKey)) {
-      return res.status(404).json({ error: '没有这个账号' });
-    }
-
     try {
       // 只回字段名，绝不回值
-      res.json({ ok: true, keys: userSecrets.set(req.user.id, taskName, accountKey, fields) });
+      res.json({ ok: true, keys: userSecrets.set(req.user.id, t.taskName, t.accountKey, fields) });
     } catch (err) {
       res.status(500).json({ error: '写入凭据失败' });
     }
-  });
-
-  /* ───────── 订阅与账号 ───────── */
-
-  /**
-   * 启用一个模板（= 建一个我自己的实例）。
-   *
-   * 校验顺序很关键：**不在 registry 里、或 internal 且非 admin，都返回 404**——
-   * 返回 403 会证实「这个名字存在但你不配用」，等于把 internal 模板的清单泄露出去。
-   */
-  app.post('/api/subscriptions', requireLogin, (req, res) => {
-    const name = req.body?.taskName;
-    if (typeof name !== 'string') return res.status(400).json({ error: '缺少 taskName' });
-    const task = tasks.get(name);
-    if (!task || (task.visibility === 'internal' && req.user.role !== 'admin')) {
-      return res.status(404).json({ error: '没有这个模板' });
-    }
-    try {
-      mine(req).subscribe(name);
-      res.json({ ok: true, subscription: mine(req).getSubscription(name) });
-    } catch (err) {
-      res.status(400).json({ error: err.message });
-    }
-  });
-
-  /** 给支持多账号的模板加一个账号（accounts: true 才允许） */
-  app.post('/api/subscriptions/:taskName/accounts', requireLogin, (req, res) => {
-    const task = tasks.get(req.params.taskName);
-    if (!task) return res.status(404).json({ error: '没有这个模板' });
-    if (!task.accounts) return res.status(400).json({ error: '这个模板不支持多账号' });
-    if (!mine(req).getSubscription(task.name)) {
-      return res.status(400).json({ error: '还没有启用这个模板' });
-    }
-    try {
-      const accountKey = mine(req).addAccount(task.name, {
-        label: String(req.body?.label ?? '').trim().slice(0, 32) || '未命名',
-      });
-      res.json({ ok: true, accountKey });
-    } catch (err) {
-      res.status(400).json({ error: err.message });
-    }
-  });
-
-  /** 单个账号停用/启用：不删凭据与历史，只是不再参与调度 */
-  app.patch('/api/subscriptions/:taskName/accounts/:accountKey', requireLogin, (req, res) => {
-    const { taskName, accountKey } = req.params;
-    if (!tasks.has(taskName)) return res.status(404).json({ error: '没有这个模板' });
-    if (typeof req.body?.enabled !== 'boolean') {
-      return res.status(400).json({ error: 'enabled 必须是布尔值' });
-    }
-    const acc = mine(req).setAccountEnabled(taskName, accountKey, req.body.enabled);
-    if (!acc) return res.status(404).json({ error: '没有这个账号' });
-    res.json({ ok: true, account: acc });
-  });
-
-  /** 删账号：连它的凭据一起删（历史记录保留，那是发生过的事实） */
-  app.delete('/api/subscriptions/:taskName/accounts/:accountKey', requireLogin, (req, res) => {
-    const { taskName, accountKey } = req.params;
-    if (!tasks.has(taskName)) return res.status(404).json({ error: '没有这个模板' });
-    if (!accountKey) return res.status(400).json({ error: '默认账号不能删除' });
-    const sub = mine(req).getSubscription(taskName);
-    if (!sub || !sub.accounts.some((a) => a.accountKey === accountKey)) {
-      return res.status(404).json({ error: '没有这个账号' });
-    }
-    mine(req).removeAccount(taskName, accountKey);
-    if (userSecrets) userSecrets.removeAccount(req.user.id, taskName, accountKey);
-    res.json({ ok: true });
   });
 
   app.get('/api/runs', requireLogin, (req, res) => {

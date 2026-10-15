@@ -694,6 +694,83 @@ label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
 /* SVG 元素上的 hidden 属性：UA 样式表里那条规则不一定覆盖到 SVG 命名空间 */
 .reveal svg[hidden] { display: none; }
 
+/* ── 顶部模板轨道：横向滑动，点一张卡 = 用这个模板建一个任务 ── */
+.template-rail {
+  display: flex;
+  gap: 12px;
+  /* 卡片自身的 padding 会在滑动时被裁掉一点，用负 margin + 对称 padding 补回来 */
+  margin: 0 calc(var(--card-pad, 16px) * -1);
+  padding: 2px var(--card-pad, 16px);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  /* 一屏约露 1.6 张：露出下一张的边，等于告诉用户这里还能滑 */
+  scroll-padding-left: var(--card-pad, 16px);
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.template-rail::-webkit-scrollbar { display: none; }
+
+.template-card {
+  flex: 0 0 200px;
+  scroll-snap-align: start;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  text-align: left;
+  height: auto;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  white-space: normal;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.08s ease;
+}
+.template-card:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-3);
+}
+.template-card:active:not(:disabled) { transform: translateY(1px); }
+.template-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.template-card-name {
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.template-card-count {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--accent);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+}
+/* 说明最多两行：模板描述长短不一，不限行的话卡片会高矮不齐 */
+.template-card-desc {
+  font-size: 13px;
+  color: var(--dim);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 2.9em;
+}
+.template-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--off);
+}
+
 /* ── 调度表单（选类型 → 显示对应字段） ── */
 .schedule-form { display: grid; gap: 12px; margin-top: 12px; }
 .schedule-form fieldset {

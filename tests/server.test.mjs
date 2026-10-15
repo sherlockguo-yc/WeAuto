@@ -84,7 +84,7 @@ async function startServer({
   const auth = createAuth({ db, jwtSecret: 'test-secret' });
   if (seedUser) {
     auth.register({ username: 'tester', password: 'pass-word-1', role: seedRole });
-    if (seedSubscription) store.forUser(USER_ID).subscribe(DEMO_TASK.name);
+    if (seedSubscription) store.forUser(USER_ID).createTask(DEMO_TASK.name, { label: '演示任务', accountKey: '' });
   }
   const scheduler = createScheduler({
     store,
@@ -217,7 +217,7 @@ describe('页面渲染与转义', () => {
       data: { remainTraffic: 2048, note: '<img src=x onerror=alert(2)>' },
     });
 
-    const html = await (await fetch(`${base}/tasks/demo-task`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
     assert.equal(html.includes('<script>alert(1)</script>'), false);
     assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.equal(html.includes('<img src=x'), false);
@@ -247,11 +247,11 @@ describe('接口行为', () => {
     });
     const cookie = await login(base);
 
-    const first = await fetch(`${base}/api/tasks/demo-task/run`, { method: 'POST', headers: { cookie } });
+    const first = await fetch(`${base}/api/tasks/1/run`, { method: 'POST', headers: { cookie } });
     assert.equal(first.status, 200);
     assert.deepEqual(await first.json(), { started: true });
 
-    const second = await fetch(`${base}/api/tasks/demo-task/run`, { method: 'POST', headers: { cookie } });
+    const second = await fetch(`${base}/api/tasks/1/run`, { method: 'POST', headers: { cookie } });
     assert.equal(second.status, 409);
 
     release();
@@ -267,11 +267,11 @@ describe('接口行为', () => {
     );
   });
 
-  it('启停任务写入订阅，取消订阅后任务不再是启用状态', async () => {
+  it('停用任务写入任务本身，删掉之后任务就不在了', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
-    const res = await fetch(`${base}/api/tasks/demo-task`, {
+    const res = await fetch(`${base}/api/tasks/1`, {
       method: 'PATCH',
       headers: { cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: false }),
@@ -282,46 +282,46 @@ describe('接口行为', () => {
     assert.equal(list.tasks[0].enabled, false);
     assert.equal(list.tasks[0].todayStatus, 'disabled');
 
-    const cleared = await fetch(`${base}/api/tasks/demo-task/override`, { method: 'DELETE', headers: { cookie } });
-    assert.deepEqual(await cleared.json(), { ok: true, cleared: true });
+    const cleared = await fetch(`${base}/api/tasks/1`, { method: 'DELETE', headers: { cookie } });
+    assert.deepEqual(await cleared.json(), { ok: true, deleted: true });
     const after = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
-    // 取消订阅 = 不再有这个实例，所以是 disabled 而不是「回到模板默认」
-    assert.equal(after.tasks[0].enabled, false);
+    // 删掉就是没了，不是「回到模板默认」再显示一行已停止
+    assert.equal(after.tasks.length, 0);
   });
 
   it('配置页只给出凭据字段名与是否已设置，绝不返回值', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
-    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
     assert.match(html, /DEMO_TOKEN/);
     assert.match(html, /未设置/);
   });
 });
 
 describe('调度配置（用户配自己的时间必须生效）', () => {
-  it('网页改的调度能存进订阅，调度器读到的就是它', async () => {
+  it('网页改的调度能存进任务，调度器读到的就是它', async () => {
     const { base, store } = await startServer();
     const cookie = await login(base);
 
-    const res = await fetch(`${base}/api/tasks/demo-task`, {
+    const res = await fetch(`${base}/api/tasks/1`, {
       method: 'PATCH',
       headers: { cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ schedule: { every: { minutes: 10 } } }),
     });
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.equal(body.subscription.schedule.kind, 'every');
-    assert.equal(body.subscription.schedule.every.minutes, 10);
+    assert.equal(body.task.schedule.kind, 'every');
+    assert.equal(body.task.schedule.every.minutes, 10);
 
-    // 模板本身是 window，但订阅里是 every —— 调度器必须认订阅里的
-    assert.equal(store.forUser(USER_ID).getSubscription('demo-task').schedule.every.minutes, 10);
+    // 模板本身是 window，但任务里是 every —— 调度器必须认任务里的
+    assert.equal(store.forUser(USER_ID).getTask(1).schedule.every.minutes, 10);
   });
 
   it('非法调度返回 400，而不是被静默忽略', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
-    const res = await fetch(`${base}/api/tasks/demo-task`, {
+    const res = await fetch(`${base}/api/tasks/1`, {
       method: 'PATCH',
       headers: { cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ schedule: { every: { minutes: 0 } } }),
@@ -334,7 +334,7 @@ describe('调度配置（用户配自己的时间必须生效）', () => {
     const { base } = await startServer({ limits: { minIntervalMinutes: 5 } });
     const cookie = await login(base);
 
-    const res = await fetch(`${base}/api/tasks/demo-task`, {
+    const res = await fetch(`${base}/api/tasks/1`, {
       method: 'PATCH',
       headers: { cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ schedule: { every: { minutes: 1 } } }),
@@ -347,53 +347,53 @@ describe('调度配置（用户配自己的时间必须生效）', () => {
     const { base, store } = await startServer();
     const cookie = await login(base);
 
-    await fetch(`${base}/api/tasks/demo-task`, {
+    await fetch(`${base}/api/tasks/1`, {
       method: 'PATCH',
       headers: { cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ schedule: { every: { minutes: 10 } } }),
     });
-    const back = await fetch(`${base}/api/tasks/demo-task`, {
+    const back = await fetch(`${base}/api/tasks/1`, {
       method: 'PATCH',
       headers: { cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ schedule: null }),
     });
     assert.equal(back.status, 200);
-    assert.equal(store.forUser(USER_ID).getSubscription('demo-task').schedule, null);
+    assert.equal(store.forUser(USER_ID).getTask(1).schedule, null);
   });
 
   it('普通用户（非 admin）也能改自己的订阅', async () => {
     const { base } = await startServer({ seedRole: 'user' });
     const cookie = await login(base);
 
-    const res = await fetch(`${base}/api/tasks/demo-task`, {
+    const res = await fetch(`${base}/api/tasks/1`, {
       method: 'PATCH',
       headers: { cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ schedule: { every: { minutes: 15 } } }),
     });
     assert.equal(res.status, 200, '改自己的任务不该要求 admin');
-    assert.equal((await res.json()).subscription.schedule.every.minutes, 15);
+    assert.equal((await res.json()).task.schedule.every.minutes, 15);
   });
 
-  it('改自己的订阅不会动到别人的', async () => {
+  it('改自己的任务不会动到别人的', async () => {
     const { base, store, auth } = await startServer({ seedRole: 'user' });
     auth.register({ username: 'other', password: 'pass-word-2', role: 'user' });
-    store.forUser(2).subscribe('demo-task');
+    const others = store.forUser(2).createTask('demo-task');
 
     const cookie = await login(base);
-    await fetch(`${base}/api/tasks/demo-task`, {
+    await fetch(`${base}/api/tasks/1`, {
       method: 'PATCH',
       headers: { cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ schedule: { every: { minutes: 15 } } }),
     });
 
-    assert.equal(store.forUser(USER_ID).getSubscription('demo-task').schedule.every.minutes, 15);
-    assert.equal(store.forUser(2).getSubscription('demo-task').schedule, null, '别人的订阅没被碰到');
+    assert.equal(store.forUser(USER_ID).getTask(1).schedule.every.minutes, 15);
+    assert.equal(store.forUser(2).getTask(others.id).schedule, null, '别人的任务没被碰到');
   });
 
   it('配置页给出可编辑的调度表单', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
-    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
 
     assert.match(html, /data-action="save-schedule"/);
     assert.match(html, /name="kind"/);
@@ -415,15 +415,15 @@ describe('执行历史默认隐藏跳过记录', () => {
       message: '一条被跳过的记录',
     });
 
-    const def = await (await fetch(`${base}/tasks/demo-task`, { headers: { cookie } })).text();
+    const def = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
     assert.equal(def.includes('一条被跳过的记录'), false);
     assert.match(def, /显示另外 1 条已跳过/);
 
-    const all = await (await fetch(`${base}/tasks/demo-task?all=1`, { headers: { cookie } })).text();
+    const all = await (await fetch(`${base}/tasks/1?all=1`, { headers: { cookie } })).text();
     assert.match(all, /一条被跳过的记录/);
 
     // 接口口径一致
-    const api = await (await fetch(`${base}/api/tasks/demo-task`, { headers: { cookie } })).json();
+    const api = await (await fetch(`${base}/api/tasks/1`, { headers: { cookie } })).json();
     assert.equal(api.hiddenSkipped, 1);
     assert.deepEqual(api.runs.map((r) => r.status), ['success']);
   });
@@ -450,18 +450,21 @@ describe('凭据就近配置', () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
-    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
     assert.match(html, /data-action="save-credentials"/);
     assert.match(html, /name="DEMO_TOKEN"/);
   });
 
-  it('还没启用时给的是启用按钮，不是表单', async () => {
+  it('没建过任务时任务页没有任务，只有模板', async () => {
     const { base } = await startServer({ seedSubscription: false });
     const cookie = await login(base);
 
-    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
-    assert.match(html, /data-action="subscribe"/);
-    assert.equal(html.includes('data-action="save-credentials"'), false);
+    const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.match(html, /template-rail/);
+    assert.match(html, /data-action="create-task"/);
+    assert.match(html, /还没有创建任务/);
+    // 没建任务就没有任务页可进
+    assert.equal((await fetch(`${base}/tasks/1`, { headers: { cookie } })).status, 404);
   });
 
   it('填过之后配置页显示「已设置」', async () => {
@@ -471,9 +474,9 @@ describe('凭据就近配置', () => {
     await fetch(`${base}/api/credentials`, {
       method: 'POST',
       headers: { cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskName: 'demo-task', accountKey: '', fields: { DEMO_TOKEN: 'x' } }),
+      body: JSON.stringify({ taskId: 1, fields: { DEMO_TOKEN: 'x' } }),
     });
-    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
     assert.match(html, /已设置，留空表示不修改/);
   });
 });
@@ -505,7 +508,7 @@ describe('凭据页已取消', () => {
     await fetch(`${base}/api/credentials`, {
       method: 'POST',
       headers: { cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskName: 'demo-task', accountKey: '', fields: { DEMO_TOKEN: 'x' } }),
+      body: JSON.stringify({ taskId: 1, fields: { DEMO_TOKEN: 'x' } }),
     });
     const after = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
     assert.equal(after.includes('待填凭据'), false, '填过之后标记应消失');
@@ -524,36 +527,100 @@ describe('配置错误的提示', () => {
       message: '缺少凭据字段：DEMO_TOKEN（账号「默认」）',
     });
 
-    const html = await (await fetch(`${base}/tasks/demo-task`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
     assert.match(html, /去填写或更新凭据/);
   });
 });
 
-describe('指定不存在的账号', () => {
-  it('返回 404，而不是静默回退到第一个账号', async () => {
+describe('不存在的任务', () => {
+  it('返回 404，而不是静默回退到我的第一个任务', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
-    assert.equal(
-      (await fetch(`${base}/api/tasks/demo-task?account=nope`, { headers: { cookie } })).status,
-      404,
-    );
-    assert.equal(
-      (await fetch(`${base}/tasks/demo-task/config?account=nope`, { headers: { cookie } })).status,
-      404,
-    );
-    // 不指定则正常
-    assert.equal((await fetch(`${base}/api/tasks/demo-task`, { headers: { cookie } })).status, 200);
+    assert.equal((await fetch(`${base}/api/tasks/999`, { headers: { cookie } })).status, 404);
+    assert.equal((await fetch(`${base}/tasks/999`, { headers: { cookie } })).status, 404);
+    // 自己的那个正常
+    assert.equal((await fetch(`${base}/api/tasks/1`, { headers: { cookie } })).status, 200);
   });
 });
 
-describe('账号级启停', () => {
-  it('停用某个账号，不影响同一订阅下的其他账号', async () => {
+describe('一个任务只跑一个账号', () => {
+  it('同一个模板建两个任务 → 列表里两行，各自一个账号', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const made = await (
+      await fetch(`${base}/api/tasks`, {
+        method: 'POST',
+        headers: { cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template: 'demo-task', label: '小号' }),
+      })
+    ).json();
+    assert.equal(made.ok, true);
+
+    const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
+    assert.equal(list.tasks.length, 2, '一个任务一行');
+    const keys = list.tasks.map((t) => t.accountKey);
+    assert.equal(new Set(keys).size, 2, '两个任务的账号不同');
+    assert.equal(list.tasks.find((t) => t.id === made.id).label, '小号');
+  });
+
+  it('两个任务的状态各自独立：一个成功不影响另一个', async () => {
     const { base, store } = await startServer();
     const cookie = await login(base);
-    const extra = store.forUser(USER_ID).addAccount('demo-task', { label: '小号' });
+    const second = store.forUser(USER_ID).createTask('demo-task', { label: '小号' });
+    store.forUser(USER_ID).appendRun({
+      taskName: 'demo-task',
+      accountKey: store.forUser(USER_ID).getTask(1).accountKey,
+      date: '2026-10-14',
+      ts: NOW,
+      status: 'success',
+    });
 
-    const res = await fetch(`${base}/api/subscriptions/demo-task/accounts/${extra}`, {
+    const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
+    const main = list.tasks.find((t) => t.id === 1);
+    const other = list.tasks.find((t) => t.id === second.id);
+    assert.equal(main.todayStatus, 'success');
+    assert.notEqual(other.todayStatus, 'success', '另一个任务不该被当成已完成');
+  });
+
+  it('详情页只给这个任务自己的历史', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    const mine = store.forUser(USER_ID);
+    const second = mine.createTask('demo-task', { label: '小号' });
+    mine.appendRun({
+      taskName: 'demo-task',
+      accountKey: mine.getTask(1).accountKey,
+      date: '2026-10-14',
+      ts: NOW,
+      status: 'success',
+      message: '第一个任务',
+    });
+    mine.appendRun({
+      taskName: 'demo-task',
+      accountKey: second.accountKey,
+      date: '2026-10-14',
+      ts: NOW + 1,
+      status: 'failed',
+      message: '第二个任务',
+    });
+
+    const main = await (await fetch(`${base}/api/tasks/1`, { headers: { cookie } })).json();
+    assert.equal(main.runs.length, 1);
+    assert.equal(main.runs[0].message, '第一个任务');
+
+    const other = await (await fetch(`${base}/api/tasks/${second.id}`, { headers: { cookie } })).json();
+    assert.equal(other.runs.length, 1);
+    assert.equal(other.runs[0].message, '第二个任务');
+  });
+
+  it('停用任务只影响它自己', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    const second = store.forUser(USER_ID).createTask('demo-task', { label: '小号' });
+
+    const res = await fetch(`${base}/api/tasks/${second.id}`, {
       method: 'PATCH',
       headers: { cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: false }),
@@ -561,93 +628,30 @@ describe('账号级启停', () => {
     assert.equal(res.status, 200);
 
     const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
-    assert.equal(list.tasks.find((t) => t.accountKey === extra).enabled, false);
-    assert.equal(list.tasks.find((t) => t.accountKey === '').enabled, true);
+    assert.equal(list.tasks.find((t) => t.id === second.id).enabled, false);
+    assert.equal(list.tasks.find((t) => t.id === 1).enabled, true);
   });
 
-  it('配置页把停用的账号标出来', async () => {
+  it('删除任务：任务没了，历史还在', async () => {
     const { base, store } = await startServer();
     const cookie = await login(base);
-    store.forUser(USER_ID).setAccountEnabled('demo-task', '', false);
+    const mine = store.forUser(USER_ID);
+    const second = mine.createTask('demo-task', { label: '小号' });
+    const before = mine.runsOfTask('demo-task', { limit: 50 }).length;
 
-    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
-    assert.match(html, /已停用/);
-  });
-});
-
-describe('多账号展示', () => {
-  it('一个订阅两个账号 → 列表里两行', async () => {
-    const { base, store } = await startServer();
-    const cookie = await login(base);
-    const extra = store.forUser(USER_ID).addAccount('demo-task', { label: '小号' });
+    const res = await fetch(`${base}/api/tasks/${second.id}`, {
+      method: 'DELETE',
+      headers: { cookie, 'Content-Type': 'application/json' },
+    });
+    assert.equal(res.status, 200);
 
     const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
-    assert.equal(list.tasks.length, 2, '每个账号一行');
-    assert.deepEqual(
-      list.tasks.map((t) => t.accountKey).sort(),
-      ['', extra].sort(),
+    assert.equal(list.tasks.length, 1, '只剩一个任务');
+    assert.equal(
+      mine.runsOfTask('demo-task', { limit: 50 }).length,
+      before,
+      '执行历史是发生过的事实，不跟着删',
     );
-    assert.equal(list.tasks.find((t) => t.accountKey === extra).accountLabel, '小号');
-  });
-
-  it('各账号状态独立：一个成功不影响另一个', async () => {
-    const { base, store } = await startServer();
-    const cookie = await login(base);
-    const extra = store.forUser(USER_ID).addAccount('demo-task', { label: '小号' });
-    store.forUser(USER_ID).appendRun({
-      taskName: 'demo-task',
-      accountKey: '',
-      date: '2026-10-14',
-      ts: NOW,
-      status: 'success',
-    });
-
-    const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
-    const main = list.tasks.find((t) => t.accountKey === '');
-    const second = list.tasks.find((t) => t.accountKey === extra);
-    assert.equal(main.todayStatus, 'success');
-    assert.notEqual(second.todayStatus, 'success', '另一个账号不该被当成已完成');
-  });
-
-  it('详情页按账号过滤历史', async () => {
-    const { base, store } = await startServer();
-    const cookie = await login(base);
-    const extra = store.forUser(USER_ID).addAccount('demo-task', { label: '小号' });
-    store.forUser(USER_ID).appendRun({
-      taskName: 'demo-task',
-      accountKey: '',
-      date: '2026-10-14',
-      ts: NOW,
-      status: 'success',
-      message: '默认账号',
-    });
-    store.forUser(USER_ID).appendRun({
-      taskName: 'demo-task',
-      accountKey: extra,
-      date: '2026-10-14',
-      ts: NOW + 1,
-      status: 'failed',
-      message: '小号',
-    });
-
-    const main = await (await fetch(`${base}/api/tasks/demo-task`, { headers: { cookie } })).json();
-    assert.equal(main.runs.length, 1);
-    assert.equal(main.runs[0].message, '默认账号');
-
-    const other = await (
-      await fetch(`${base}/api/tasks/demo-task?account=${extra}`, { headers: { cookie } })
-    ).json();
-    assert.equal(other.runs.length, 1);
-    assert.equal(other.runs[0].message, '小号');
-  });
-
-  it('任务页里多账号的标题带账号名', async () => {
-    const { base, store } = await startServer();
-    const cookie = await login(base);
-    store.forUser(USER_ID).addAccount('demo-task', { label: '小号' });
-
-    const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
-    assert.match(html, /演示任务 · 小号/);
   });
 });
 
@@ -657,7 +661,7 @@ describe('账号删除', () => {
     const cookie = await login(base);
     auth.register({ username: 'goner', password: 'pass-word-1', role: 'user' });
     const victim = auth.listUsers().find((u) => u.username === 'goner');
-    store.forUser(victim.id).subscribe('demo-task');
+    store.forUser(victim.id).createTask('demo-task');
     store.forUser(victim.id).appendRun({
       taskName: 'demo-task',
       date: '2026-10-14',
@@ -848,14 +852,14 @@ describe('管理页（仅 admin）', () => {
 });
 
 describe('概览统计', () => {
-  it('未启用的模板不计入统计，也不出现在「需要注意」里', async () => {
+  it('没建过的模板不计入统计，也不出现在「需要注意」里', async () => {
     const { base } = await startServer({ seedSubscription: false });
     const cookie = await login(base);
     const data = await (await fetch(`${base}/api/overview`, { headers: { cookie } })).json();
 
-    assert.equal(data.items.length, 1, '列表里仍然要能看到它（供启用）');
-    assert.equal(data.byStatus.disabled, 0, '没启用不该被算成「停用」');
-    assert.equal(data.attention.length, 0, '没启用不该出现在需要注意里');
+    assert.equal(data.items.length, 0, '没建过的模板不占「我的任务」的行');
+    assert.equal(data.byStatus.disabled, 0, '没建不该被算成「停用」');
+    assert.equal(data.attention.length, 0, '没建不该出现在需要注意里');
   });
 });
 
@@ -983,7 +987,7 @@ describe('邀请注册', () => {
   });
 });
 
-describe('模板市场（只能启用平台提供的模板）', () => {
+describe('模板与任务（只能从平台提供的模板建任务）', () => {
   const INTERNAL_TASK = {
     ...DEMO_TASK,
     name: 'internal-task',
@@ -991,75 +995,77 @@ describe('模板市场（只能启用平台提供的模板）', () => {
     visibility: 'internal',
   };
 
-  it('未启用的模板能启用，启用后进入我的任务', async () => {
+  it('点模板建任务，建完就有了我的任务', async () => {
     const { base } = await startServer({ seedSubscription: false });
     const cookie = await login(base);
 
     let list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
-    assert.equal(list.tasks[0].subscribed, false);
+    assert.equal(list.tasks.length, 0, '没建之前没有任务');
 
-    const res = await fetch(`${base}/api/subscriptions`, {
+    const res = await fetch(`${base}/api/tasks`, {
       method: 'POST',
       headers: { cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskName: 'demo-task' }),
+      body: JSON.stringify({ template: 'demo-task' }),
     });
     assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(typeof body.id, 'number');
 
     list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
-    assert.equal(list.tasks[0].subscribed, true);
+    assert.equal(list.tasks.length, 1);
+    assert.equal(list.tasks[0].id, body.id);
   });
 
-  it('启用不存在的模板返回 404，不会凭空造出订阅', async () => {
+  it('用不存在的模板建任务返回 404，不会凭空造出任务', async () => {
     const { base, store } = await startServer({ seedSubscription: false });
     const cookie = await login(base);
 
-    const res = await fetch(`${base}/api/subscriptions`, {
+    const res = await fetch(`${base}/api/tasks`, {
       method: 'POST',
       headers: { cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskName: 'no-such-template' }),
+      body: JSON.stringify({ template: 'no-such-template' }),
     });
     assert.equal(res.status, 404);
-    assert.equal(store.forUser(USER_ID).listSubscriptions().length, 0);
+    assert.equal(store.forUser(USER_ID).listTasks().length, 0);
   });
 
-  it('internal 模板对普通用户不可见，也启用不了', async () => {
+  it('internal 模板对普通用户不可见，也建不了', async () => {
     const { base } = await startServer({ seedRole: 'user', extraTasks: [INTERNAL_TASK] });
     const cookie = await login(base);
 
-    const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
-    assert.equal(list.tasks.some((t) => t.name === 'internal-task'), false, '列表里不该出现');
+    const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.equal(html.includes('内部模板'), false, '模板轨道里不该出现');
 
-    const res = await fetch(`${base}/api/subscriptions`, {
+    const res = await fetch(`${base}/api/tasks`, {
       method: 'POST',
       headers: { cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskName: 'internal-task' }),
+      body: JSON.stringify({ template: 'internal-task' }),
     });
     // 404 而不是 403：403 会证实「这个名字存在」，等于泄露 internal 清单
     assert.equal(res.status, 404);
-    assert.equal((await fetch(`${base}/tasks/internal-task`, { headers: { cookie } })).status, 404);
   });
 
-  it('admin 能看到并启用 internal 模板', async () => {
+  it('admin 能看到并用 internal 模板建任务', async () => {
     const { base } = await startServer({ extraTasks: [INTERNAL_TASK] });
     const cookie = await login(base);
 
-    const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
-    assert.equal(list.tasks.some((t) => t.name === 'internal-task'), true);
+    const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.match(html, /内部模板/);
 
-    const res = await fetch(`${base}/api/subscriptions`, {
+    const res = await fetch(`${base}/api/tasks`, {
       method: 'POST',
       headers: { cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskName: 'internal-task' }),
+      body: JSON.stringify({ template: 'internal-task' }),
     });
     assert.equal(res.status, 200);
   });
 
-  it('任务页给出启用按钮', async () => {
+  it('任务页顶部是模板轨道，不是「可以启用的模板」列表', async () => {
     const { base } = await startServer({ seedSubscription: false });
     const cookie = await login(base);
     const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
-    assert.match(html, /data-action="subscribe"/);
-    assert.match(html, /可以启用的模板/);
+    assert.match(html, /data-action="create-task"/);
+    assert.equal(html.includes('可以启用的模板'), false);
   });
 });
 
@@ -1076,8 +1082,7 @@ describe('凭据接口（每人一份）', () => {
     const cookie = await login(base);
 
     const res = await post(base, cookie, {
-      taskName: 'demo-task',
-      accountKey: '',
+      taskId: 1,
       fields: { DEMO_TOKEN: 'abc' },
     });
     assert.equal(res.status, 200);
@@ -1089,7 +1094,7 @@ describe('凭据接口（每人一份）', () => {
     const cookie = await login(base);
 
     const res = await post(base, cookie, {
-      taskName: 'demo-task',
+      taskId: 1,
       fields: { WHATEVER: 'x' },
     });
     assert.equal(res.status, 400);
@@ -1101,7 +1106,7 @@ describe('凭据接口（每人一份）', () => {
     const cookie = await login(base);
 
     const res = await post(base, cookie, {
-      taskName: 'demo-task',
+      taskId: 1,
       fields: { DEMO_TOKEN: { nested: 1 } },
     });
     assert.equal(res.status, 400);
@@ -1112,28 +1117,30 @@ describe('凭据接口（每人一份）', () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
-    assert.equal((await post(base, cookie, { taskName: 'nope', fields: {} })).status, 404);
+    // 没有这个任务 = 404；模板名不再是写凭据的入口
+    assert.equal((await post(base, cookie, { taskId: 999, fields: {} })).status, 404);
+    assert.equal((await post(base, cookie, { taskName: 'demo-task', fields: {} })).status, 400);
   });
 
-  it('不能拿别人的账号标识覆盖别人的凭据', async () => {
+  it('拿不到别人的任务就写不进别人的凭据', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
+    // 别人的任务 id 在我的视图里根本取不到 —— 只能拿到 404，写不进去
     const res = await post(base, cookie, {
-      taskName: 'demo-task',
-      accountKey: 'someone-elses',
+      taskId: 999,
       fields: { DEMO_TOKEN: 'x' },
     });
     assert.equal(res.status, 404);
-    assert.match((await res.json()).error, /没有这个账号/);
+    assert.match((await res.json()).error, /没有这个任务/);
   });
 
   it('凭据值不出现在页面里', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
-    await post(base, cookie, { taskName: 'demo-task', fields: { DEMO_TOKEN: 'top-secret' } });
+    await post(base, cookie, { taskId: 1, fields: { DEMO_TOKEN: 'top-secret' } });
 
-    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
     assert.match(html, /DEMO_TOKEN/);
     assert.equal(html.includes('top-secret'), false);
     assert.match(html, /已设置/);
@@ -1202,7 +1209,7 @@ describe('CSRF', () => {
   it('跨站来源的写操作被拒绝', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
-    const res = await fetch(`${base}/api/tasks/demo-task/run`, {
+    const res = await fetch(`${base}/api/tasks/1/run`, {
       method: 'POST',
       headers: { cookie, Origin: 'https://evil.example.com' },
     });
@@ -1212,7 +1219,7 @@ describe('CSRF', () => {
   it('没有 Origin 的客户端（curl）不受影响', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
-    const res = await fetch(`${base}/api/tasks/demo-task/run`, { method: 'POST', headers: { cookie } });
+    const res = await fetch(`${base}/api/tasks/1/run`, { method: 'POST', headers: { cookie } });
     assert.equal(res.status, 200);
   });
 });
@@ -1234,11 +1241,11 @@ describe('概览与任务详情的执行记录一致', () => {
   it('概览标出任务展示名与账号名，多账号下才分得清每条属于谁', async () => {
     const { base, store } = await startServer({ extraTasks: [MULTI_TASK] });
     const mine = store.forUser(USER_ID);
-    mine.subscribe(MULTI_TASK.name);
-    const second = mine.addAccount(MULTI_TASK.name, { label: '小号' });
+    const first = mine.createTask(MULTI_TASK.name, { label: '主号' });
+    const second = mine.createTask(MULTI_TASK.name, { label: '小号' });
     const t0 = Date.parse('2026-10-14T09:00:00+08:00');
     let i = 0;
-    for (const accountKey of ['', second, '', second]) {
+    for (const accountKey of [first.accountKey, second.accountKey, first.accountKey, second.accountKey]) {
       mine.appendRun({
         taskName: MULTI_TASK.name,
         accountKey,
@@ -1252,23 +1259,22 @@ describe('概览与任务详情的执行记录一致', () => {
     }
     const cookie = await login(base);
 
-    // 概览是跨账号流水：两个账号各 2 条都在，且每条都标得出账号
+    // 概览是跨任务流水：两个任务各 2 条都在，且每条都标得出是哪个任务
     const overview = await (await fetch(`${base}/api/overview`, { headers: { cookie } })).json();
-    assert.equal(overview.recent.length, 4, '两个账号共 4 条');
-    assert.equal(overview.recent[0].taskLabel, '多账号任务', '概览不该再显示模板名');
-    assert.equal(overview.recent[0].multiAccount, true);
-    // 默认账号的 label 是「默认」，不是空串
-    const labels = overview.recent.map((r) => r.accountLabel).sort();
-    assert.deepEqual(labels, ['默认', '默认', '小号', '小号'].sort());
+    assert.equal(overview.recent.length, 4, '两个任务共 4 条');
+    assert.notEqual(overview.recent[0].taskLabel, '多账号任务', '概览用任务名，不是模板名');
+    const labels = overview.recent.map((r) => r.taskLabel).sort();
+    assert.deepEqual(labels, ['主号', '主号', '小号', '小号'].sort());
 
-    // 详情页仍是单账号视图（与顶部状态卡同一个账号），指定谁就只看谁
-    const main = await (await fetch(`${base}/api/tasks/multi-task`, { headers: { cookie } })).json();
-    assert.equal(main.runs.length, 2, '不带 account = 第一个账号');
+    // 详情页是这个任务自己的视图：指定谁就只看谁
+    const main = await (await fetch(`${base}/api/tasks/${first.id}`, { headers: { cookie } })).json();
+    assert.equal(main.runs.length, 2);
+    assert.ok(main.runs.every((r) => r.accountKey === first.accountKey));
     const only = await (
-      await fetch(`${base}/api/tasks/multi-task?account=${second}`, { headers: { cookie } })
+      await fetch(`${base}/api/tasks/${second.id}`, { headers: { cookie } })
     ).json();
     assert.equal(only.runs.length, 2);
-    assert.ok(only.runs.every((r) => r.accountKey === second));
+    assert.ok(only.runs.every((r) => r.accountKey === second.accountKey));
   });
 
   it('最近几十条全是 skipped 时，两处仍然给出同样的有效记录', async () => {
@@ -1297,7 +1303,7 @@ describe('概览与任务详情的执行记录一致', () => {
     }
     const cookie = await login(base);
     const overview = await (await fetch(`${base}/api/overview`, { headers: { cookie } })).json();
-    const detail = await (await fetch(`${base}/api/tasks/demo-task`, { headers: { cookie } })).json();
+    const detail = await (await fetch(`${base}/api/tasks/1`, { headers: { cookie } })).json();
 
     assert.equal(overview.recent.length, 20);
     // 以前详情页先取 50 条（全是 skipped）再过滤 → 0 条，与概览的 20 条对不上

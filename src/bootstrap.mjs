@@ -55,7 +55,7 @@ export function bootstrapTenancy({ db, store, userSecrets, tasks, ownerId, log =
             result.notes.push(`${row.task_name} 的旧调度配置无法解析，按默认处理`);
           }
         }
-        mine.subscribe(row.task_name, {
+        mine.ensureConfig(row.task_name, {
           enabled: !!row.enabled,
           schedule,
           timeoutMs: row.timeout_ms ?? null,
