@@ -141,6 +141,7 @@ export function summarizeAll({ tasks, store, nowMs = Date.now(), random = Math.r
           accountKey: acc.accountKey,
           accountLabel: acc.label,
           accountCount: sub.accounts.length,
+          accountEnabled: acc.enabled,
         }),
       );
     }

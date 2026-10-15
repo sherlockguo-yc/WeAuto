@@ -363,6 +363,26 @@ describe('调度循环', () => {
     assert.equal(calls.length, 0);
   });
 
+  it('停用的账号不参与调度，另一个照常', async () => {
+    const { store } = fresh();
+    const extra = store.forUser(USER_ID).addAccount('w-task', { label: '小号' });
+    store.forUser(USER_ID).setAccountEnabled('w-task', extra, false);
+
+    const { execute, calls } = fakeExecute(store);
+    const sch = createScheduler({
+      store,
+      tasks: new Map([[windowTask.name, windowTask]]),
+      execute,
+      now: () => windowTargetMs + 1000,
+    });
+
+    const r = sch.tick();
+    await sch.waitForIdle();
+    assert.deepEqual(r.started, ['w-task:'], '只剩默认账号');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].accountKey, '');
+  });
+
   it('同一用户串行：两个账号不会同时打出去', async () => {
     const { store } = fresh();
     const extra = store.forUser(USER_ID).addAccount('w-task', { label: '小号' });

@@ -393,7 +393,7 @@ function beijingInputValue(ms) {
   return new Date(ms + 8 * 36e5).toISOString().slice(0, 16);
 }
 
-export function pageTaskConfig({ task }) {
+export function pageTaskConfig({ task, credential = null }) {
   const retention = task.retention ?? {};
   // 有效调度 = 订阅里改过的（若有）否则模板默认。表单要能表达「我改过哪一种」
   const sch = task.schedule ?? null;
@@ -458,6 +458,33 @@ export function pageTaskConfig({ task }) {
 </section>
 
 <section class="card">
+  <h2>我的账号${credential && credential.accountCount > 1 ? `（${esc(credential.accountLabel || '默认')}）` : ''}</h2>
+  ${
+    !credential || !credential.subscribed
+      ? `<p class="empty">先启用这个模板，才能填自己的账号。</p>
+         <button data-action="subscribe" data-task="${esc(task.name)}">启用</button>`
+      : task.requires.length
+        ? `<form class="inline-form cred-form" data-action="save-credentials"
+                data-task="${esc(task.name)}" data-account="${esc(credential.accountKey)}">
+             ${credential.fields
+               .map(
+                 (f) =>
+                   `<label>${esc(f.key)}<input type="password" name="${esc(
+                     f.key,
+                   )}" autocomplete="new-password" placeholder="${
+                     f.set ? '已设置，留空表示不修改' : '未设置'
+                   }"></label>`,
+               )
+               .join('')}
+             <button type="submit">保存</button>
+           </form>
+           <p class="hint">留空表示不修改。这里填的账号密码<b>加密后存在本站</b>，
+             <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
+        : '<p class="hint">这个模板不需要凭据</p>'
+  }
+</section>
+
+<section class="card">
   <h2>执行参数</h2>
   <dl class="kv">
     <dt>超时</dt><dd>${Math.round(task.timeoutMs / 1000)} 秒</dd>
@@ -490,7 +517,9 @@ export function pageCredentials({ groups = [], secretsError = null }) {
   ${g.accounts
     .map(
       (acc) => `<div class="cred">
-        <div class="cred-title">${esc(acc.label)}${acc.accountKey ? '' : '（默认）'}</div>
+        <div class="cred-title">${esc(acc.label)}${
+          acc.accountKey ? '' : '（默认）'
+        }${acc.enabled ? '' : '<span class="badge badge-off">已停用</span>'}</div>
         ${
           g.requires.length
             ? `<form class="inline-form cred-form" data-action="save-credentials"
@@ -509,13 +538,20 @@ export function pageCredentials({ groups = [], secretsError = null }) {
                </form>`
             : '<p class="hint">这个模板不需要凭据</p>'
         }
-        ${
-          acc.accountKey
-            ? `<button class="link-danger" data-action="remove-account" data-task="${esc(
-                g.taskName,
-              )}" data-account="${esc(acc.accountKey)}">删除这个账号</button>`
-            : ''
-        }
+        <span class="invite-actions">
+          <button class="link-btn" data-action="toggle-account" data-task="${esc(
+            g.taskName,
+          )}" data-account="${esc(acc.accountKey)}" data-enabled="${
+            acc.enabled ? '1' : '0'
+          }">${acc.enabled ? '停用' : '启用'}</button>
+          ${
+            acc.accountKey
+              ? `<button class="link-danger" data-action="remove-account" data-task="${esc(
+                  g.taskName,
+                )}" data-account="${esc(acc.accountKey)}">删除这个账号</button>`
+              : ''
+          }
+        </span>
       </div>`,
     )
     .join('')}

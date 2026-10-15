@@ -402,7 +402,19 @@ export function createServer({
   app.get('/tasks/:name/config', requireLogin, (req, res) => {
     const task = tasks.get(req.params.name);
     if (!task) return res.status(404).type('html').send(render.layout({ title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>', user: req.user }));
-    const summary = summarizeTask({ task, store: mine(req), nowMs: now() });
+    const mineStore = mine(req);
+    const accountKey = String(req.query.account ?? '');
+    const sub = mineStore.getSubscription(task.name);
+    const acc = sub?.accounts.find((a) => a.accountKey === accountKey) ?? sub?.accounts[0] ?? null;
+    const summary = summarizeTask({
+      task,
+      store: mineStore,
+      nowMs: now(),
+      accountKey: acc?.accountKey ?? '',
+      accountLabel: acc?.label ?? '',
+      accountCount: sub?.accounts.length ?? 1,
+      accountEnabled: acc?.enabled ?? true,
+    });
     res.type('html').send(
       render.layout({
         title: `${task.displayName} · 配置`,
@@ -413,6 +425,22 @@ export function createServer({
             retention: task.retention,
             // 模板自带的调度，用于表单里「跟随默认」那一项的说明
             templateScheduleLabel: describeSchedule(task.schedule),
+          },
+          /*
+           * 凭据直接放在这里填，而不是只放在「凭据」页：
+           * 启用一个任务后就要填它的账号密码，这是最自然的路径。
+           * 凭据页保留下来作为多账号的集中管理入口。
+           */
+          credential: {
+            subscribed: !!sub,
+            accountKey: acc?.accountKey ?? '',
+            accountLabel: acc?.label ?? '',
+            fields: task.requires.map((key) => ({
+              key,
+              set: userSecrets
+                ? !!userSecrets.fieldStatus(req.user.id, task.name, acc?.accountKey ?? '', [key])[key]
+                : false,
+            })),
           },
         }),
         user: req.user,
@@ -709,6 +737,18 @@ export function createServer({
     } catch (err) {
       res.status(400).json({ error: err.message });
     }
+  });
+
+  /** 单个账号停用/启用：不删凭据与历史，只是不再参与调度 */
+  app.patch('/api/subscriptions/:taskName/accounts/:accountKey', requireLogin, (req, res) => {
+    const { taskName, accountKey } = req.params;
+    if (!tasks.has(taskName)) return res.status(404).json({ error: '没有这个模板' });
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled 必须是布尔值' });
+    }
+    const acc = mine(req).setAccountEnabled(taskName, accountKey, req.body.enabled);
+    if (!acc) return res.status(404).json({ error: '没有这个账号' });
+    res.json({ ok: true, account: acc });
   });
 
   /** 删账号：连它的凭据一起删（历史记录保留，那是发生过的事实） */

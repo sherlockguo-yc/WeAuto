@@ -173,7 +173,8 @@ export default {
 | 路由 | 说明 | 权限 |
 |---|---|---|
 | `/` `/tasks` `/tasks/:name` `/tasks/:name/config` | 概览、任务、详情、配置 | 登录 |
-| `/credentials` | 我的凭据（按模板 × 账号分组） | 登录 |
+| `/tasks/:name/config` | 调度（可改）+ **这个任务的账号密码（就近填写）** | 登录 |
+| `/credentials` | 我的凭据（按模板 × 账号分组，可加/删/停用账号） | 登录 |
 | `/settings` | 外观、账号、新建账号、邀请码 | admin 才看邀请码 |
 | `/admin` | 平台概览：账号数、启用实例、今日成败、失败排行 | admin |
 | `/login` `/setup` `/logout` `/register` | 登录、首次建管理员、注销、邀请注册 | 公开 |
@@ -202,8 +203,8 @@ git push (main) → GitHub Actions → Release: weauto.tar.gz
 
 ## 11. 已知限制
 
-1. **多账号时列表只显示默认账号的状态**——`summarizeTask` 默认取 `accountKey=''`，
-   第二个账号的状态与历史要在详情页看。数据层是完整的，UI 展示不完整。
+1. **多账号的批量操作没有入口**——例如「全部账号立即执行一次」。
+   单个账号可以单独停用/启用，但一次性操作只能逐个来。
 2. **出口 IP 只有一个**（N150）。所有人的请求都从这里出，目标站若做同 IP 风控会连坐。
 3. **未实现 TOTP**——v2free 账号未开两步验证；如开启需在任务内补约 25 行 TOTP 生成。
 4. **`v2free-checkin` 依赖页面结构**——账户数据解析自页面内嵌的 `crispSessionData`，

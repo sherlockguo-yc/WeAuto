@@ -435,6 +435,67 @@ describe('停用要即时生效', () => {
   });
 });
 
+describe('凭据就近配置', () => {
+  it('任务配置页直接给出凭据表单', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
+    assert.match(html, /data-action="save-credentials"/);
+    assert.match(html, /name="DEMO_TOKEN"/);
+  });
+
+  it('还没启用时给的是启用按钮，不是表单', async () => {
+    const { base } = await startServer({ seedSubscription: false });
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
+    assert.match(html, /data-action="subscribe"/);
+    assert.equal(html.includes('data-action="save-credentials"'), false);
+  });
+
+  it('填过之后配置页显示「已设置」', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    await fetch(`${base}/api/credentials`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskName: 'demo-task', accountKey: '', fields: { DEMO_TOKEN: 'x' } }),
+    });
+    const html = await (await fetch(`${base}/tasks/demo-task/config`, { headers: { cookie } })).text();
+    assert.match(html, /已设置，留空表示不修改/);
+  });
+});
+
+describe('账号级启停', () => {
+  it('停用某个账号，不影响同一订阅下的其他账号', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    const extra = store.forUser(USER_ID).addAccount('demo-task', { label: '小号' });
+
+    const res = await fetch(`${base}/api/subscriptions/demo-task/accounts/${extra}`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(res.status, 200);
+
+    const list = await (await fetch(`${base}/api/tasks`, { headers: { cookie } })).json();
+    assert.equal(list.tasks.find((t) => t.accountKey === extra).enabled, false);
+    assert.equal(list.tasks.find((t) => t.accountKey === '').enabled, true);
+  });
+
+  it('凭据页把停用的账号标出来', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    store.forUser(USER_ID).setAccountEnabled('demo-task', '', false);
+
+    const html = await (await fetch(`${base}/credentials`, { headers: { cookie } })).text();
+    assert.match(html, /已停用/);
+  });
+});
+
 describe('多账号展示', () => {
   it('一个订阅两个账号 → 列表里两行', async () => {
     const { base, store } = await startServer();

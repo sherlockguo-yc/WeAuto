@@ -123,6 +123,18 @@
           '/api/subscriptions/' + encodeURIComponent(name) + '/accounts/' + encodeURIComponent(btn.dataset.account),
         );
         location.reload();
+      } else if (action === 'toggle-account') {
+        // 账号可以单独停用：凭据和历史都留着，只是不再参与调度
+        var enabled = btn.dataset.enabled === '1';
+        await api(
+          'PATCH',
+          '/api/subscriptions/' +
+            encodeURIComponent(name) +
+            '/accounts/' +
+            encodeURIComponent(btn.dataset.account),
+          { enabled: !enabled },
+        );
+        location.reload();
       } else if (action === 'revoke-invite') {
         if (!window.confirm('撤销这个邀请码？已经注册成功的不受影响。')) return;
         await api('DELETE', '/api/invites/' + encodeURIComponent(btn.dataset.code));

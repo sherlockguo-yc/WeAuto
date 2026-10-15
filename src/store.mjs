@@ -154,6 +154,9 @@ export function createStore(db, { limits = {} } = {}) {
     deleteAccount: db.prepare(
       'DELETE FROM subscription_accounts WHERE subscription_id = ? AND account_key = ?',
     ),
+    setAccountEnabled: db.prepare(
+      'UPDATE subscription_accounts SET enabled = ? WHERE subscription_id = ? AND account_key = ?',
+    ),
 
     /* ───────── 执行记录 ───────── */
     insertRun: db.prepare(
@@ -329,6 +332,15 @@ export function createStore(db, { limits = {} } = {}) {
       const row = s.subOf.get(userId, taskName);
       if (!row) return false;
       return s.deleteAccount.run(row.id, accountKey).changes > 0;
+    }
+
+    /** 单个账号可以停用而不删除：凭据和历史都留着，只是不再参与调度 */
+    function setAccountEnabled(taskName, accountKey, enabled) {
+      const row = s.subOf.get(userId, taskName);
+      if (!row) return null;
+      s.setAccountEnabled.run(enabled ? 1 : 0, row.id, accountKey);
+      const acc = s.accountOfSub.get(row.id, accountKey);
+      return acc ? rowToAccount(acc) : null;
     }
 
     /** 该订阅下参与调度的账号（停用的除外） */
@@ -520,6 +532,7 @@ export function createStore(db, { limits = {} } = {}) {
       setSubscription,
       addAccount,
       removeAccount,
+      setAccountEnabled,
       activeAccounts,
       isEnabled,
       getOverride,
