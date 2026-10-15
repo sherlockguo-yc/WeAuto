@@ -520,7 +520,7 @@ export function createServer({
     );
   });
 
-  /** 账号管理（admin）：账号的增删改 + 邀请码 */
+  /** 账号管理（admin）：停用 / 启用、删除 + 邀请码。不提供新建，账号一律走邀请注册 */
   app.get('/admin/users', requireLogin, requireAdmin, (req, res) => {
     res.type('html').send(
       render.layout({
@@ -528,7 +528,7 @@ export function createServer({
         active: 'admin',
         body: render.pageAdminUsers({
           users: auth.listUsers(),
-          canCreateUser: true,
+          canDelete: true,
           invites: invites ? invites.list(50).map((row) => invites.describe(row)) : null,
           baseUrl: originOf(req),
           currentUserId: req.user.id,
@@ -786,11 +786,10 @@ export function createServer({
     });
   });
 
-  app.post('/api/users', requireLogin, requireAdmin, (req, res) => {
-    const created = auth.register(req.body ?? {});
-    if (!created.ok) return res.status(400).json({ error: created.error });
-    res.json({ ok: true, user: created.user });
-  });
+  /**
+   * 没有 POST /api/users（管理员代建账号）：账号一律由本人凭邀请链接在 /register
+   * 自建，管理员不代填别人的密码。管理员仍能改角色、停用、删号。
+   */
 
   /**
    * 删号：连带清掉他的一切，不可恢复。

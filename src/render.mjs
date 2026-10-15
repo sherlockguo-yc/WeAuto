@@ -716,7 +716,7 @@ export function pageAdmin({ users = [], subs = {}, today = {}, ranking = [] }) {
   <h2>账号</h2>
   <a class="row" href="/admin/users">
     <span class="row-main">管理账号</span>
-    <span class="row-sub">新建账号、停用 / 启用、删除，以及邀请码</span>
+    <span class="row-sub">停用 / 启用、删除，以及邀请码</span>
   </a>
 </section>
 
@@ -726,17 +726,23 @@ export function pageAdmin({ users = [], subs = {}, today = {}, ranking = [] }) {
 </section>`;
 }
 
-/** 账号管理（admin）：账号的增删改 + 邀请码。与设置页分开，设置页只放个人偏好 */
+/**
+ * 账号管理（admin）：停用 / 启用、删除 + 邀请码。与设置页分开，设置页只放个人偏好。
+ *
+ * 这里不提供「新建账号」：账号一律由本人凭邀请链接在 /register 自建，
+ * 管理员不再代填别人的密码——代填的初始密码要么得另外转告（多一次泄露面），
+ * 要么就永远停在那个弱密码上。管理员仍然能改角色、停用、删除。
+ */
 export function pageAdminUsers({
   users = [],
-  canCreateUser = false,
+  canDelete = false,
   /** null = 未启用邀请码（此时整块不渲染） */
   invites = null,
   baseUrl = '',
   currentUserId = null,
 }) {
   const list = users
-    .map((u) => adminUserRow(u, { currentUserId: currentUserId, canDelete: canCreateUser }))
+    .map((u) => adminUserRow(u, { currentUserId: currentUserId, canDelete: canDelete }))
     .join('');
 
   return `
@@ -744,16 +750,7 @@ export function pageAdminUsers({
   <h2>账号</h2>
   ${list}
   <p class="hint">停用只拒绝登录、不再参与调度，订阅与历史都留着，随时可以启用；删除会连同他的订阅、凭据和执行历史一起清掉，不可恢复。</p>
-</section>
-
-<section class="card">
-  <h2>新建账号</h2>
-  <form class="inline-form" data-action="create-user">
-    <label>用户名<input name="username" autocapitalize="off" required></label>
-    <label>密码<input type="password" name="password" autocomplete="new-password" required><span class="hint">至少 8 位</span></label>
-    <label>角色<select name="role"><option value="user">普通</option><option value="admin">管理员</option></select></label>
-    <button type="submit" class="primary">创建</button>
-  </form>
+  <p class="hint">新账号由本人凭邀请链接注册，这里不代建。</p>
 </section>
 ${
   invites

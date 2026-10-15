@@ -205,7 +205,6 @@
     var btn = e.target.closest('[data-action]');
     if (!btn || btn.tagName === 'FORM') return;
     var action = btn.dataset.action;
-    if (action === 'create-user') return; // 表单用 submit 事件处理
 
     // 密码显隐：纯就地操作，不进 API、也不要被下面的 disabled 闪一下
     if (action === 'toggle-reveal') {
@@ -412,29 +411,6 @@
         }
       }
       return;
-    }
-
-    var form = e.target.closest('[data-action="create-user"]');
-    if (!form) return;
-    e.preventDefault();
-
-    var fd = new FormData(form);
-    var btn = form.querySelector('button[type="submit"]');
-    if (btn) btn.disabled = true;
-    try {
-      await api('POST', '/api/users', {
-        username: fd.get('username'),
-        password: fd.get('password'),
-        role: fd.get('role'),
-        status: 'active',
-      });
-      location.reload();
-    } catch (err) {
-      // 设置页没有 #action-hint，hint() 会静默丢掉，所以也在按钮上说一句
-      if (btn) {
-        btn.disabled = false;
-        flash(btn, err.message, 'error');
-      }
     }
   });
 })();

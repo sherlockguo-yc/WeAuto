@@ -774,18 +774,43 @@ describe('管理页（仅 admin）', () => {
   });
 
   it('账号管理只在管理页，设置页不再有管理卡片', async () => {
-    const { base } = await startServer();
+    const { base, auth } = await startServer();
     const cookie = await login(base);
+    // 自己的账号行没有操作按钮，得先有第二个账号才看得到删除
+    auth.register({ username: 'zhangsan', password: 'pass-word-1' });
 
     const html = await (await fetch(`${base}/admin/users`, { headers: { cookie } })).text();
-    assert.match(html, /data-action="create-user"/);
+    assert.match(html, /data-action="delete-user"/);
 
     const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
-    assert.equal(settings.includes('data-action="create-user"'), false, '设置页不该再有新建账号');
+    assert.equal(settings.includes('data-action="delete-user"'), false, '设置页不该有账号管理');
     assert.equal(
       settings.includes('href="/admin/users"'),
       false,
       '设置页不该再重复一个账号管理入口：管理员导航里已有「管理」页',
+    );
+  });
+
+  it('管理页不新建账号：页面没有表单，接口也不留', async () => {
+    const { base, auth } = await startServer();
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/admin/users`, { headers: { cookie } })).text();
+    assert.equal(
+      html.includes('data-action="create-user"'),
+      false,
+      '账号管理页不该再有新建账号表单：账号一律走邀请注册',
+    );
+
+    const res = await fetch(`${base}/api/users`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'madebyadmin', password: 'pass-word-1', role: 'user' }),
+    });
+    assert.equal(res.status, 404, 'POST /api/users 应已移除');
+    assert.equal(
+      auth.listUsers().some((u) => u.username === 'madebyadmin'),
+      false,
     );
   });
 
