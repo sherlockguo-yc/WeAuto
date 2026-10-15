@@ -499,22 +499,38 @@ export function createServer({
     res.redirect('/tasks');
   });
 
-  /** 平台概览（admin）：跨用户的只读统计。普通用户看不到入口也访问不了 */
+  /** 管理首页（admin）：跨用户的只读统计 + 各管理功能的入口 */
   app.get('/admin', requireLogin, requireAdmin, (req, res) => {
-    const users = auth.listUsers();
     const weekAgo = now() - 7 * 86_400_000;
     res.type('html').send(
       render.layout({
-        title: '平台',
+        title: '管理',
         active: 'admin',
         body: render.pageAdmin({
-          users,
+          users: auth.listUsers(),
           subs: store.subscriptionCounts(),
           today: store.platformStats(dateInTZ(new Date(now()))),
           ranking: store.failureRanking({ sinceMs: weekAgo }).map((r) => ({
             ...r,
             taskLabel: tasks.get(r.task_name)?.displayName ?? r.task_name,
           })),
+        }),
+        user: req.user,
+      }),
+    );
+  });
+
+  /** 账号管理（admin）：账号的增删改 + 邀请码 */
+  app.get('/admin/users', requireLogin, requireAdmin, (req, res) => {
+    res.type('html').send(
+      render.layout({
+        title: '账号',
+        active: 'admin',
+        body: render.pageAdminUsers({
+          users: auth.listUsers(),
+          canCreateUser: true,
+          invites: invites ? invites.list(50).map((row) => invites.describe(row)) : null,
+          baseUrl: originOf(req),
           currentUserId: req.user.id,
         }),
         user: req.user,
@@ -529,14 +545,7 @@ export function createServer({
         title: '设置',
         active: 'settings',
         body: render.pageSettings({
-          users: auth.listUsers(),
-          canCreateUser: req.user.role === 'admin',
-          currentUserId: req.user.id,
-          invites:
-            req.user.role === 'admin' && invites
-              ? invites.list(50).map((row) => invites.describe(row))
-              : [],
-          baseUrl: originOf(req),
+          isAdmin: req.user.role === 'admin',
           system: {
             version: process.env.WEAUTO_VERSION || 'dev',
             dataDir: DATA_DIR,
@@ -843,6 +852,11 @@ export function createServer({
     if (target.id === req.user.id && req.body.status === 'disabled') {
       // 把自己停用等于把自己锁在门外，直接拒绝
       return res.status(400).json({ error: '不能停用当前登录的账号' });
+    }
+    if (target.id === req.user.id && req.body.role && req.body.role !== target.role) {
+      // 页面里没有改自己角色的入口，但接口上不挡的话，唯一的管理员能把自己降成
+      // 普通用户，之后再也进不了管理页、也没人能把他升回来（只能改数据库）
+      return res.status(400).json({ error: '不能修改自己的角色' });
     }
     if (req.body.status) auth.setStatus(id, req.body.status);
     if (req.body.role) auth.setRole(id, req.body.role);

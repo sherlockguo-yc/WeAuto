@@ -594,6 +594,32 @@ function adminUserRow(u, { currentUserId = null, canDelete = false } = {}) {
       </div>`;
 }
 
+/**
+ * 一行邀请码。列表由服务端渲染，但「生成后不刷新页面、直接把新行插到最上面」
+ * 也需要在前端造出同样结构的 DOM —— 两边各写一遍结构迟早会走样，
+ * 所以页面里再带一个由本函数渲染的空壳 <template>，前端克隆它、只填内容。
+ */
+function inviteRowHtml({ note = '', label = '未使用', url = '', code = '', tone = 'ok', canRevoke = true }) {
+  return `<div class="invite-row">
+      <span class="row-main mono">${esc(note || '（无备注）')}</span>
+      <span class="badges"><span class="badge badge-${tone === 'ok' ? 'ok' : 'off'}">${esc(label)}</span></span>
+      <span class="row-sub mono invite-url">${esc(url)}</span>
+      <span class="invite-actions">
+        <button class="link-btn" data-action="copy-invite" data-url="${esc(url)}">复制链接</button>
+        ${
+          canRevoke
+            ? `<button class="link-danger" data-action="revoke-invite" data-code="${esc(code)}">撤销</button>`
+            : ''
+        }
+      </span>
+    </div>`;
+}
+
+/** 给前端克隆用的空壳。刚生成的码必然是「未使用 + 可撤销」，徽章不用改 */
+function inviteRowTemplate() {
+  return `<template id="invite-row-tpl">${inviteRowHtml({})}</template>`;
+}
+
 /** 管理首页：跨用户的只读统计 + 各管理功能的入口 */
 export function pageAdmin({ users = [], subs = {}, today = {}, ranking = [] }) {
   const rankingHtml = ranking.length
@@ -703,32 +729,6 @@ ${
 }
 
 /* ─────────────────── 设置 ─────────────────── */
-
-/**
- * 一行邀请码。列表由服务端渲染，但「生成后不刷新页面、直接把新行插到最上面」
- * 也需要在前端造出同样结构的 DOM —— 两边各写一遍结构迟早会走样，
- * 所以页面里再带一个由本函数渲染的空壳 <template>，前端克隆它、只填内容。
- */
-function inviteRowHtml({ note = '', label = '未使用', url = '', code = '', tone = 'ok', canRevoke = true }) {
-  return `<div class="invite-row">
-      <span class="row-main mono">${esc(note || '（无备注）')}</span>
-      <span class="badges"><span class="badge badge-${tone === 'ok' ? 'ok' : 'off'}">${esc(label)}</span></span>
-      <span class="row-sub mono invite-url">${esc(url)}</span>
-      <span class="invite-actions">
-        <button class="link-btn" data-action="copy-invite" data-url="${esc(url)}">复制链接</button>
-        ${
-          canRevoke
-            ? `<button class="link-danger" data-action="revoke-invite" data-code="${esc(code)}">撤销</button>`
-            : ''
-        }
-      </span>
-    </div>`;
-}
-
-/** 给前端克隆用的空壳。刚生成的码必然是「未使用 + 可撤销」，徽章不用改 */
-function inviteRowTemplate() {
-  return `<template id="invite-row-tpl">${inviteRowHtml({})}</template>`;
-}
 
 /** 设置页只放个人偏好与只读信息；账号管理在 /admin/users */
 export function pageSettings({ system, isAdmin = false }) {

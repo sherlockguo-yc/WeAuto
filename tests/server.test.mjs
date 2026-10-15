@@ -723,6 +723,34 @@ describe('账号删除', () => {
     assert.match((await res.json()).error, /不能删除自己/);
   });
 
+  it('不能停用自己', async () => {
+    const { base, auth } = await startServer();
+    const cookie = await login(base);
+    const me = auth.listUsers().find((u) => u.username === 'tester');
+
+    const res = await fetch(`${base}/api/users/${me.id}`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'disabled' }),
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /不能停用当前登录的账号/);
+  });
+
+  it('不能改自己的角色', async () => {
+    const { base, auth } = await startServer();
+    const cookie = await login(base);
+    const me = auth.listUsers().find((u) => u.username === 'tester');
+
+    const res = await fetch(`${base}/api/users/${me.id}`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'user' }),
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /不能修改自己的角色/);
+  });
+
   it('普通用户删不了别人', async () => {
     const { base, auth } = await startServer({ seedRole: 'user' });
     const cookie = await login(base);
@@ -732,8 +760,8 @@ describe('账号删除', () => {
   });
 });
 
-describe('平台概览（仅 admin）', () => {
-  it('admin 能看到平台页', async () => {
+describe('管理页（仅 admin）', () => {
+  it('admin 能看到管理首页，里面有账号管理入口', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
@@ -742,6 +770,39 @@ describe('平台概览（仅 admin）', () => {
     const html = await res.text();
     assert.match(html, /启用中的实例/);
     assert.match(html, /最近 7 天失败最多/);
+    assert.match(html, /href="\/admin\/users"/);
+  });
+
+  it('账号管理页独立于设置页，设置页只给管理员留一个入口', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/admin/users`, { headers: { cookie } })).text();
+    assert.match(html, /data-action="create-user"/);
+
+    const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    assert.equal(settings.includes('data-action="create-user"'), false, '设置页不该再有新建账号');
+    assert.match(settings, /href="\/admin\/users"/);
+  });
+
+  it('自己的账号行不给停用与删除按钮', async () => {
+    const { base, auth } = await startServer();
+    const cookie = await login(base);
+    auth.register({ username: 'zhangsan', password: 'pass-word-1' });
+    const other = auth.listUsers().find((u) => u.username === 'zhangsan');
+
+    const html = await (await fetch(`${base}/admin/users`, { headers: { cookie } })).text();
+    assert.equal(
+      html.includes(`data-action="toggle-user" data-user="${USER_ID}"`),
+      false,
+      '自己那行不该有停用按钮',
+    );
+    assert.equal(
+      html.includes(`data-action="delete-user" data-user="${USER_ID}"`),
+      false,
+      '自己那行不该有删除按钮',
+    );
+    assert.match(html, new RegExp(`data-action="toggle-user" data-user="${other.id}"`));
   });
 
   it('普通用户访问返回 403，导航里也没有入口', async () => {
@@ -749,8 +810,9 @@ describe('平台概览（仅 admin）', () => {
     const cookie = await login(base);
 
     assert.equal((await fetch(`${base}/admin`, { headers: { cookie } })).status, 403);
+    assert.equal((await fetch(`${base}/admin/users`, { headers: { cookie } })).status, 403);
     const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
-    assert.equal(html.includes('href="/admin"'), false, '导航里不该出现平台入口');
+    assert.equal(html.includes('href="/admin"'), false, '导航里不该出现管理入口');
   });
 });
 
@@ -870,12 +932,12 @@ describe('邀请注册', () => {
     assert.equal(res.status, 403);
   });
 
-  it('设置页给管理员显示邀请码管理', async () => {
+  it('账号管理页给管理员显示邀请码管理', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
     await makeInvite(base, cookie, { note: '给小明' });
 
-    const html = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/admin/users`, { headers: { cookie } })).text();
     assert.match(html, /data-action="create-invite"/);
     assert.match(html, /给小明/);
     assert.match(html, /\/register\?code=/);
