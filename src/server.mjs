@@ -183,7 +183,7 @@ export function createServer({
    * 列表/概览的统一入口：可见模板 + 我的数据 + 每个账号缺哪些凭据。
    *
    * 凭据缺失在这里就算出来，是为了让列表能给「待填凭据」打标——
-   * 取消凭据页之后，这是唯一能一眼看到哪些实例还没配好的地方。
+   * 取消凭据页之后，这是唯一能一眼看到哪些任务还没配好的地方。
    */
   const summarizeFor = (req) =>
     summarizeAll({
@@ -366,7 +366,7 @@ export function createServer({
           // sha 没丢 —— 它在 /healthz 里，排查时还能查到。
           version: process.env.WEAUTO_BUILD_TIME || process.env.WEAUTO_VERSION || 'dev',
           uptime: humanDuration(process.uptime() * 1000),
-          // 报「看得见的模板数」而不是实例数：这里回答的是「平台上有几个自动化」，
+          // 报「看得见的模板数」而不是任务数：这里回答的是「平台上有几个自动化」，
           // 没必要为此把全部订阅和账号再汇总一遍
           taskCount: visibleTasks(req).size,
         },

@@ -772,7 +772,7 @@ describe('管理页（仅 admin）', () => {
     const res = await fetch(`${base}/admin`, { headers: { cookie } });
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.match(html, /启用中的实例/);
+    assert.match(html, /启动中的任务/);
     assert.match(html, /href="\/admin\/users"/);
   });
 

@@ -326,7 +326,7 @@
         var copied = await copyText(btn.dataset.url);
         flash(btn, copied ? '已复制 ✓' : '复制失败，请手动选中', copied ? 'ok' : 'error');
       } else if (action === 'delete-user') {
-        if (!window.confirm('删除这个账号？他的订阅、凭据和执行历史会一起清掉，不可恢复。')) return;
+        if (!window.confirm('删除这个账号？他的任务、凭据和执行历史会一起清掉，不可恢复。')) return;
         await api('DELETE', '/api/users/' + encodeURIComponent(btn.dataset.user));
         location.reload();
       } else if (action === 'toggle-user') {

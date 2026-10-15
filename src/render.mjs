@@ -21,7 +21,8 @@ export const STATUS_LABEL = {
   success: { text: '今日已成功', tone: 'ok' },
   pending: { text: '待执行', tone: 'wait' },
   manual: { text: '仅手动', tone: 'off' },
-  disabled: { text: '已停用', tone: 'off' },
+  /** 任务层叫「已停止」；账号层（users.status）仍然是「已停用」 */
+  disabled: { text: '已停止', tone: 'off' },
   missed: { text: '已错过', tone: 'bad' },
   failed: { text: '失败', tone: 'bad' },
   blocked: { text: '被拦截', tone: 'bad' },
@@ -305,7 +306,7 @@ export function pageOverview(data) {
   <div class="stat stat-ok"><b>${b.success}</b><span>今日成功</span></div>
   <div class="stat stat-wait"><b>${b.pending}</b><span>待执行</span></div>
   <div class="stat stat-bad"><b>${b.failed + b.blocked}</b><span>失败/被拦</span></div>
-  <div class="stat stat-off"><b>${b.disabled + b.manual}</b><span>停用/手动</span></div>
+  <div class="stat stat-off"><b>${b.disabled + b.manual}</b><span>停止/手动</span></div>
 </section>
 <section class="card">
   <h2>需要处理</h2>
@@ -324,10 +325,10 @@ export function pageOverview(data) {
  * 行内小文字按钮。
  *
  * 图标按钮是省地方，但语义只能靠 title/aria-label 补回来——一个电源图标
- * 既像「停用」又像「立即执行」，猜错一次就是误操作。这里宁可多占几个字：
+ * 既像「停止」又像「立即执行」，猜错一次就是误操作。这里宁可多占几个字：
  * 文字自己就说完了，不需要用户 hover 上去读提示。
  *
- * tone 目前只有 danger：停用是这一行里唯一会改变任务是否在运行的操作，
+ * tone 目前只有 danger：停止是这一行里唯一会改变任务是否在运行的操作，
  * 用常驻的红色标出来，不等 hover 才提示。
  */
 function textAction({ href = '', action = '', task = '', account = '', enabled = '', label, tone = '' }) {
@@ -360,7 +361,7 @@ function taskTitle(t) {
  *
  * 模板是平台给的（tasks/*.mjs），用户能做的是「建一个、配自己的时间与凭据」，
  * 所以卡片只描述模板本身（名称 / 说明 / 标签 / 默认调度），
- * 已经建了几个单独用角标标出来——数字比「已启用」更能说明还能不能再加一个。
+ * 已经建了几个单独用角标标出来——数字比「已建」更能说明还能不能再加一个。
  */
 function templateCard(t) {
   return `<button type="button" class="template-card" data-action="create-task" data-template="${esc(
@@ -379,16 +380,16 @@ function templateCard(t) {
 }
 
 /**
- * 已启用实例的一行：**操作就地完成，不用进详情**。
- * 多账号模板每个账号一行，标题带上账号名——否则两行长得一模一样，分不清哪个失败了。
+ * 任务列表里的一行：**操作就地完成，不用进详情**。
  *
- * 主次是刻意分开的：「立即执行」是最常用的，给实心主按钮；
- * 「停用」会改变任务是否在跑、「配置」是进下一层，两者收成右侧的小文字按钮。
+ * 三个操作的分量是刻意的：「立即执行」最常用，给实心主按钮；
+ * 「停止」会改变任务是否在跑，给常驻红色；「配置」是进下一层，收成右侧的文字按钮。
+ * 启停是两个按钮而不是一个开关——「启动 / 停止」比一个 toggle 更能说明现在是什么状态。
  */
 function taskRow(t) {
   const title = taskTitle(t);
   const href = taskHref(t);
-  // 没填凭据就直接标出来：取消凭据页之后，这是唯一能一眼看出哪些实例没配好的地方
+  // 没填凭据就直接标出来：取消凭据页之后，这是唯一能一眼看出哪些任务没配好的地方
   const credBadge = t.missingCredentials?.length ? '<span class="badge badge-off">待填凭据</span>' : '';
   return `<div class="row task-row">
         <a class="row-main" href="${href}">${esc(title)}</a>
@@ -405,7 +406,7 @@ function taskRow(t) {
               action: 'toggle',
               task: t.id,
               enabled: t.enabled ? '1' : '0',
-              label: t.enabled ? '停用' : '启用',
+              label: t.enabled ? '停止' : '启动',
               tone: t.enabled ? 'danger' : '',
             })}
             ${textAction({ href: href, label: '配置' })}
@@ -521,7 +522,7 @@ ${hintHtml}
     }">${ICON.play}立即执行</button>
     <button data-action="toggle" data-task="${esc(task.id)}" data-enabled="${
       task.enabled ? '1' : '0'
-    }">${task.enabled ? '停用此任务' : '启用此任务'}</button>
+    }">${task.enabled ? '停止' : '启动'}</button>
     <button class="btn-danger" data-action="delete-task" data-task="${esc(
       task.id,
     )}">删除任务</button>
@@ -777,7 +778,7 @@ export function pageAdmin({ users = [], subs = {}, today = {} }) {
   return `
 <section class="grid">
   <div class="stat"><b>${users.length}</b><span>账号</span></div>
-  <div class="stat"><b>${subs.enabled ?? 0}</b><span>启用中的实例</span></div>
+  <div class="stat"><b>${subs.enabled ?? 0}</b><span>启动中的任务</span></div>
   <div class="stat stat-ok"><b>${today.success ?? 0}</b><span>今日成功</span></div>
   <div class="stat stat-bad"><b>${today.failed ?? 0}</b><span>今日失败</span></div>
 </section>
@@ -814,7 +815,7 @@ export function pageAdminUsers({
 <section class="card">
   <h2>账号</h2>
   ${list}
-  <p class="hint">停用只拒绝登录、不再参与调度，订阅与历史都留着，随时可以启用；删除会连同他的订阅、凭据和执行历史一起清掉，不可恢复。</p>
+  <p class="hint">停用只拒绝登录、不再参与调度，任务与历史都留着，随时可以启用；删除会连同他的任务、凭据和执行历史一起清掉，不可恢复。</p>
   <p class="hint">新账号由本人凭邀请链接注册，这里不代建。</p>
 </section>
 ${
