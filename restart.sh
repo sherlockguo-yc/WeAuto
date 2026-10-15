@@ -70,7 +70,20 @@ else
   URL_MIRROR="https://ghproxy.net/https://github.com/FiloSottile/age/releases/download/$VERSION/age-$VERSION-linux-amd64.tar.gz"
   URL_DIRECT="https://github.com/FiloSottile/age/releases/download/$VERSION/age-$VERSION-linux-amd64.tar.gz"
 
-  if curl -fsSL --max-time 120 "$URL_MIRROR" -o "$TARBALL"; then
+  # R2 优先（2026-10-15）：ghproxy 已废（TCP 能握手但实测 3.5KB/s、基本不传数据），
+  # GitHub 直连在 N150 上也不通 —— 这两条路实际上都拿不到 age。
+  # age 的 tarball 已预先传到 <分发源>/tools/age/<版本>/age-<版本>-linux-amd64.tar.gz，
+  # 与部署产物共用同一个分发源开关（~/.deploy-artifact-base，一行域名）。
+  # curl -f 会让 404 立刻失败，所以 R2 上没有该版本时会秒退到后面的源，不会白等。
+  URL_R2=""
+  if [ -f "$HOME/.deploy-artifact-base" ]; then
+    ARTIFACT_BASE=$(head -1 "$HOME/.deploy-artifact-base" | tr -d '[:space:]')
+    [ -n "$ARTIFACT_BASE" ] && URL_R2="$ARTIFACT_BASE/tools/age/$VERSION/age-$VERSION-linux-amd64.tar.gz"
+  fi
+
+  if [ -n "$URL_R2" ] && curl -fsSL --max-time 60 "$URL_R2" -o "$TARBALL"; then
+    log "R2 下载成功"
+  elif curl -fsSL --max-time 120 "$URL_MIRROR" -o "$TARBALL"; then
     log "镜像下载成功"
   elif curl -fsSL --max-time 180 "$URL_DIRECT" -o "$TARBALL"; then
     log "直连下载成功"

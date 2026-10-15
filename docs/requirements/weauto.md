@@ -294,7 +294,7 @@ V2FREE_TOTP_SECRET=
 | 位置 | 方式 |
 |---|---|
 | 本机 macOS | `brew install age` |
-| N150 (Ubuntu 24.04, x86_64) | 从 GitHub Release 下载静态二进制（走 `ghproxy.net` 镜像），解压到 `~/.local/bin/age`，`chmod +x`。在 `restart.sh` 中做幂等检查：已存在则跳过。⚠️ **2026-10-15**：ghproxy 已废（实测 3.5KB/s，连上但不传数据），但 age 已常驻 N150，这段代码实际不会执行；若将来换机器或删除后需重装，要把这里的下载源改成 R2 或直连 |
+| N150 (Ubuntu 24.04, x86_64) | 从 GitHub Release 下载静态二进制（走 `ghproxy.net` 镜像），解压到 `~/.local/bin/age`，`chmod +x`。在 `restart.sh` 中做幂等检查：已存在则跳过。**2026-10-15**：ghproxy 已废（3.5KB/s，连上但不传数据）、直连不通，故下载顺序改为 **R2 优先 → ghproxy → 直连**；age 的 tarball 已预传到 `<分发源>/tools/age/<版本>/age-<版本>-linux-amd64.tar.gz`，与部署产物共用 `~/.deploy-artifact-base` 这个开关。R2 上没有对应版本时 `curl -f` 会让 404 秒退到后面的源，不会白等 |
 
 **为什么不 apt 安装**：`age` 在 Ubuntu 24.04 源中需额外 apt 仓库配置，而官方提供单文件静态二进制，走镜像下载更快且无需 sudo。
 
