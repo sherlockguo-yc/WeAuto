@@ -664,9 +664,9 @@ function taskConfigBody({ task, credential = null }) {
     </div>
     <button type="submit" class="primary">保存调度</button>
   </form>
-  <p class="hint">这里的设置只影响我自己这个任务，不影响别人，也不会改动模板本身（tasks/${esc(
-    task.file ?? '?',
-  )}）。</p>
+  <!-- 模板文件名（tasks/xxx.mjs）不再写出来：它是仓库里的实现细节，
+       用户只需要知道「改的是我这个任务」——文件名对他没有任何可操作的含义 -->
+  <p class="hint">这里的设置只影响我自己这个任务，不影响别人，也不会改动模板本身。</p>
 </section>
 
 <section class="card" id="credentials">
