@@ -687,7 +687,7 @@ function taskConfigBody({ task, credential = null }) {
   </form>
   ${
     task.requires.length
-      ? `<p class="hint">账号密码留空表示不修改。一个任务只跑这一个账号——想跑第二个账号，
+      ? `<p class="hint">一个任务只跑这一个账号——想跑第二个账号，
            回任务页用同一个模板再建一个任务。这里填的账号密码<b>加密后存在本站</b>，
            <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
       : '<p class="hint">这个模板不需要账号密码。</p>'
