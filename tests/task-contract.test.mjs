@@ -156,6 +156,23 @@ describe('调度声明', () => {
     }
     assert.throws(() => norm({ schedule: { once: { at: '2026-11-01 09:00', tz: 'UTC' } } }), /未知字段/);
   });
+
+  /*
+   * 库里存的是规范化后的 { atMs, atLabel }，读出来还要再过一遍这里。
+   * 只认 at 的话，存进去的 once 每次读回都会解析失败、被 effectiveSchedule
+   * 判成「配置有问题」而静默退回模板默认 —— 一次性任务等于存了不生效。
+   */
+  it('once：库里存回的 { atMs, atLabel } 必须能再解析一次', () => {
+    const first = norm({ schedule: { once: { at: '2026-11-01 09:00' } } }).schedule;
+    const again = norm({ schedule: { once: { ...first.once } } }).schedule;
+    assert.equal(again.kind, 'once');
+    assert.equal(again.once.atMs, first.once.atMs);
+    assert.equal(again.once.atLabel, '2026-11-01 09:00:00');
+
+    // 两个都没有 / 都不是合法时刻 → 报错，不能静默变成「不调度」
+    assert.throws(() => norm({ schedule: { once: {} } }), /at/);
+    assert.throws(() => norm({ schedule: { once: { atMs: 'x' } } }), /at/);
+  });
 });
 
 describe('执行参数', () => {

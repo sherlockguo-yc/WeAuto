@@ -183,12 +183,24 @@ export function normalizeSchedule(taskName, schedule) {
     if (!o || typeof o !== 'object' || Array.isArray(o)) {
       bad(`任务 ${taskName} 的 schedule.once 必须是对象 { at }`);
     }
-    const extra = Object.keys(o).filter((k) => k !== 'at');
+    /*
+     * 两种形态都要认：
+     *   · 声明/提交时是 { at: '2026-10-20 08:30' } —— 人写的，北京时间
+     *   · 库里存的是规范化后的 { atMs, atLabel }，读出来还会被再校验一次
+     * 只认 at 的话，存进去的 once 每次读回都解析失败，被判成「配置有问题」
+     * 而静默退回模板默认 —— 一次性任务等于存了不生效。
+     */
+    const extra = Object.keys(o).filter((k) => !['at', 'atMs', 'atLabel'].includes(k));
     if (extra.length) {
-      bad(`任务 ${taskName} 的 schedule.once 含未知字段：${extra.join(', ')}`);
+      bad(`任务 ${taskName} 的 schedule.once 含未知字段：${extra.join(', ')}（允许 at / atMs / atLabel）`);
     }
     // 解析期就失败，不要等到调度时才发现写错
-    const atMs = parseScheduleTime(o.at);
+    const atMs =
+      o.at !== undefined
+        ? parseScheduleTime(o.at)
+        : Number.isFinite(o.atMs)
+          ? o.atMs
+          : bad(`任务 ${taskName} 的 schedule.once 需要 at（时间字符串）或 atMs（epoch 毫秒）`);
     return { kind: 'once', once: { atMs, atLabel: timestampInTZ(new Date(atMs)) } };
   }
 
