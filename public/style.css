@@ -645,7 +645,9 @@ label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
 .field,
 .schedule-fields label {
   display: grid;
-  grid-template-columns: var(--label-w, 132px) minmax(0, var(--control-w, 420px));
+  /* 168px 要放得下「最短中文名 + 最长环境变量徽章」（密码 V2FREE_PASSWORD ≈ 155px），
+     放不下就会出现中文一行、徽章一行——中英必须同行 */
+  grid-template-columns: var(--label-w, 168px) minmax(0, var(--control-w, 420px));
   align-items: center;
   column-gap: 12px;
   row-gap: 6px;
@@ -655,7 +657,8 @@ label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
 .field-label {
   display: flex;
   align-items: baseline;
-  flex-wrap: wrap;
+  /* 中文与英文字段名徽章永远同一行；列宽不够时加宽列，而不是把徽章折下去 */
+  flex-wrap: nowrap;
   gap: 7px;
   color: var(--text);
   font-size: 14px;
