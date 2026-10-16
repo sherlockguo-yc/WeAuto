@@ -794,6 +794,21 @@ label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
 }
 .schedule-form label.radio input { width: auto; margin: 0; }
 .schedule-fields { display: grid; gap: 10px; }
+/* 「每天在一段时间里随机」的开始/结束是一组信息（从…到…），
+   各占一行等于白占一行高度；并排后一眼就能读出区间。
+   hint 用 flex-basis:100% 独占一行，不会被挤到两个时刻中间。 */
+.schedule-fields[data-for='window'] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  /* 只有「开始」「结束」两个字，不需要凭据字段那么宽的标签列 */
+  --label-w: 44px;
+}
+/* flex: none = 不被压缩：窄屏放不下时换行（回到各占一行），
+   而不是把时间输入框挤成一条缝 */
+.schedule-fields[data-for='window'] label { width: auto; flex: none; }
+.schedule-fields[data-for='window'] .hint { flex-basis: 100%; }
 /* display:grid 会盖掉 hidden 属性自带的 display:none（作者样式优先于 UA 样式），
    不补这条的话三种调度类型的输入框会全部常驻显示 */
 .schedule-fields[hidden] { display: none; }
@@ -991,6 +1006,10 @@ select {
 @media (max-width: 639px) {
   /* 窄屏放不下「标签 + 限宽控件」两列，退回标签在上、控件全宽 */
   .field, .schedule-fields label { grid-template-columns: 1fr; }
+  /* 开始/结束并排是桌面端的省空间做法；窄屏放不下两个时刻，
+     硬挤会把时间输入框压成一条缝，这里退回各占一行 */
+  .schedule-fields[data-for='window'] { display: grid; }
+  .schedule-fields[data-for='window'] label { width: 100%; }
 }
 
 @media (min-width: 640px) {
