@@ -357,16 +357,16 @@ function taskTitle(t) {
 }
 
 /**
- * 顶部模板轨道里的一张卡：点它 = 用这个模板建一个任务。
+ * 顶部模板轨道里的一张卡：**点它 = 看这个模板**，不是建任务。
  *
- * 模板是平台给的（tasks/*.mjs），用户能做的是「建一个、配自己的时间与凭据」，
- * 所以卡片只描述模板本身（名称 / 说明 / 标签 / 默认调度），
- * 已经建了几个单独用角标标出来——数字比「已建」更能说明还能不能再加一个。
+ * 以前点一下就把任务建出来了，但多数时候用户只是想看看它要填什么、
+ * 默认什么时候跑——结果列表里多出一个没配好的空任务。
+ * 所以「看」和「建」分开：卡片进 `/templates/:name`，创建按钮在那里面。
+ *
+ * 已经建了几个用角标标出来——数字比「已建」更能说明还能不能再加一个。
  */
 function templateCard(t) {
-  return `<button type="button" class="template-card" data-action="create-task" data-template="${esc(
-    t.name,
-  )}">
+  return `<a class="template-card" href="/templates/${encodeURIComponent(t.name)}">
     <span class="template-card-head">
       <span class="template-card-name">${esc(t.displayName)}</span>
       ${t.count ? `<span class="template-card-count">已建 ${esc(t.count)}</span>` : ''}
@@ -376,7 +376,7 @@ function templateCard(t) {
       <span class="template-card-schedule">${esc(t.scheduleLabel)}</span>
       ${t.requires.length ? `<span class="template-card-cred">要填凭据</span>` : ''}
     </span>
-  </button>`;
+  </a>`;
 }
 
 /**
@@ -428,8 +428,8 @@ export function pageTasks({ items, groups, templates = [] }) {
     ? `<section class="card templates">
   <h2>模板 <span class="count">${templates.length}</span></h2>
   <div class="template-rail">${templates.map(templateCard).join('')}</div>
-  <p class="hint">左右滑动看更多。点一个模板就建一个任务 —— 一个任务只跑一个账号，
-    想跑第二个账号就再建一个。</p>
+  <p class="hint">左右滑动看更多。点一个模板进去看看它是什么、要填什么，
+    确定要用再点「创建任务」——一个任务只跑一个账号，想跑第二个账号就再建一个。</p>
 </section>`
     : '';
 
@@ -450,6 +450,53 @@ export function pageTasks({ items, groups, templates = [] }) {
     );
   }
   return rail + mineHtml;
+}
+
+/* ─────────────────── 模板页（看清楚再决定建不建） ─────────────────── */
+
+/**
+ * 模板页 = 「这个模板是什么」+「我已经用它建了什么」。
+ *
+ * 建任务的按钮放在这里，而不是列表的模板卡上：点卡片只是想看一眼，
+ * 直接建出来会在列表里留下没配好的空任务。
+ * 顺手把已建的同类任务列出来——同一个账号重复建一个是最常见的误操作。
+ */
+export function pageTemplate({ template, mine = [] }) {
+  const credFields = template.requires.length
+    ? template.requires
+        .map((k) => `${esc(fieldLabel(k))}<code class="field-key">${esc(k)}</code>`)
+        .join('、')
+    : '不需要账号密码';
+
+  return `
+<section class="card">
+  <h2>${esc(template.displayName)}${
+    template.group ? ` <span class="count">${esc(template.group)}</span>` : ''
+  }</h2>
+  <p class="sub">${esc(template.description || '这个模板没有说明')}</p>
+  <dl class="kv">
+    <dt>默认调度</dt><dd>${esc(template.scheduleLabel)}</dd>
+    <dt>需要填写</dt><dd>${credFields}</dd>
+    <dt>执行超时</dt><dd>${Math.round((template.timeoutMs ?? 0) / 1000)} 秒</dd>
+    <dt>模板</dt><dd class="mono">${esc(template.name)}</dd>
+  </dl>
+  <div class="actions">
+    <button class="primary" data-action="create-task" data-template="${esc(
+      template.name,
+    )}">创建任务</button>
+    <a class="btn-link btn-sm" href="/tasks">返回任务列表</a>
+  </div>
+  <p class="hint">建完会直接进任务页填账号密码。一个任务只跑一个账号。</p>
+</section>
+
+<section class="card">
+  <h2>我用这个模板建的任务 <span class="count">${mine.length}</span></h2>
+  ${
+    mine.length
+      ? mine.map(taskRow).join('')
+      : '<p class="empty">还没建过。点上面的「创建任务」，建完进去填账号密码。</p>'
+  }
+</section>`;
 }
 
 /* ─────────────────── 任务页（详情 + 配置合并） ─────────────────── */

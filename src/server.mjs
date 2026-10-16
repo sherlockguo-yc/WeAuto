@@ -394,6 +394,42 @@ export function createServer({
   });
 
   /**
+   * 模板页：看这个模板是什么，再决定建不建任务。
+   *
+   * `visibleTasks` 已经过滤掉 internal（非 admin 看不见），
+   * 所以「不存在」和「没权限」都走同一个 404——403 会证实它存在。
+   */
+  app.get('/templates/:name', requireLogin, (req, res) => {
+    const task = visibleTasks(req).get(req.params.name);
+    if (!task) {
+      return res
+        .status(404)
+        .type('html')
+        .send(shell(req, { title: '未找到', active: 'tasks', body: '<p class="empty">没有这个模板</p>' }));
+    }
+    // 已建的同类任务：复用列表那一套状态（今日状态、缺不缺凭据都在里面）
+    const mine = summarizeFor(req).items.filter((it) => it.name === task.name);
+    res.type('html').send(
+      shell(req, {
+        title: task.displayName,
+        active: 'tasks',
+        body: render.pageTemplate({
+          template: {
+            name: task.name,
+            displayName: task.displayName,
+            description: task.description || '',
+            group: task.group,
+            requires: task.requires ?? [],
+            scheduleLabel: describeSchedule(task.schedule),
+            timeoutMs: task.timeoutMs,
+          },
+          mine,
+        }),
+      }),
+    );
+  });
+
+  /**
    * 顶部模板轨道用的数据：平台提供的每个模板 + 我已经建了几个任务。
    *
    * 模板与任务是两件事：模板是「可以建什么」（平台提供，改不了），

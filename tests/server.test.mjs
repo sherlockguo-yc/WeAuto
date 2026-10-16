@@ -517,7 +517,9 @@ describe('凭据就近配置', () => {
 
     const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
     assert.match(html, /template-rail/);
-    assert.match(html, /data-action="create-task"/);
+    // 卡片是「看模板」的链接，不是「一键建任务」的按钮
+    assert.match(html, /href="\/templates\/demo-task"/);
+    assert.equal(html.includes('data-action="create-task"'), false);
     assert.match(html, /还没有创建任务/);
     // 没建任务就没有任务页可进
     assert.equal((await fetch(`${base}/tasks/1`, { headers: { cookie } })).status, 404);
@@ -1120,8 +1122,58 @@ describe('模板与任务（只能从平台提供的模板建任务）', () => {
     const { base } = await startServer({ seedSubscription: false });
     const cookie = await login(base);
     const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
-    assert.match(html, /data-action="create-task"/);
+    assert.match(html, /href="\/templates\/demo-task"/);
     assert.equal(html.includes('可以启用的模板'), false);
+  });
+});
+
+describe('模板页：先看后建', () => {
+  it('模板页说明这个模板是什么，创建按钮在里面', async () => {
+    const { base } = await startServer({ seedSubscription: false });
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/templates/demo-task`, { headers: { cookie } })).text();
+    assert.match(html, /演示任务/);
+    assert.match(html, /用于测试/);
+    // 默认调度、要填哪些字段、创建按钮
+    assert.match(html, /每天 09:00–09:50 内随机/);
+    assert.match(html, /DEMO_TOKEN/);
+    assert.match(html, /data-action="create-task" data-template="demo-task"/);
+    assert.match(html, /还没建过/);
+
+    // 光看不建：任务列表里不应该多出任务
+    const list = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.match(list, /还没有创建任务/);
+  });
+
+  it('点「创建任务」才真的建，之后模板页列出我用它建的任务', async () => {
+    const { base } = await startServer({ seedSubscription: false });
+    const cookie = await login(base);
+
+    const created = await (
+      await fetch(`${base}/api/tasks`, {
+        method: 'POST',
+        headers: { cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template: 'demo-task' }),
+      })
+    ).json();
+    assert.equal(created.ok, true);
+
+    const html = await (await fetch(`${base}/templates/demo-task`, { headers: { cookie } })).text();
+    assert.match(html, /我用这个模板建的任务/);
+    assert.match(html, /href="\/tasks\/1"/);
+  });
+
+  it('不存在或 internal 的模板页返回 404，而不是 403', async () => {
+    const { base, auth } = await startServer();
+    const cookie = await login(base);
+
+    assert.equal((await fetch(`${base}/templates/nope`, { headers: { cookie } })).status, 404);
+
+    // internal 模板对 admin 可见；换成普通用户后必须视同不存在
+    const me = auth.listUsers().find((u) => u.username === 'tester');
+    auth.setRole(me.id, 'user');
+    assert.equal((await fetch(`${base}/templates/internal-task`, { headers: { cookie } })).status, 404);
   });
 });
 

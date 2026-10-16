@@ -731,6 +731,8 @@ label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
   white-space: normal;
   transition: border-color 0.16s ease, background 0.16s ease, transform 0.08s ease;
 }
+/* 卡片是 <a>（进模板页）而不是按钮：继承正文颜色，不要链接下划线 */
+a.template-card { color: inherit; text-decoration: none; }
 .template-card:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--surface-3);
