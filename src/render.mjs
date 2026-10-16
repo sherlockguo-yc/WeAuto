@@ -616,7 +616,7 @@ function taskConfigBody({ task, credential = null }) {
   const retention = task.retention ?? {};
   // 有效调度 = 订阅里改过的（若有）否则模板默认。表单要能表达「我改过哪一种」
   const sch = task.schedule ?? null;
-  const customized = !!task.hasOverride && !!sch;
+  const customized = !!task.scheduleCustomized && !!sch;
   const mode = customized ? sch.kind : 'default';
   const win = sch?.kind === 'window' ? sch.window : { start: '09:00', end: '09:50' };
   const everyMinutes = sch?.kind === 'every' ? sch.every.minutes : 30;
@@ -626,8 +626,12 @@ function taskConfigBody({ task, credential = null }) {
 <section class="card">
   <h2>调度</h2>
   <dl class="kv">
-    <dt>当前</dt><dd>${esc(task.scheduleLabel)}</dd>
-    <dt>来源</dt><dd>${customized ? '我在下面改过' : esc(task.templateScheduleLabel ?? '跟随模板')}</dd>
+    <!-- 「当前」和「来源」曾经是两行，但没改过调度时两行必然一字不差
+         （生效的就是模板默认）。来源要回答的是「这个值归谁定」，
+         所以它只是一个跟在值后面的标记，不再单独占一行 -->
+    <dt>当前</dt><dd>${esc(task.scheduleLabel)}<span class="note"> · ${
+      customized ? '我在下面改过' : '模板默认'
+    }</span></dd>
     <!-- 「今日」执行状态（已完成/未到时刻…）不放在这里：调度是配置，
          跑没跑是结果——它属于概览「需要处理」和执行历史，混进来会让配置卡片每次都变 -->
   </dl>

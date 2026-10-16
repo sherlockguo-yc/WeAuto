@@ -317,6 +317,25 @@ describe('调度配置（用户配自己的时间必须生效）', () => {
     assert.equal(store.forUser(USER_ID).getTask(1).schedule.every.minutes, 10);
   });
 
+  it('「当前」一行同时给出生效的调度和它的来源，不再重复成两行', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    // 没改过：生效的就是模板默认，来源标「模板默认」
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    assert.doesNotMatch(html, /<dt>来源<\/dt>/);
+    assert.match(html, /<dt>当前<\/dt><dd>每天 09:00–09:50 内随机<span class="note"> · 模板默认<\/span>/);
+
+    // 改过之后：来源换成「我在下面改过」，值也跟着变
+    await fetch(`${base}/api/tasks/1`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule: { every: { minutes: 10 } } }),
+    });
+    const after = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    assert.match(after, /每 10 分钟<span class="note"> · 我在下面改过<\/span>/);
+  });
+
   it('非法调度返回 400，而不是被静默忽略', async () => {
     const { base } = await startServer();
     const cookie = await login(base);

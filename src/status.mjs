@@ -95,6 +95,12 @@ export function summarizeTask({
     enabled,
     /** 我有没有给这个任务配过东西（启动过 / 改过时间 / 填过账号） */
     configured: !!config,
+    /**
+     * 我**改过**调度没有。注意不能拿「有没有配置行」当这个信号——
+     * 建任务就一定有一行，那个值恒为真。真正的信号是「这一行里存了自定义调度」：
+     * 选「跟随模板默认」会把 schedule 存成 null，那时就该按「没改过」显示。
+     */
+    scheduleCustomized: !!config?.schedule,
     overrideInvalid,
     hasConfig: !!config,
     missingCredentials,

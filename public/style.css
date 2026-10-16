@@ -526,6 +526,8 @@ a.row-main:hover { color: var(--accent); }
   word-break: break-all;
 }
 .kv dd.missing { color: var(--off); }
+/* 「当前 …· 模板默认」里的来源标记：弱化成一个后缀，不抢主值的视觉重量 */
+.kv .note { color: var(--dim); font-size: 13px; }
 
 /* ── 操作区 ── */
 .actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 14px; }
