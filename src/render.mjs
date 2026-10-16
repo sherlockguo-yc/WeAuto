@@ -628,7 +628,8 @@ function taskConfigBody({ task, credential = null }) {
   <dl class="kv">
     <dt>当前</dt><dd>${esc(task.scheduleLabel)}</dd>
     <dt>来源</dt><dd>${customized ? '我在下面改过' : esc(task.templateScheduleLabel ?? '跟随模板')}</dd>
-    <dt>今日</dt><dd>${esc(task.planReason)}</dd>
+    <!-- 「今日」执行状态（已完成/未到时刻…）不放在这里：调度是配置，
+         跑没跑是结果——它属于概览「需要处理」和执行历史，混进来会让配置卡片每次都变 -->
   </dl>
   ${task.overrideInvalid ? '<p class="error">我保存的调度有问题，当前正按模板默认执行</p>' : ''}
   <form class="schedule-form" data-action="save-schedule" data-task="${esc(task.id)}">
