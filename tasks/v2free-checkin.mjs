@@ -13,6 +13,7 @@
  *     比正则解析 HTML 更可靠，作为面板取数的数据源
  */
 import { CookieJar, readJson, request } from '../src/http.mjs';
+import { formatBytes } from '../src/format.mjs';
 
 const BASE = 'https://v2free.net';
 
@@ -222,12 +223,13 @@ export default {
         before: info?.remainTraffic,
         after: latest?.remainTraffic,
       });
-      // message 用固定短句而不是站点原文：详情页的「最近一次结果」同时渲染 message
-      // 与 view 行，站点的「获得了 313MB 流量」会和「本次获得」说同一件事两遍。
-      // 数字交给结构化字段，message 只负责一句话结论。
+      // message 里必须带上获得的流量：概览页「最近执行」只渲染 message，不渲染 view 行，
+      // 写「签到成功」等于那一行什么都没说。数字宁可在详情页与「本次获得」重复一次，
+      // 也不能在最常被看到的那一屏里缺失。
+      // 拿不到数字（站点文案没给、签到前后差值也没变）时退回短句，不编一个数字出来。
       return {
         status: 'success',
-        message: '签到成功',
+        message: gain ? `签到成功，获得了 ${formatBytes(gain)} 流量` : '签到成功',
         data: gain ? { ...data, gainedTraffic: gain } : data,
       };
     }
