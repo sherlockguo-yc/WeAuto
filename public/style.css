@@ -811,6 +811,30 @@ label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
    而不是把时间输入框挤成一条缝 */
 .schedule-fields[data-for='window'] label { width: auto; flex: none; }
 .schedule-fields[data-for='window'] .hint { flex-basis: 100%; }
+
+/* 「今天 / 明天 / 选日期…」：一次性任务的日期绝大多数就落在这两天，
+   给三个按钮比让人去系统日历里翻日期快得多；更远的日期再展开原生日期框。 */
+.seg { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.seg-btn {
+  font: inherit;
+  font-size: 13.5px;
+  width: auto;
+  padding: 7px 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+.seg-btn:hover { border-color: var(--border-strong); }
+.seg-btn.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+/* .schedule-fields label 是 display:grid（作者样式），会盖掉 hidden 自带的 display:none */
+.schedule-fields label[hidden] { display: none; }
 /* display:grid 会盖掉 hidden 属性自带的 display:none（作者样式优先于 UA 样式），
    不补这条的话三种调度类型的输入框会全部常驻显示 */
 .schedule-fields[hidden] { display: none; }

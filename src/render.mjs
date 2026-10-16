@@ -553,10 +553,34 @@ ${taskConfigBody({ task: task, credential: credential })}
 
 /* ─────────────────── 任务配置 ─────────────────── */
 
-/** epoch 毫秒 → 「YYYY-MM-DDTHH:mm」（北京时间），给 <input type="datetime-local"> 用 */
+/** epoch 毫秒 → 「YYYY-MM-DDTHH:mm」（北京时间） */
 function beijingInputValue(ms) {
   if (!Number.isFinite(ms)) return '';
   return new Date(ms + 8 * 36e5).toISOString().slice(0, 16);
+}
+
+/** epoch 毫秒 → 北京时间「YYYY-MM-DD」 */
+function beijingDate(ms) {
+  return new Date(ms + 8 * 36e5).toISOString().slice(0, 10);
+}
+
+/**
+ * 一次性任务的「日期 + 时间」两个输入框各要一个什么值。
+ *
+ * 为什么要拆开、还要给默认值：`datetime-local` 空着的时候显示成
+ * 「年/月/日 --:--」，看着像坏了，填的时候又得先翻日历再拖时间。
+ * 而一次性任务绝大多数就是「今天或明天的某个点」——所以日期默认今天、
+ * 时间默认下一个整点，想选更远的日期再点「选日期…」。
+ */
+function onceParts(atMs, nowMs = Date.now()) {
+  if (Number.isFinite(atMs)) {
+    const v = beijingInputValue(atMs);
+    return { date: v.slice(0, 10), time: v.slice(11) };
+  }
+  // 北京时间下的「下一个整点」：先偏移到北京，再进 1 小时、抹掉分秒
+  const next = new Date(nowMs + 8 * 36e5 + 36e5);
+  next.setUTCMinutes(0, 0, 0);
+  return { date: beijingDate(nowMs), time: next.toISOString().slice(11, 16) };
 }
 
 /**
@@ -620,7 +644,11 @@ function taskConfigBody({ task, credential = null }) {
   const mode = customized ? sch.kind : 'default';
   const win = sch?.kind === 'window' ? sch.window : { start: '09:00', end: '09:50' };
   const everyMinutes = sch?.kind === 'every' ? sch.every.minutes : 30;
-  const onceAt = sch?.kind === 'once' ? beijingInputValue(sch.once.atMs) : '';
+  const once = onceParts(sch?.kind === 'once' ? sch.once.atMs : NaN);
+  const today = beijingDate(Date.now());
+  const tomorrow = beijingDate(Date.now() + 86_400_000);
+  // 已存的时刻落在今天/明天就点亮对应按钮，否则停在「选日期…」
+  const onceDay = once.date === today ? 'today' : once.date === tomorrow ? 'tomorrow' : 'pick';
 
   return `
 <section class="card">
@@ -662,8 +690,20 @@ function taskConfigBody({ task, credential = null }) {
         String(everyMinutes),
       )}"></label>
     </div>
-    <div class="schedule-fields" data-for="once"${mode === 'once' ? '' : ' hidden'}>
-      <label>时刻（北京时间）<input type="datetime-local" name="at" value="${esc(onceAt)}"></label>
+    <div class="schedule-fields" data-for="once"${mode === 'once' ? '' : ' hidden'}
+         data-today="${esc(today)}" data-tomorrow="${esc(tomorrow)}">
+      <label>
+        <span class="field-label">日期</span>
+        <span class="seg">
+          <button type="button" class="seg-btn${onceDay === 'today' ? ' on' : ''}" data-once-day="today">今天</button>
+          <button type="button" class="seg-btn${onceDay === 'tomorrow' ? ' on' : ''}" data-once-day="tomorrow">明天</button>
+          <button type="button" class="seg-btn${onceDay === 'pick' ? ' on' : ''}" data-once-day="pick">选日期…</button>
+        </span>
+      </label>
+      <label>时间（北京时间）<input type="time" name="atTime" value="${esc(once.time)}"></label>
+      <label class="once-pick"${onceDay === 'pick' ? '' : ' hidden'}>具体日期<input
+        type="date" name="atDate" value="${esc(once.date)}"></label>
+      <input type="hidden" name="at" value="${esc(once.date)}T${esc(once.time)}">
       <p class="hint">超过计划时刻 5 分钟还没跑就判为「已错过」，不会自动补跑</p>
     </div>
     <button type="submit" class="primary">保存调度</button>

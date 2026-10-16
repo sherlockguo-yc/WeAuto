@@ -336,6 +336,38 @@ describe('调度配置（用户配自己的时间必须生效）', () => {
     assert.match(after, /每 10 分钟<span class="note"> · 我在下面改过<\/span>/);
   });
 
+  it('一次性任务的时刻默认给「今天 + 下一个整点」，不再留空的年月日占位', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    // 日期走三个快捷按钮；「今天」的日期由服务端给，避免浏览器时区算错一天
+    assert.match(html, /data-once-day="today"/);
+    assert.match(html, /data-once-day="tomorrow"/);
+    assert.match(html, /data-once-day="pick"/);
+    assert.match(html, /data-today="\d{4}-\d{2}-\d{2}"/);
+    assert.match(html, /data-tomorrow="\d{4}-\d{2}-\d{2}"/);
+    // 提交用的 at 不是空的，时间与日期分开填
+    assert.match(html, /name="atTime" value="\d{2}:\d{2}"/);
+    assert.match(html, /name="at" value="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}"/);
+    assert.doesNotMatch(html, /datetime-local/);
+  });
+
+  it('保存过的一次性时刻回显成日期 + 时间，更远的日期停在「选日期…」', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    await fetch(`${base}/api/tasks/1`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule: { once: { at: '2026-10-20 08:30' } } }),
+    });
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    assert.match(html, /name="atDate" value="2026-10-20"/);
+    assert.match(html, /name="atTime" value="08:30"/);
+    assert.match(html, /data-once-day="pick"[^>]*|class="seg-btn on" data-once-day="pick"/);
+  });
+
   it('非法调度返回 400，而不是被静默忽略', async () => {
     const { base } = await startServer();
     const cookie = await login(base);

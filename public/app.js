@@ -355,6 +355,47 @@
     }
   });
 
+  /*
+   * 一次性任务的「日期 + 时间」合成提交用的 at。
+   *
+   * 日期不自己在前端算：今天的边界是北京时间，而浏览器时区未必是东八区，
+   * 算出来会差一天。所以「今天 / 明天」两个日期由服务端渲染进 data-today / data-tomorrow，
+   * 前端只做拼接。
+   */
+  function syncOnceAt(wrap) {
+    var picked = wrap.querySelector('.seg-btn.on');
+    var day = picked ? picked.dataset.onceDay : 'today';
+    var date =
+      day === 'tomorrow'
+        ? wrap.dataset.tomorrow
+        : day === 'pick'
+          ? (wrap.querySelector('input[name="atDate"]').value || wrap.dataset.today)
+          : wrap.dataset.today;
+    var time = wrap.querySelector('input[name="atTime"]').value || '00:00';
+    wrap.querySelector('input[name="at"]').value = date + 'T' + time;
+  }
+
+  document.addEventListener('click', function (e) {
+    var segBtn = e.target.closest('.seg-btn');
+    if (!segBtn) return;
+    var wrap = segBtn.closest('.schedule-fields');
+    if (!wrap) return;
+    var btns = wrap.querySelectorAll('.seg-btn');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle('on', btns[i] === segBtn);
+    }
+    var pick = wrap.querySelector('.once-pick');
+    if (pick) pick.hidden = segBtn.dataset.onceDay !== 'pick';
+    syncOnceAt(wrap);
+  });
+
+  // 时间/日期两个输入框变化时，同样要把 at 补上
+  document.addEventListener('change', function (e) {
+    var wrap = e.target.closest('.schedule-fields');
+    if (!wrap || wrap.getAttribute('data-for') !== 'once') return;
+    syncOnceAt(wrap);
+  });
+
   document.addEventListener('submit', async function (e) {
     // 任务名 + 账号密码：一个「保存」按钮，两处都提交，哪处没改就跳过哪处。
     // 凭据字段留空 = 不修改（否则一个空输入框就会把已存的密码清掉）。
@@ -408,7 +449,13 @@
       } else if (kind === 'every') {
         body = { schedule: { every: { minutes: Number(schedForm.elements.minutes.value) } } };
       } else if (kind === 'once') {
-        body = { schedule: { once: { at: schedForm.elements.at.value } } };
+        var at = schedForm.elements.at.value;
+        // 「选日期…」模式下日期框空着时，拼出来的 at 不完整，后端会 400
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(at)) {
+          hint('先选一个日期', 'error');
+          return;
+        }
+        body = { schedule: { once: { at: at } } };
       }
       if (!body) {
         hint('请选择一种调度方式', 'error');
