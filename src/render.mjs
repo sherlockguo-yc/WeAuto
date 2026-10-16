@@ -276,7 +276,8 @@ export function pageOverview(data) {
           </a>`,
         )
         .join('')
-    : '<p class="empty">今天没有需要处理的</p>';
+    // 文案要说出这张卡的口径：它收的是「今天没跑成」的任务，不是「待办」
+    : '<p class="empty">今天没有失败或错过的任务</p>';
 
   const recent = data.recent.length
     ? data.recent

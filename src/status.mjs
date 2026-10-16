@@ -180,9 +180,16 @@ export function summarizeAll({
     else byStatus.failed += 1; // 其它非成功状态一律计入「需要注意」
   }
 
-  // 「今天出事了」的清单：失败/被拦/已错过/已停止，首页只关心这些
+  /*
+   * 「今天出事了」的清单：失败 / 被拦 / 网络错 / 配置错 / 已错过。
+   *
+   * **故意不含「已停止」**：停止是用户自己按的，不是今天出的状况，
+   * 而且它没有「今天」的边界——上周停掉的任务今天还挂在这儿，
+   * 于是这张卡永远有一条，反而把真出事的那条挤下去。
+   * 「我停着几个」的回答在顶部统计的「停止/手动」里，那里才是它的位置。
+   */
   const attention = mine.filter((it) =>
-    ['failed', 'blocked', 'network-error', 'config-error', 'missed', 'disabled'].includes(it.todayStatus),
+    ['failed', 'blocked', 'network-error', 'config-error', 'missed'].includes(it.todayStatus),
   );
 
   /*

@@ -919,6 +919,40 @@ describe('概览统计', () => {
     assert.equal(data.byStatus.disabled, 0, '没建不该被算成「停用」');
     assert.equal(data.attention.length, 0, '没建不该出现在需要注意里');
   });
+
+  it('「需要处理」只收今天没跑成的任务，停止不算', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+
+    // 真出事的（失败）必须进来
+    const mine = store.forUser(USER_ID);
+    const today = await (await fetch(`${base}/api/overview`, { headers: { cookie } })).json();
+    mine.appendRun({
+      taskName: 'demo-task',
+      date: today.today,
+      ts: Date.now(),
+      status: 'failed',
+      message: '示例失败',
+      trigger: 'schedule',
+    });
+    const failed = await (await fetch(`${base}/api/overview`, { headers: { cookie } })).json();
+    assert.equal(failed.attention.length, 1);
+    assert.equal(failed.attention[0].todayStatus, 'failed');
+
+    // 停掉这个任务：它是我主动按的，不该再占「需要处理」——
+    // 但它仍然要出现在顶部统计的「停止/手动」里
+    await fetch(`${base}/api/tasks/1`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    const stopped = await (await fetch(`${base}/api/overview`, { headers: { cookie } })).json();
+    assert.equal(stopped.byStatus.disabled, 1, '顶部统计里仍然看得到「我停着 1 个」');
+    assert.equal(stopped.attention.length, 0, '「已停止」不该进需要处理');
+
+    const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    assert.match(html, /今天没有失败或错过的任务/);
+  });
 });
 
 describe('注销与改密', () => {
