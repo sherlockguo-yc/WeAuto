@@ -481,7 +481,7 @@ export function pageTemplate({ template, mine = [] }) {
     <dt>模板</dt><dd class="mono">${esc(template.name)}</dd>
   </dl>
   <div class="actions">
-    <button class="primary" data-action="create-task" data-template="${esc(
+    <button type="button" class="primary" data-action="create-task" data-template="${esc(
       template.name,
     )}">创建任务</button>
     <a class="btn-link btn-sm" href="/tasks">返回任务列表</a>
@@ -564,17 +564,20 @@ ${hintHtml}
   <h2>${esc(taskTitle(task))} ${statusBadge(task.todayStatus)}</h2>
   <p class="sub">${esc(task.description ?? task.name)}</p>
   <div class="actions">
-    <button class="primary" data-action="run" data-task="${esc(task.id)}" ${
-      canRun ? '' : 'disabled'
+    <button type="button" class="primary" data-action="run" data-task="${esc(task.id)}" ${
+      canRun ? '' : 'disabled title="有一个执行还没结束，等它跑完"'
     }">${ICON.play}立即执行</button>
-    <button data-action="toggle" data-task="${esc(task.id)}" data-enabled="${
+    <!-- 「停止」的红色与列表页同一语气色：两处都是「让任务不再跑」。
+         删除是更重的操作，反而收成弱化的文字按钮，别抢「停止」的注意力 -->
+    <button type="button" data-action="toggle" data-task="${esc(task.id)}" data-enabled="${
       task.enabled ? '1' : '0'
-    }">${task.enabled ? '停止' : '启动'}</button>
-    <button class="btn-danger" data-action="delete-task" data-task="${esc(
+    }"${task.enabled ? ' class="btn-danger"' : ''}>${task.enabled ? '停止' : '启动'}</button>
+    <button type="button" class="link-danger" data-action="delete-task" data-task="${esc(
       task.id,
     )}">删除任务</button>
   </div>
-  <p class="hint" id="action-hint"></p>
+  <!-- 执行进度与报错都写在这里，给 aria-live 让读屏也能听到（浮层 toast 本来就有） -->
+  <p class="hint" id="action-hint" role="status" aria-live="polite"></p>
 </section>
 
 ${taskConfigBody({ task: task, credential: credential })}
@@ -714,9 +717,13 @@ function taskConfigBody({ task, credential = null }) {
   <form class="schedule-form" data-action="save-schedule" data-task="${esc(task.id)}">
     <fieldset>
       <legend>什么时候跑</legend>
+      <!-- 模板默认值只在「我改过」时才写出来：没改过时上面「当前」那行就是同一个值，
+           再说一遍是重复；改过之后它是用户决定要不要恢复默认的依据，必须留着 -->
       <label class="radio"><input type="radio" name="kind" value="default"${
         mode === 'default' ? ' checked' : ''
-      }>跟随模板默认（${esc(task.templateScheduleLabel ?? '—')}）</label>
+      }>跟随模板默认${
+        customized ? `（${esc(task.templateScheduleLabel ?? '—')}）` : ''
+      }</label>
       <label class="radio"><input type="radio" name="kind" value="window"${
         mode === 'window' ? ' checked' : ''
       }>每天在一段时间里随机</label>
@@ -739,14 +746,22 @@ function taskConfigBody({ task, credential = null }) {
     </div>
     <div class="schedule-fields" data-for="once"${mode === 'once' ? '' : ' hidden'}
          data-today="${esc(today)}" data-tomorrow="${esc(tomorrow)}">
-      <label>
+      <!-- 不能用 <label> 包这组按钮：label 会把自己绑到第一个可标记后代（「今天」），
+           点「日期」两个字就等于点了它；按钮组也不该是 label 的关联控件 -->
+      <div class="seg-row" role="group" aria-label="日期">
         <span class="field-label">日期</span>
         <span class="seg">
-          <button type="button" class="seg-btn${onceDay === 'today' ? ' on' : ''}" data-once-day="today">今天</button>
-          <button type="button" class="seg-btn${onceDay === 'tomorrow' ? ' on' : ''}" data-once-day="tomorrow">明天</button>
-          <button type="button" class="seg-btn${onceDay === 'pick' ? ' on' : ''}" data-once-day="pick">选日期…</button>
+          <button type="button" class="seg-btn${onceDay === 'today' ? ' on' : ''}" aria-pressed="${
+            onceDay === 'today'
+          }" data-once-day="today">今天</button>
+          <button type="button" class="seg-btn${onceDay === 'tomorrow' ? ' on' : ''}" aria-pressed="${
+            onceDay === 'tomorrow'
+          }" data-once-day="tomorrow">明天</button>
+          <button type="button" class="seg-btn${onceDay === 'pick' ? ' on' : ''}" aria-pressed="${
+            onceDay === 'pick'
+          }" data-once-day="pick">选日期…</button>
         </span>
-      </label>
+      </div>
       <label>时间（北京时间）<input type="time" name="atTime" value="${esc(once.time)}"></label>
       <label class="once-pick"${onceDay === 'pick' ? '' : ' hidden'}>具体日期<input
         type="date" name="atDate" value="${esc(once.date)}"></label>
@@ -790,7 +805,8 @@ function taskConfigBody({ task, credential = null }) {
   <dl class="kv">
     <dt>超时</dt><dd>${Math.round(task.timeoutMs / 1000)} 秒</dd>
     <dt>记录保留</dt><dd>${esc(retention.days ?? '—')} 天 / 最多 ${esc(retention.maxRows ?? '—')} 条</dd>
-    <dt>凭据字段</dt><dd>${task.requires.length ? esc(task.requires.join('、')) : '不需要'}</dd>
+    <!-- 具体的字段名在上面的「账号」区已经逐个列出来了，这里只说有几项 -->
+    <dt>凭据</dt><dd>${task.requires.length ? `共 ${task.requires.length} 项` : '不需要'}</dd>
     <dt>模板</dt><dd class="mono">${esc(task.name)}</dd>
   </dl>
 </section>`;
@@ -810,12 +826,12 @@ function adminUserRow(u, { currentUserId = null, canDelete = false } = {}) {
     u.id === currentUserId
       ? ''
       : `<span class="invite-actions">
-        <button class="link-btn" data-action="toggle-user" data-user="${u.id}" data-status="${esc(
+        <button type="button" class="link-btn" data-action="toggle-user" data-user="${u.id}" data-status="${esc(
           u.status,
         )}">${u.status === 'active' ? '停用' : '启用'}</button>
         ${
           canDelete
-            ? `<button class="link-danger" data-action="delete-user" data-user="${u.id}">删除</button>`
+            ? `<button type="button" class="link-danger" data-action="delete-user" data-user="${u.id}">删除</button>`
             : ''
         }
       </span>`;
@@ -849,10 +865,10 @@ function inviteRowHtml({ note = '', label = '未使用', url = '', code = '', to
       <span class="badges"><span class="badge badge-${tone === 'ok' ? 'ok' : 'off'}">${esc(label)}</span></span>
       <span class="row-sub mono invite-url">${esc(url)}</span>
       <span class="invite-actions">
-        <button class="link-btn" data-action="copy-invite" data-url="${esc(url)}">复制链接</button>
+        <button type="button" class="link-btn" data-action="copy-invite" data-url="${esc(url)}">复制链接</button>
         ${
           canRevoke
-            ? `<button class="link-danger" data-action="revoke-invite" data-code="${esc(code)}">撤销</button>`
+            ? `<button type="button" class="link-danger" data-action="revoke-invite" data-code="${esc(code)}">撤销</button>`
             : ''
         }
       </span>

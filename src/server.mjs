@@ -350,6 +350,26 @@ export function createServer({
    * 分散到 7 个调用点里迟早漏掉一个，而「这一页点不开设置」只在那一页暴露，
    * 平时很难发现。集中在这里，漏不掉。
    */
+  /**
+   * 统一的 404 页：**必须给出路**。
+   * 以前只有一句「没有这个任务」，页面上没有任何链接，用户只能靠浏览器后退。
+   */
+  const notFoundPage = (req, res, text) =>
+    res
+      .status(404)
+      .type('html')
+      .send(
+        shell(req, {
+          title: '未找到',
+          active: 'tasks',
+          body: `<section class="card">
+  <h2>没有找到</h2>
+  <p class="sub">${text}</p>
+  <div class="actions"><a class="btn-link btn-sm" href="/tasks">返回任务列表</a></div>
+</section>`,
+        }),
+      );
+
   const shell = (req, { title, active, body, banner = '' }) =>
     render.layout({
       title,
@@ -401,12 +421,7 @@ export function createServer({
    */
   app.get('/templates/:name', requireLogin, (req, res) => {
     const task = visibleTasks(req).get(req.params.name);
-    if (!task) {
-      return res
-        .status(404)
-        .type('html')
-        .send(shell(req, { title: '未找到', active: 'tasks', body: '<p class="empty">没有这个模板</p>' }));
-    }
+    if (!task) return notFoundPage(req, res, '没有这个模板，或者你没有权限看它。');
     // 已建的同类任务：复用列表那一套状态（今日状态、缺不缺凭据都在里面）
     const mine = summarizeFor(req).items.filter((it) => it.name === task.name);
     res.type('html').send(
@@ -528,11 +543,8 @@ export function createServer({
       userId: req.user.id,
       role: req.user.role,
     });
-    if (!d)
-      return res
-        .status(404)
-        .type('html')
-        .send(shell(req, { title: '未找到', active: 'tasks', body: '<p class="empty">没有这个任务</p>' }));
+    // 任务被删了、或者是别人的任务
+    if (!d) return notFoundPage(req, res, '没有这个任务——它可能已经被删除了。');
     const { credential } = credentialOf({
       userId: req.user.id,
       taskName: d.task.name,

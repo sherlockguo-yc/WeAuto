@@ -253,8 +253,48 @@
       }
       onProgress('执行中…（' + ((i + 1) * 2) + 's）');
     }
-    hint('仍在执行，请稍后手动刷新', 'error');
+    // 轮询到上限就自动刷一次：让用户自己去猜什么时候刷新没有意义，
+    // 刷新后页面仍显示「执行中」，他可以再等或再点。
+    hint('仍在执行，即将刷新…');
+    await sleep(1500);
+    location.reload();
   }
+
+  /**
+   * 保存类操作刷新后：给一句「已保存」，并回到原来的滚动位置。
+   *
+   * 任务页很长（结果 → 调度 → 账号 → 历史），以前点最下面的「保存」会被弹回顶部，
+   * 既看不到成功反馈也找不到刚才改的地方。sessionStorage 只在当前标签页有效，
+   * 用完立刻清掉，不会串到别的页面。
+   */
+  function reloadWithFeedback(msg) {
+    try {
+      sessionStorage.setItem('weauto-flash', msg || '');
+      sessionStorage.setItem('weauto-scroll', String(window.scrollY));
+    } catch (e) {
+      /* 隐私模式写不了：退化成普通刷新，不影响保存本身 */
+    }
+    location.reload();
+  }
+
+  /** 页面加载后把上一条反馈显示出来、并把滚动位置还原 */
+  (function restoreAfterReload() {
+    var msg;
+    var y;
+    try {
+      msg = sessionStorage.getItem('weauto-flash');
+      y = Number(sessionStorage.getItem('weauto-scroll'));
+      sessionStorage.removeItem('weauto-flash');
+      sessionStorage.removeItem('weauto-scroll');
+    } catch (e) {
+      return;
+    }
+    if (msg) setTimeout(function () { toast(msg); }, 0);
+    if (!Number.isNaN(y) && y > 0) {
+      // 等一帧再滚：Safari 在图片/字体加载完之前会重置滚动位置
+      requestAnimationFrame(function () { window.scrollTo(0, y); });
+    }
+  })();
 
   /** 把按钮临时改成另一段内容，之后能原样还原（内容是本页渲染出来的，不含外部输入） */
   function setButtonHtml(btn, html) {
@@ -309,7 +349,7 @@
       } else if (action === 'toggle') {
         var enabled = btn.dataset.enabled === '1';
         await api('PATCH', '/api/tasks/' + encodeURIComponent(name), { enabled: !enabled });
-        location.reload();
+        reloadWithFeedback(enabled ? '已停止' : '已启动');
       } else if (action === 'create-task') {
         // 点模板 = 用这个模板建一个任务，建完直接进去填凭据
         var created = await api('POST', '/api/tasks', { template: btn.dataset.template });
@@ -382,7 +422,9 @@
     if (!wrap) return;
     var btns = wrap.querySelectorAll('.seg-btn');
     for (var i = 0; i < btns.length; i++) {
-      btns[i].classList.toggle('on', btns[i] === segBtn);
+      var on = btns[i] === segBtn;
+      btns[i].classList.toggle('on', on);
+      btns[i].setAttribute('aria-pressed', String(on));
     }
     var pick = wrap.querySelector('.once-pick');
     if (pick) pick.hidden = segBtn.dataset.onceDay !== 'pick';
@@ -427,7 +469,7 @@
         if (credsFilled) {
           await api('POST', '/api/credentials', { taskId: Number(taskId), fields: fields });
         }
-        location.reload();
+        reloadWithFeedback('已保存');
       } catch (err) {
         hint(err.message, 'error');
         if (saveBtn) saveBtn.disabled = false;
@@ -465,7 +507,7 @@
       if (schedBtn) schedBtn.disabled = true;
       try {
         await api('PATCH', '/api/tasks/' + encodeURIComponent(schedForm.dataset.task), body);
-        location.reload();
+        reloadWithFeedback('调度已保存');
       } catch (err) {
         hint(err.message, 'error');
         if (schedBtn) schedBtn.disabled = false;

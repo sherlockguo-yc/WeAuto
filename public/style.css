@@ -812,6 +812,13 @@ a.template-card { color: inherit; text-decoration: none; }
 /* flex: none = 不被压缩：窄屏放不下时换行（回到各占一行），
    而不是把时间输入框挤成一条缝 */
 .schedule-fields[data-for='window'] label { width: auto; flex: none; }
+/* 一次性任务的「日期」按钮组：与 <label> 同样的两列排布，但它不是 label */
+.schedule-fields .seg-row {
+  display: grid;
+  grid-template-columns: var(--label-w, 168px) minmax(0, var(--control-w, 420px));
+  align-items: center;
+  column-gap: 12px;
+}
 .schedule-fields[data-for='window'] .hint { flex-basis: 100%; }
 
 /* 「今天 / 明天 / 选日期…」：一次性任务的日期绝大多数就落在这两天，
@@ -897,7 +904,8 @@ a.template-card { color: inherit; text-decoration: none; }
   border-radius: var(--radius-xs);
   padding: 7px 9px;
 }
-.invite-actions { display: flex; gap: 2px; }
+/* 「停用」和「删除」贴太近会误点删除，所以留出明确间隔 */
+.invite-actions { display: flex; gap: 10px; }
 
 /* 删除账号：破坏性操作，弱化存在感但保持可达 */
 button.link-danger {

@@ -1177,6 +1177,60 @@ describe('模板页：先看后建', () => {
   });
 });
 
+describe('交互细节', () => {
+  it('404 页给出路，而不是只剩一句「没有这个」', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const tpl = await (await fetch(`${base}/templates/nope`, { headers: { cookie } })).text();
+    assert.match(tpl, /返回任务列表/);
+
+    const task = await (await fetch(`${base}/tasks/9999`, { headers: { cookie } })).text();
+    assert.match(task, /返回任务列表/);
+  });
+
+  it('「停止」在两页都是危险色；更重的「删除任务」反而弱化', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    assert.match(html, /data-action="toggle"[^>]*class="btn-danger"/);
+    assert.match(html, /class="link-danger" data-action="delete-task"/);
+    // 按钮都显式声明 type，挪进表单也不会变成提交按钮
+    assert.match(html, /type="button" data-action="toggle"/);
+  });
+
+  it('没改过调度时，单选里的模板默认值不重复说一遍', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    // 上面「当前」那行已经写明了值，单选项就只留名字
+    assert.match(html, /跟随模板默认<\/label>/);
+    assert.doesNotMatch(html, /跟随模板默认（/);
+
+    // 改过之后才把模板默认值写出来——它是决定要不要恢复默认的依据
+    await fetch(`${base}/api/tasks/1`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule: { every: { minutes: 10 } } }),
+    });
+    const after = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    assert.match(after, /跟随模板默认（每天 09:00–09:50 内随机）/);
+  });
+
+  it('一次性任务的日期组是按钮组，不是 <label>', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    // label 会把自己绑到第一个按钮，点「日期」就等于点了「今天」
+    assert.match(html, /<div class="seg-row" role="group" aria-label="日期">/);
+    assert.match(html, /aria-pressed="true" data-once-day="today"/);
+    assert.equal(/<label[^>]*>\s*<span class="field-label">日期/.test(html), false);
+  });
+});
+
 describe('凭据接口（每人一份）', () => {
   const post = (base, cookie, body) =>
     fetch(`${base}/api/credentials`, {
