@@ -638,6 +638,17 @@ button.flash-error { color: var(--bad); }
 }
 
 .inline-form { display: grid; gap: 12px; }
+/* 邀请码表单：一行横排（备注占宽、两个数字框定宽、按钮收尾），
+   窄屏自动换行 —— 输入框不再被拉伸成整张卡片的宽度 */
+.invite-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+.invite-form .invite-note { flex: 1 1 200px; max-width: 280px; }
+.invite-form .invite-num { flex: 0 0 116px; }
+.invite-form button { flex: 0 0 auto; }
 /* 表单里的按钮按字数收缩，不再被 grid 拉成整行宽 */
 .inline-form button, .schedule-form button[type='submit'] {
   width: auto;

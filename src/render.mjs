@@ -924,10 +924,10 @@ ${
 <section class="card">
   <h2>邀请码</h2>
   <p class="sub">新用户只能凭邀请链接注册。默认单次使用、7 天过期，随时可撤销。</p>
-  <form class="inline-form" data-action="create-invite">
-    <label>备注（给谁的，备查）<input name="note" maxlength="60" placeholder="例如：给小明"></label>
-    <label>有效期（天，0 = 长期）<input type="number" name="expiresInDays" value="7" min="0" step="1"></label>
-    <label>可用次数<input type="number" name="maxUses" value="1" min="1" step="1"></label>
+  <form class="inline-form invite-form" data-action="create-invite">
+    <label class="invite-note">备注（给谁的，备查）<input name="note" maxlength="60" placeholder="例如：给小明"></label>
+    <label class="invite-num">有效期（天，0 = 长期）<input type="number" name="expiresInDays" value="7" min="0" step="1"></label>
+    <label class="invite-num">可用次数<input type="number" name="maxUses" value="1" min="1" step="1"></label>
     <button type="submit" class="primary">生成邀请链接</button>
   </form>
   <div class="invites" data-invite-list>
