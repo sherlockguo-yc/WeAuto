@@ -36,15 +36,29 @@ const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-/** 候选 API host（按网文出现频率排序，逐个实测） */
-const DEFAULT_HOSTS = [
-  'https://www.codebuddy.cn',
-  'https://copilot.tencent.com',
-  'https://tencent.sso.codebuddy.cn',
-];
+/**
+ * 候选 API host。
+ *
+ * 2026-10-19 实测修正：真实产品域名是 www.workbuddy.cn（来自
+ * ~/.workbuddy/cache/update-endpoint.json），不是网文口径的 codebuddy.cn。
+ * 网关是 APISIX 3.9.1，返回 401 时会带
+ *   `WWW-Authenticate: Bearer realm="sso-etahzsqej0n4", error="invalid_token"`
+ * —— realm 与 accessToken 的 iss realm 一致，说明 host/路由正确，401 只是 token 本身无效。
+ */
+const DEFAULT_HOSTS = ['https://www.workbuddy.cn', 'https://wb.tencentbuddy.com'];
 
-const STATUS_PATH = '/v2/billing/meter/checkin-activity-status';
-const CHECKIN_PATH = '/v2/billing/meter/daily-checkin';
+/**
+ * 接口路径（2026-10-19 从客户端包
+ * /Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/renderer/assets/*.js
+ * 提取，非推测）：
+ *   · POST /billing/meter/checkin-status   查询（无 /v2 前缀）
+ *   · POST /billing/meter/daily-checkin    领取
+ * 客户端里还有 /billing/meter/get-user-resource-summary 等，同属 /billing/meter 前缀。
+ */
+const STATUS_PATH = '/billing/meter/checkin-status';
+const CHECKIN_PATH = '/billing/meter/daily-checkin';
+
+/** refresh 端点：客户端包里未找到，仍是推测值，实测前不要依赖 */
 const REFRESH_PATH = '/v2/plugin/auth/token/refresh';
 
 /* ───────────────────────── 参数与凭据 ───────────────────────── */
