@@ -11,12 +11,17 @@
  * 【默认只读】只调状态查询接口。真的领取积分必须显式加 --claim。
  * 【不打印凭据】token 一律 mask；dump 文件里不写入任何凭据原文。
  *
+ * 【两种鉴权都支持】桌面客户端用 `Authorization: Bearer`，网页端很可能用 `Cookie`。
+ *   两者任选其一提供即可，也可以同时给（脚本会把它们一起带上）。
+ *
  * 用法：
  *   node scripts/probe-workbuddy.mjs --token-file ~/.ssh/wb_token.txt
+ *   node scripts/probe-workbuddy.mjs --cookie-file ~/.ssh/wb_cookie.txt
  *   WB_ACCESS_TOKEN=eyJ... node scripts/probe-workbuddy.mjs
  *   WB_ACCESS_TOKEN=eyJ... WB_REFRESH_TOKEN=eyJ... node scripts/probe-workbuddy.mjs --claim
  * 选项：
  *   --token-file <path>   从文件读 accessToken（推荐，避免进 shell 历史）
+ *   --cookie-file <path>  从文件读 Cookie 串（网页端鉴权）
  *   --refresh-file <path> 从文件读 refreshToken
  *   --host <url>          只测指定 host，可重复
  *   --claim               真正执行签到（默认只查询）
@@ -45,12 +50,13 @@ const REFRESH_PATH = '/v2/plugin/auth/token/refresh';
 /* ───────────────────────── 参数与凭据 ───────────────────────── */
 
 function parseArgs(argv) {
-  const out = { hosts: [], claim: false, tokenFile: null, refreshFile: null };
+  const out = { hosts: [], claim: false, tokenFile: null, refreshFile: null, cookieFile: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--claim') out.claim = true;
     else if (a === '--host') out.hosts.push(argv[++i]);
     else if (a === '--token-file') out.tokenFile = argv[++i];
+    else if (a === '--cookie-file') out.cookieFile = argv[++i];
     else if (a === '--refresh-file') out.refreshFile = argv[++i];
   }
   return out;
@@ -148,19 +154,37 @@ const env = loadDotEnv(path.join(ROOT, '.env.local'));
 
 const token =
   readFileArg(args.tokenFile) || process.env.WB_ACCESS_TOKEN || env.WB_ACCESS_TOKEN || '';
+const cookie =
+  readFileArg(args.cookieFile) || process.env.WB_COOKIE || env.WB_COOKIE || '';
 const refreshToken =
   readFileArg(args.refreshFile) || process.env.WB_REFRESH_TOKEN || env.WB_REFRESH_TOKEN || '';
 const envUserId = process.env.WB_USER_ID || env.WB_USER_ID || '';
 
-if (!token) {
-  console.error('✗ 缺少 accessToken：用 --token-file <path> 或 WB_ACCESS_TOKEN 环境变量提供');
+if (!token && !cookie) {
+  console.error('✗ 缺少凭据：--token-file（客户端 Bearer）与 --cookie-file（网页端 Cookie）至少给一个');
   process.exit(2);
+}
+
+/**
+ * 基础鉴权头。空值项一律剔除，这样「头矩阵」才能测出到底哪一个是必需的，
+ * 而不是因为带了个空头导致结论不可信。
+ */
+const baseAuth = {
+  ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  ...(cookie ? { Cookie: cookie } : {}),
+};
+function auth(extra = {}) {
+  const h = { ...baseAuth, ...extra };
+  for (const k of Object.keys(h)) if (h[k] === '' || h[k] == null) delete h[k];
+  return h;
 }
 
 const hosts = args.hosts.length ? args.hosts : DEFAULT_HOSTS;
 
 rule('0. 凭据');
-console.log('  accessToken :', mask(token));
+console.log('  accessToken :', token ? mask(token) : '(未提供)');
+console.log('  cookie      :', cookie ? mask(cookie) : '(未提供)');
+console.log('  鉴权模式    :', token && cookie ? 'Bearer + Cookie 同时携带' : token ? 'Bearer' : 'Cookie');
 console.log('  refreshToken:', refreshToken ? mask(refreshToken) : '(未提供 → 跳过续期探测)');
 const jwt = decodeJwt(token);
 if (jwt) {
@@ -178,9 +202,7 @@ console.log('  X-User-Id   :', userId || '(无法推断，将在头矩阵中测�
 rule('1. host 探测 —— POST ' + STATUS_PATH);
 const results = [];
 for (const host of hosts) {
-  const r = await post(host + STATUS_PATH, {
-    headers: { Authorization: `Bearer ${token}`, ...(userId ? { 'X-User-Id': userId } : {}) },
-  });
+  const r = await post(host + STATUS_PATH, { headers: auth({ 'X-User-Id': userId }) });
   const code = codeOf(r.json);
   console.log(`\n  [${host}]`);
   console.log('    status  :', r.status || '(网络失败)', `${r.ms}ms`, r.location ? `→ ${r.location}` : '');
@@ -204,18 +226,11 @@ console.log('\n  ══> 可用 host:', winner.host);
 /* ── 2. 鉴权头矩阵：确认哪些头是必需的 ── */
 rule('2. 鉴权头矩阵（在 ' + winner.host + ' 上）');
 const combos = [
-  ['仅 Authorization', { Authorization: `Bearer ${token}` }],
-  ['+ X-User-Id', { Authorization: `Bearer ${token}`, 'X-User-Id': userId }],
-  ['+ X-Domain', { Authorization: `Bearer ${token}`, 'X-Domain': 'www.codebuddy.cn' }],
-  [
-    '三者齐全',
-    {
-      Authorization: `Bearer ${token}`,
-      'X-User-Id': userId,
-      'X-Domain': 'www.codebuddy.cn',
-    },
-  ],
-];
+  ['仅鉴权头', {}],
+  ['+ X-User-Id', { 'X-User-Id': userId }],
+  ['+ X-Domain', { 'X-Domain': 'www.codebuddy.cn' }],
+  ['三者齐全', { 'X-User-Id': userId, 'X-Domain': 'www.codebuddy.cn' }],
+].map(([label, extra]) => [label, auth(extra)]);
 const matrix = [];
 for (const [label, headers] of combos) {
   if (label.includes('X-User-Id') && !userId) {
@@ -263,9 +278,7 @@ if (!args.claim) {
   console.log('  默认只读。加 --claim 才会真的领取积分。');
 } else {
   rule('4. 签到 —— POST ' + CHECKIN_PATH);
-  const r = await post(winner.host + CHECKIN_PATH, {
-    headers: { Authorization: `Bearer ${token}`, ...(userId ? { 'X-User-Id': userId } : {}) },
-  });
+  const r = await post(winner.host + CHECKIN_PATH, { headers: auth({ 'X-User-Id': userId }) });
   console.log('  status  :', r.status || '(网络失败)', `${r.ms}ms`);
   console.log('  code    :', codeOf(r.json) ?? '(无)');
   console.log('  body    :', summarize(r));
