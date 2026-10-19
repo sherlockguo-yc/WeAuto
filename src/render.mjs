@@ -681,14 +681,17 @@ function credentialField(f) {
 }
 
 /**
- * 配置区：调度 / 任务名与凭据 / 执行参数。
+ * 配置区：调度 / 任务名与凭据。
  * 不再是独立页面，而是任务页里的一段——见 pageTaskDetail。
+ *
+ * 只放用户能改的东西：超时、保留策略、模板名这类改不了的元数据不在这里占
+ * 一张卡片——它们要么已经出现在别处（凭据字段就在下面的表单里，模板名在
+ * 列表和模板页），要么只在执行失败时才有意义（超时阈值该跟着失败原因走）。
  *
  * 没有「账号列表」了：一个任务只跑一个账号，想跑第二个账号就回任务页
  * 再建一个任务。账号这个概念因此退到执行侧（凭据与历史按它分），界面不再暴露。
  */
 function taskConfigBody({ task, credential = null }) {
-  const retention = task.retention ?? {};
   // 有效调度 = 订阅里改过的（若有）否则模板默认。表单要能表达「我改过哪一种」
   const sch = task.schedule ?? null;
   const customized = !!task.scheduleCustomized && !!sch;
@@ -799,17 +802,6 @@ function taskConfigBody({ task, credential = null }) {
            <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
       : '<p class="hint">这个模板不需要账号密码。</p>'
   }
-</section>
-
-<section class="card">
-  <h2>执行参数</h2>
-  <dl class="kv">
-    <dt>超时</dt><dd>${Math.round(task.timeoutMs / 1000)} 秒</dd>
-    <dt>记录保留</dt><dd>${esc(retention.days ?? '—')} 天 / 最多 ${esc(retention.maxRows ?? '—')} 条</dd>
-    <!-- 具体的字段名在上面的「账号」区已经逐个列出来了，这里只说有几项 -->
-    <dt>凭据</dt><dd>${task.requires.length ? `共 ${task.requires.length} 项` : '不需要'}</dd>
-    <dt>模板</dt><dd class="mono">${esc(task.name)}</dd>
-  </dl>
 </section>`;
 }
 

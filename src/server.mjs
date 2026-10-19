@@ -557,7 +557,6 @@ export function createServer({
         body: render.pageTaskDetail({
           task: {
             ...d.summary,
-            retention: d.task.retention,
             // 模板自带的调度，用于表单里「跟随默认」那一项的说明
             templateScheduleLabel: describeSchedule(d.task.schedule),
           },
