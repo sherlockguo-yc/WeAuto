@@ -160,7 +160,7 @@ export function layout({ title, active, body, user = null, banner = '', settings
 <body>
 ${banner}
 <header class="topbar">
-  <span class="brand"><span class="brand-mark">${ICON.brand}</span>WeAuto</span>
+  <a class="brand" href="/"><span class="brand-mark">${ICON.brand}</span>WeAuto</a>
   ${account}
 </header>
 <main class="page">
