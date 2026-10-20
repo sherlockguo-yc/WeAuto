@@ -26,6 +26,7 @@
 
   --ok: #3fd08d;
   --bad: #ff6b6b;
+  --bad-ink: #2b0a0a; /* 实心红按钮上的字：深色的红更亮，白字对比度不够 */
   --wait: #e9b93f;
   --wait-soft: var(--wait); /* 铺底专用淡黄：--wait 是按文字对比度挑的，直接按比例混会发灰 */
   --off: #7d8798;
@@ -66,6 +67,7 @@
     --accent-ink: #ffffff;
     --ok: #0f8a5c;
     --bad: #d43b3b;
+    --bad-ink: #ffffff; /* 实心红按钮上的字 */
     --wait: #9a6d09;
     --wait-soft: #f2c744;
     --off: #78828f;
@@ -111,6 +113,7 @@
   --accent-ink: #06101f;
   --ok: #3fd08d;
   --bad: #ff6b6b;
+  --bad-ink: #2b0a0a; /* 实心红按钮上的字：深色的红更亮，白字对比度不够 */
   --wait: #e9b93f;
   --wait-soft: var(--wait);
   --off: #7d8798;
@@ -319,6 +322,68 @@ input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); }
 
 .panel-logout { border-top: 1px solid var(--border); padding-top: 12px; margin: 0; }
 .panel-logout .link-btn { width: 100%; padding: 9px; }
+
+/* ── 确认弹窗（取代 window.confirm） ────────────────────
+   用原生 <dialog>：变暗与模糊交给 ::backdrop，Esc 关闭与焦点圈在框内交给浏览器。
+   dialog 自带 border / padding / 背景，要自己清掉，否则会是一块白底系统框。
+   宽屏居中一张小卡，窄屏转从底部升起的抽屉，与账号弹层同一套语言。 */
+.confirm-dialog {
+  width: min(340px, calc(100vw - 2 * var(--pad)));
+  max-width: none;
+  padding: 0;
+  /* 清掉 dialog 自带的粗边框，但保留一道发丝线：与 .card / .user-panel 一致 */
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+.confirm-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+.confirm-dialog[open] { animation: confirm-in 0.16s ease both; }
+@keyframes confirm-in {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.confirm-form { display: grid; gap: 8px; padding: 16px var(--pad) var(--pad); }
+.confirm-title {
+  margin: 0;
+  font-size: 15.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.45;
+}
+.confirm-body { margin: 0; color: var(--dim); font-size: 13.5px; line-height: 1.6; }
+.confirm-body[hidden] { display: none; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 6px; }
+
+/* 取消：描边幽灵按钮，不与确认抢注意力 */
+.confirm-cancel {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--dim);
+}
+.confirm-cancel:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+/* 确认：实心红。破坏性操作要一眼能认出来，误点的代价高过它占的视觉重量。
+   --bad-ink 跟着主题换：浅色的红够深、配白字；深色的红更亮，得配深色字才有对比度。
+   两条 hover 都要写：通用 button:hover 的权重比单独的 .confirm-* 高，
+   不写的话悬停时会被刷回 surface-3。 */
+.confirm-ok {
+  background: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 80%, black);
+  color: var(--bad-ink);
+  font-weight: 600;
+  box-shadow: 0 8px 20px -12px color-mix(in srgb, var(--bad) 85%, transparent);
+}
+.confirm-ok:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bad) 88%, black);
+  border-color: color-mix(in srgb, var(--bad) 80%, black);
+  color: var(--bad-ink);
+}
 
 /* ── 底部导航 ── */
 .tabbar {
@@ -1166,6 +1231,15 @@ select {
     padding-bottom: calc(var(--pad) + env(safe-area-inset-bottom));
     animation: sheet-in 0.22s cubic-bezier(0.2, 0.7, 0.3, 1) both;
   }
+  /* 确认框同样转底部抽屉：margin 最后一项归 0 就贴到底边，横向仍由 auto 居中 */
+  .confirm-dialog {
+    width: 100%;
+    margin: auto auto 0;
+    border-radius: var(--radius) var(--radius) 0 0;
+    border-bottom: none;
+    animation: sheet-in 0.22s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  }
+  .confirm-form { padding-bottom: calc(var(--pad) + env(safe-area-inset-bottom)); }
 }
 
 @keyframes sheet-in {

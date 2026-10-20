@@ -161,6 +161,74 @@
     }, FLASH_MS);
   }
 
+  /* ── 确认弹窗 ──────────────────────────────────────────
+     取代 window.confirm。原生那一个是浏览器样式，跟这套配色对不上，
+     更重要的是它塞不进「删的是哪个任务」——而这恰恰是按下之前最该看清的一行字。
+
+     用原生 <dialog> + showModal()：Esc 关闭、Tab 留在框内、背景自动 inert
+     这三件自己写既啰嗦又容易漏，交给浏览器。元素按需创建后一直复用
+     （同一时刻只可能有一个确认框），跟 toast 一个路子。
+
+     结果只从 returnValue 收一次：确认按钮 value="ok"，其余一律落到取消。
+     这样点按钮、按 Esc、点遮罩三条路都汇到同一个 close 事件上。
+     ------------------------------------------------------ */
+  var confirmBox = null;
+
+  function ensureConfirmBox() {
+    if (confirmBox) return confirmBox;
+
+    var dlg = document.createElement('dialog');
+    dlg.className = 'confirm-dialog';
+    dlg.setAttribute('aria-labelledby', 'confirm-title');
+    dlg.innerHTML =
+      '<form method="dialog" class="confirm-form">' +
+      '<h3 class="confirm-title" id="confirm-title"></h3>' +
+      '<p class="confirm-body"></p>' +
+      '<div class="confirm-actions">' +
+      '<button type="submit" value="" class="confirm-cancel" autofocus>取消</button>' +
+      '<button type="submit" value="ok" class="confirm-ok"></button>' +
+      '</div>' +
+      '</form>';
+    document.body.appendChild(dlg);
+
+    // 点框外（遮罩）就关：遮罩上的点击，target 就是 dialog 自己
+    dlg.addEventListener('click', function (e) {
+      if (e.target === dlg) dlg.close('');
+    });
+
+    confirmBox = dlg;
+    return dlg;
+  }
+
+  /**
+   * @param {{title: string, body?: string, confirmText?: string}} opts
+   * @returns {Promise<boolean>} 只有点了确认才为真
+   */
+  function askConfirm(opts) {
+    return new Promise(function (resolve) {
+      var dlg = ensureConfirmBox();
+      // 关掉之后焦点要还回按下去的那个按钮，否则键盘用户会掉到文档开头。
+      // 调用方习惯在 await 之后才把按钮恢复成可用，所以真正聚焦要等下一轮事件循环。
+      var trigger = opts.trigger || document.activeElement;
+
+      dlg.querySelector('.confirm-title').textContent = opts.title;
+      var body = dlg.querySelector('.confirm-body');
+      body.textContent = opts.body || '';
+      body.hidden = !opts.body;
+      dlg.querySelector('.confirm-ok').textContent = opts.confirmText || '确定';
+
+      dlg.returnValue = '';
+      dlg.addEventListener('close', function onClose() {
+        dlg.removeEventListener('close', onClose);
+        resolve(dlg.returnValue === 'ok');
+        setTimeout(function () {
+          if (trigger && trigger.focus && !trigger.disabled && document.contains(trigger)) trigger.focus();
+        }, 0);
+      });
+      dlg.showModal();
+    });
+  }
+
   /**
    * 生成邀请后不刷新页面：克隆页面里那个 <template> 造一行插到列表最上面。
    * 行结构只在 render.mjs 里维护一份，这里只填内容。
@@ -398,11 +466,23 @@
         var created = await api('POST', '/api/tasks', { template: btn.dataset.template });
         location.href = '/tasks/' + created.id;
       } else if (action === 'delete-task') {
-        if (!window.confirm('删除这个任务？它的凭据会一起删掉，执行历史保留。')) return;
+        var agreed = await askConfirm({
+          title: '删除任务「' + name + '」？',
+          body: '它的凭据会一起删掉，执行历史保留。',
+          confirmText: '删除',
+          trigger: btn,
+        });
+        if (!agreed) return;
         await api('DELETE', '/api/tasks/' + encodeURIComponent(name));
         location.href = '/tasks';
       } else if (action === 'revoke-invite') {
-        if (!window.confirm('撤销这个邀请码？已经注册成功的不受影响。')) return;
+        agreed = await askConfirm({
+          title: '撤销这个邀请码？',
+          body: '还没注册的人不能再用它；已经注册成功的不受影响。',
+          confirmText: '撤销',
+          trigger: btn,
+        });
+        if (!agreed) return;
         await api('DELETE', '/api/invites/' + encodeURIComponent(btn.dataset.code));
         location.reload();
       } else if (action === 'copy-invite') {
@@ -414,7 +494,16 @@
         flash(btn, cmdCopied ? '已复制 ✓' : '复制失败，请手动选中', cmdCopied ? 'ok' : 'error');
 
       } else if (action === 'delete-user') {
-        if (!window.confirm('删除这个账号？他的任务、凭据和执行历史会一起清掉，不可恢复。')) return;
+        // 按钮上只有 id，名字在同一行的 .row-main 里
+        var row = btn.closest('.user-row');
+        var who = row && row.querySelector('.row-main');
+        agreed = await askConfirm({
+          title: who ? '删除账号「' + who.textContent.trim() + '」？' : '删除这个账号？',
+          body: '他的任务、凭据和执行历史会一起清掉，不可恢复。',
+          confirmText: '删除',
+          trigger: btn,
+        });
+        if (!agreed) return;
         await api('DELETE', '/api/users/' + encodeURIComponent(btn.dataset.user));
         location.reload();
       } else if (action === 'toggle-user') {
