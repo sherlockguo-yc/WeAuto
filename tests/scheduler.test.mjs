@@ -59,10 +59,23 @@ describe('planTask：每天窗口', () => {
     assert.match(p.reason, /今日已完成/);
   });
 
-  it('窗口已过且未成功 → 不执行，等明天（不追补）', () => {
+  it('窗口已过且未成功 → 不执行，等明天（不追补），并标记「已错过」', () => {
     const p = planTask({ task: windowTask, nowMs: atBeijing('23:00'), hasSuccessToday: false });
     assert.equal(p.due, false);
     assert.match(p.reason, /窗口已过/);
+    // 必须带 missed：否则页面只能显示「待执行」，而今天它已经不会自动跑了
+    assert.equal(p.missed, true);
+  });
+
+  it('窗口内但未到目标时刻 → 不是「已错过」（只是还没到点）', () => {
+    const p = planTask({ task: windowTask, nowMs: windowTargetMs - 60_000 });
+    assert.equal(p.missed ?? false, false);
+  });
+
+  it('今天已经成功过 → 不算「已错过」（即便此刻窗口已过）', () => {
+    const p = planTask({ task: windowTask, nowMs: atBeijing('23:00'), hasSuccessToday: true });
+    assert.equal(p.missed ?? false, false);
+    assert.match(p.reason, /今日已完成/);
   });
 
   it('状态里已有今日目标时沿用原值（重启后目标时刻不变）', () => {

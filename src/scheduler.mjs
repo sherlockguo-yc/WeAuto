@@ -64,10 +64,18 @@ export function planTask({
 
     const windowEndMs = startOfDayBeijingMs(today) + hhmmToSeconds(sch.window.end) * 1000;
     if (nowMs > windowEndMs) {
+      /*
+       * 窗口过了还没成功 = 今天已经不可能再自动跑成了，所以标 missed。
+       *
+       * 不标的话 status.mjs 只能落到最后那个 else，把它显示成「待执行」——
+       * 一件今天不会再发生的事被标成「等着」，页面在骗人，用户也不会去补跑。
+       * 调度语义不变：仍然不追补、不执行，等明天。
+       */
       return {
         due: false,
         reason: `今日窗口已过（${sch.window.start}–${sch.window.end}），等明天`,
         nextState,
+        missed: true,
       };
     }
     if (nowMs < target) {

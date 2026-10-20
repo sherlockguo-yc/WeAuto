@@ -302,11 +302,15 @@ export function pageOverview(data) {
         .join('')
     : '<p class="empty">还没有执行记录</p>';
 
+  /*
+   * 四张卡必须能加出任务总数，否则用户对不上数就会怀疑统计坏了。
+   * 「已错过」与失败是同一类事实（今天没办成），所以并进 bad 那张，文案也写出来。
+   */
   return `
 <section class="grid">
   <div class="stat stat-ok"><b>${b.success}</b><span>今日成功</span></div>
   <div class="stat stat-wait"><b>${b.pending}</b><span>待执行</span></div>
-  <div class="stat stat-bad"><b>${b.failed + b.blocked}</b><span>失败/被拦</span></div>
+  <div class="stat stat-bad"><b>${b.failed + b.blocked + b.missed}</b><span>失败/被拦/错过</span></div>
   <div class="stat stat-off"><b>${b.disabled + b.manual}</b><span>停止/手动</span></div>
 </section>
 <section class="card">

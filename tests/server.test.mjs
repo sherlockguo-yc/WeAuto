@@ -1207,6 +1207,30 @@ describe('概览统计', () => {
     const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     assert.match(html, /今天没有失败或错过的任务/);
   });
+
+  /*
+   * 曾经的 bug：窗口类任务窗口过了、今天又没跑成，计划不带 missed，
+   * 于是页面显示「待执行」——一件今天不会再发生的事被标成「等着」，
+   * 而且它也不进「需要处理」，用户永远看不到该去补跑什么。
+   */
+  it('窗口已过且今天没跑成 → 已错过，而不是「待执行」', async () => {
+    // NOW = 12:00，演示任务的窗口是 09:00–09:50，今天已经跑不了了
+    const { base } = await startServer();
+    const cookie = await login(base);
+    const data = await (await fetch(`${base}/api/overview`, { headers: { cookie } })).json();
+
+    assert.equal(data.items[0].todayStatus, 'missed');
+    assert.equal(data.byStatus.pending, 0, '窗口早过，不该还挂着「待执行」');
+    assert.equal(data.byStatus.missed, 1);
+    assert.equal(data.attention.length, 1, '错过属于「今天没跑成」，要进需要处理');
+    assert.equal(data.attention[0].todayStatus, 'missed');
+    assert.match(data.attention[0].planReason, /窗口已过/);
+
+    // 四张卡加起来要等于任务总数：错过也得占一个数字
+    const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    assert.match(html, /失败\/被拦\/错过/);
+    assert.match(html, /已错过/);
+  });
 });
 
 describe('注销与改密', () => {
