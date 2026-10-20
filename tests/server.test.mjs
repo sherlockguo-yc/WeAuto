@@ -150,6 +150,20 @@ describe('未登录时的边界', () => {
     assert.equal(body.templates, 1); // 不鉴权的接口只能报平台级信息
   });
 
+  it('凭据抓取脚本可匿名下载（朋友用 curl -O，不该先要登录）', async () => {
+    const { base } = await startServer();
+    const res = await fetch(`${base}/api/tools/grab-workbuddy-token.mjs`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /javascript/);
+    // attachment：否则浏览器可能把 .mjs 当源码内联渲染
+    assert.match(res.headers.get('content-disposition'), /attachment/);
+
+    const body = await res.text();
+    // 只断言「确实是那个脚本」，不断言实现细节——否则脚本一改测试就碎
+    assert.match(body, /remote-debugging-port/);
+    assert.ok(body.length > 1000, '脚本内容不像完整文件，检查下载端点是否读错路径');
+  });
+
   it('页面跳转到登录页，接口返回 401', async () => {
     const { base } = await startServer();
 

@@ -640,6 +640,31 @@ export function createServer({
     });
   });
 
+  /*
+   * 凭据抓取脚本下载 —— **公开，不鉴权**。
+   *
+   * 为什么不鉴权：脚本里没有任何密钥，它只在本机通过 CDP 读自己客户端发出的
+   * Authorization 头；而使用者是用 `curl -O` 下载的，要求他先处理 session cookie
+   * 只会把「两行命令搞定」变成「先去浏览器翻 cookie」。
+   *
+   * 为什么直接读仓库文件而不是内嵌一份副本：脚本会随客户端版本变化，
+   * 复制一份就意味着两处会漂移。读文件的话，脚本改了，下载端点自动跟着改。
+   *
+   * Content-Disposition 用 attachment：否则浏览器可能把 .mjs 当源码内联渲染，
+   * 用户看到的是一屏 JS 而不是一个下载。
+   */
+  app.get('/api/tools/grab-workbuddy-token.mjs', (req, res) => {
+    res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="grab-workbuddy-token.mjs"');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(path.join(ROOT, 'scripts', 'grab-workbuddy-token.mjs'), (err) => {
+      if (!err) return;
+      // 部署包漏了 scripts/ 时的表现。给一句能定位的话，比空白 500 省一次排查。
+      if (res.headersSent) return res.end();
+      res.status(404).json({ error: '脚本不存在：部署包可能没带 scripts/ 目录' });
+    });
+  });
+
   app.get('/api/overview', requireLogin, (req, res) =>
     res.json(summarizeFor(req)),
   );
