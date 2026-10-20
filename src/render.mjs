@@ -696,13 +696,24 @@ function credentialHelperBlock(task) {
 
   const items = [];
   if (h.download) {
+    /*
+     * 有可下载脚本 = 支持「脚本自己把值推上来」：先下载，再点按钮拿一条带配对码的命令。
+     * 配对码在点按钮时才申请（10 分钟寿命），所以服务端渲染阶段不放命令。
+     */
     items.push(
-      `<li>下载抓取脚本
+      `<li>第一次使用，先下载抓取脚本
         <a class="btn-inline" href="/api/tools/${esc(h.download)}" download>下载 ${esc(h.download)}</a>
       </li>`,
     );
-  }
-  if (h.command) {
+    items.push(
+      `<li>生成更新命令
+        <button type="button" class="btn-inline" data-action="pair-token"
+          data-task="${esc(task.id)}">一键生成</button>
+        <div class="pair-box" hidden></div>
+      </li>`,
+    );
+  } else if (h.command) {
+    // 没有可下载脚本的模板：只能给一条命令，值由用户自己粘回下面的输入框
     items.push(
       `<li>在终端运行 <code>${esc(h.command)}</code>
         <button type="button" class="btn-inline" data-action="copy-command"

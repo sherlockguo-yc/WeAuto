@@ -15,6 +15,14 @@ import { renderView } from './format.mjs';
 import * as render from './render.mjs';
 import { describeSchedule, summarizeAll, summarizeTask } from './status.mjs';
 import { normalizeSchedule } from './task-contract.mjs';
+import {
+  createPairing,
+  looksLikeJwt,
+  makePushToken,
+  parsePushToken,
+  sameSecret,
+  tokenExpiryMs,
+} from './pairing.mjs';
 import { ROOT, dateInTZ, humanDuration } from './util.mjs';
 
 const COOKIE = 'wa_session';
@@ -676,6 +684,117 @@ export function createServer({
       // 部署包漏了 scripts/ 时的表现。给一句能定位的话，比空白 500 省一次排查。
       if (res.headersSent) return res.end();
       res.status(404).json({ error: '脚本不存在：部署包可能没带 scripts/ 目录' });
+    });
+  });
+
+  /*
+   * ───────── 凭据一键更新：页面发码 → 本机脚本直接推送 ─────────
+   *
+   * 有些凭据只能在用户自己机器上抓（本机的客户端进程内存里），服务器够不着。
+   * 老办法是「抓完 → 手抄 → 粘回网页」，三次人工操作、每次都可能粘错半截。
+   * 这里改成：页面发一个一次性码，脚本拿码把值推进来，页面轮询到结果自动刷新。
+   *
+   * 脚本那一侧没有登录态（它只是终端里的一个进程），所以鉴权靠码，而不是会话。
+   */
+  const pairing = createPairing({ now });
+
+  /** 页面：申请一次性配对码，并把完整命令拼好返回（前端不用自己拼） */
+  app.post('/api/tasks/:id(\\d+)/pair-code', requireLogin, (req, res) => {
+    const t = mine(req).getTask(Number(req.params.id));
+    if (!t) return res.status(404).json({ error: '没有这个任务' });
+
+    const task = tasks.get(t.taskName);
+    const helper = task?.credentialHelper;
+    if (!helper?.download) return res.status(400).json({ error: '这个任务不支持一键更新凭据' });
+    if ((task.requires ?? []).length !== 1) {
+      // 一个码对应一个字段。多字段任务该由模板明确「推哪个」，而不是在这里靠猜
+      return res.status(400).json({ error: '一键更新只支持只有一个凭据字段的任务' });
+    }
+
+    // 发码时刻要一起返回：前端拿它和 pushedAt 比较，避免上一次推送的旧时间戳让页面误刷新
+    const issuedAt = now();
+    const { code, expiresAt } = pairing.issue({ userId: req.user.id, taskId: t.id });
+    // 用请求自身的 origin：部署在哪个域名、走没走反代，都由客户端那一侧决定
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const command = `${helper.command ?? `node ${helper.download}`} --push ${origin} --code ${code}`;
+    res.json({ code, command, expiresAt, issuedAt });
+  });
+
+  /** 页面：轮询脚本推上来了没有。靠它把「跑完了」变成界面上的自动刷新 */
+  app.get('/api/tasks/:id(\\d+)/pair-status', requireLogin, (req, res) => {
+    const t = mine(req).getTask(Number(req.params.id));
+    if (!t) return res.status(404).json({ error: '没有这个任务' });
+    res.json({ pushedAt: pairing.pushedAt(t.id) });
+  });
+
+  /**
+   * 脚本：推送凭据 —— **不鉴权中间件，靠 code / pushToken 自证**。
+   *
+   * 两条路径：
+   *   · 带 code：首次配对。验证一次性码，写入凭据，并回发长期 pushToken
+   *   · 带 pushToken：之后的自动更新。长期令牌存在本机 ~/.weauto/bind.json
+   *
+   * 为什么首次也要发一个长期令牌：否则每个月都要打开网页点一次按钮，
+   * 「一条命令」就退化成「一条命令 + 一次网页操作」。
+   */
+  app.post('/api/tools/push-token', (req, res) => {
+    const { code, pushToken, token } = req.body ?? {};
+    const value = String(token ?? '').trim();
+
+    // 明显不对的输入当场退回去，别等到第二天任务跑失败才发现粘错了
+    if (!looksLikeJwt(value)) {
+      return res.status(400).json({ error: 'token 看起来不是完整的 JWT（应形如 eyJ...），请重新抓一次' });
+    }
+    if (!userSecrets) return res.status(503).json({ error: '凭据存储未就绪' });
+
+    let entry = null;
+    let issuedToken = null;
+
+    if (code) {
+      entry = pairing.redeem(code);
+      if (!entry) {
+        return res.status(400).json({ error: '配对码无效或已过期，回页面重新点一次「一键更新」' });
+      }
+    } else if (pushToken) {
+      const parsed = parsePushToken(pushToken);
+      if (!parsed) return res.status(401).json({ error: 'pushToken 格式不对' });
+      entry = parsed;
+    } else {
+      return res.status(400).json({ error: '需要 code 或 pushToken' });
+    }
+
+    const t = store.forUser(entry.userId).getTask(entry.taskId);
+    if (!t) return res.status(404).json({ error: '任务不存在（可能已被删除）' });
+    const task = tasks.get(t.taskName);
+    if (!task) return res.status(404).json({ error: '模板不存在' });
+
+    const key = (task.requires ?? [])[0];
+    if (!key) return res.status(400).json({ error: '这个任务没有声明凭据字段' });
+
+    if (code) {
+      // 首次配对：顺手发一个长期令牌，脚本存本地，以后不用再打开页面
+      issuedToken = makePushToken({ userId: entry.userId, taskId: entry.taskId });
+    } else {
+      // 长期令牌必须和服务器存的那份一致——它和凭据一样是密文存储
+      const stored = userSecrets.get(entry.userId, t.taskName, t.accountKey)?.WEAUTO_PUSH_TOKEN;
+      if (!stored || !sameSecret(stored, pushToken)) {
+        return res.status(401).json({ error: 'pushToken 已失效，请回页面重新配对' });
+      }
+    }
+
+    userSecrets.set(
+      entry.userId,
+      t.taskName,
+      t.accountKey,
+      issuedToken ? { [key]: value, WEAUTO_PUSH_TOKEN: issuedToken } : { [key]: value },
+    );
+    pairing.markPushed(entry.taskId);
+
+    res.json({
+      ok: true,
+      taskId: entry.taskId,
+      pushToken: issuedToken,
+      expiresAt: tokenExpiryMs(value),
     });
   });
 

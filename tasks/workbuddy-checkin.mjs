@@ -105,8 +105,8 @@ export default {
   credentialHelper: {
     download: 'grab-workbuddy-token.mjs',
     command: 'node grab-workbuddy-token.mjs',
-    steps: ['脚本跑完会把 token 自动复制到剪贴板，粘贴到下面这一栏'],
-    note: '需要 Node 18+。运行时会短暂重启 WorkBuddy（约 10 秒），完成后自动恢复原样。token 约 28 天过期，到期前重跑一次脚本即可。',
+    steps: ['在终端粘贴并运行；脚本会把新 token 直接推送到这里，本页随即可见'],
+    note: '需要 Node 18+。运行时会短暂重启 WorkBuddy（约 10 秒），完成后自动恢复原样。首次配对后，之后每月直接运行 node grab-workbuddy-token.mjs 即可，不必再打开本页。',
   },
 
   /**

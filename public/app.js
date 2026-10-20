@@ -308,6 +308,64 @@
     btn._idleHtml = null;
   }
 
+  /* ── 凭据一键更新：申请的配对码 → 脚本推送 → 本页自动刷新 ── */
+
+  /**
+   * 把「带配对码的命令」显示在按钮下面。
+   * 用 DOM 拼装而不是 innerHTML：命令来自服务端拼好的字符串，没必要为它开注入口子。
+   */
+  function renderPairCommand(box, data) {
+    box.hidden = false;
+    box.textContent = '';
+
+    var code = document.createElement('code');
+    code.textContent = data.command;
+
+    var copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'btn-inline';
+    copy.dataset.action = 'copy-command';
+    copy.dataset.cmd = data.command;
+    copy.textContent = '复制命令';
+
+    var hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = '10 分钟内有效、用完即失效。在终端粘贴运行，完成后本页会自动刷新。';
+
+    box.appendChild(code);
+    box.appendChild(copy);
+    box.appendChild(hint);
+  }
+
+  /*
+   * 轮询「脚本推上来了没有」。
+   * 用 setTimeout 链而不是 setInterval：上一次没回来就不发下一次，
+   * 手机网络慢的时候不会堆出一串并发。重新点按钮会作废上一轮（pairSeq）。
+   */
+  var pairSeq = 0;
+  function watchPairing(taskId, issuedAt, expiresAt) {
+    var seq = ++pairSeq;
+    var deadline = Math.min(expiresAt || 0, issuedAt + 10 * 60 * 1000) || issuedAt + 10 * 60 * 1000;
+
+    function tick() {
+      if (seq !== pairSeq || Date.now() > deadline) return;
+      api('GET', '/api/tasks/' + taskId + '/pair-status')
+        .then(function (st) {
+          if (seq !== pairSeq) return;
+          // 必须比「本次发码」晚，否则上一次推送留下的时间戳会让页面立刻误刷新
+          if (st && st.pushedAt && st.pushedAt >= issuedAt) {
+            location.reload();
+            return;
+          }
+          setTimeout(tick, 3000);
+        })
+        .catch(function () {
+          setTimeout(tick, 5000);
+        });
+    }
+    setTimeout(tick, 3000);
+  }
+
   document.addEventListener('click', async function (e) {
     var btn = e.target.closest('[data-action]');
     if (!btn || btn.tagName === 'FORM') return;
@@ -369,6 +427,13 @@
         // 命令来自任务模板声明（data-cmd），只做复制，不执行
         var cmdCopied = await copyText(btn.dataset.cmd || '');
         flash(btn, cmdCopied ? '已复制 ✓' : '复制失败，请手动选中', cmdCopied ? 'ok' : 'error');
+      } else if (action === 'pair-token') {
+        var pairTask = btn.dataset.task;
+        var pairBox = btn.parentElement.querySelector('.pair-box');
+        if (!pairBox) return; // 模板换了结构就别硬渲染，静默退出
+        var issued = await api('POST', '/api/tasks/' + pairTask + '/pair-code');
+        renderPairCommand(pairBox, issued);
+        watchPairing(pairTask, issued.issuedAt, issued.expiresAt);
       } else if (action === 'delete-user') {
         if (!window.confirm('删除这个账号？他的任务、凭据和执行历史会一起清掉，不可恢复。')) return;
         await api('DELETE', '/api/users/' + encodeURIComponent(btn.dataset.user));

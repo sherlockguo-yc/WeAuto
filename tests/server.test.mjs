@@ -217,7 +217,8 @@ describe('凭据获取引导（模板声明才出现）', () => {
     // 标题用第一个 requires 字段拼出来，证明它读的是声明而不是写死的任务名
     assert.match(html, /怎么拿到 DEMO_TOKEN/);
     assert.match(html, /\/api\/tools\/grab-workbuddy-token\.mjs/);
-    assert.match(html, /data-action="copy-command"/);
+    // 有可下载脚本时走「一键生成」而不是静态命令：配对码要现发，不能提前渲染
+    assert.match(html, /data-action="pair-token"/);
     assert.match(html, /需要 Node 18\+/);
   });
 
@@ -232,6 +233,118 @@ describe('凭据获取引导（模板声明才出现）', () => {
 
     assert.match(html, /WB_ACCESS_TOKEN|DEMO_TOKEN|任务名/); // 页面本身是正常的
     assert.doesNotMatch(html, /cred-helper/);
+  });
+});
+
+describe('凭据一键更新（脚本直接推送）', () => {
+  // 形状合法即可：这里不验签名，只验「不是半截串」
+  const JWT = 'eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE4OTM0NTYwMDB9.c2lnbmF0dXJlLXNpZ24';
+
+  async function setup() {
+    const ctx = await startServer({ extraTasks: [HELPER_TASK] });
+    const cookie = await login(ctx.base);
+    const row = ctx.store.forUser(USER_ID).createTask('helper-task', { label: '带引导' });
+    const pairCode = async () =>
+      (
+        await fetch(`${ctx.base}/api/tasks/${row.id}/pair-code`, {
+          method: 'POST',
+          headers: { Cookie: cookie },
+        })
+      ).json();
+    const push = (body) =>
+      fetch(`${ctx.base}/api/tools/push-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const taskJson = async () =>
+      (await fetch(`${ctx.base}/api/tasks/${row.id}`, { headers: { Cookie: cookie } })).json();
+    const pairStatus = async () =>
+      (await fetch(`${ctx.base}/api/tasks/${row.id}/pair-status`, { headers: { Cookie: cookie } })).json();
+    return { ...ctx, cookie, row, pairCode, push, taskJson, pairStatus };
+  }
+
+  it('未登录不能申请配对码', async () => {
+    const { base, row } = await setup();
+    const res = await fetch(`${base}/api/tasks/${row.id}/pair-code`, { method: 'POST' });
+    assert.equal(res.status, 401);
+  });
+
+  it('模板没声明 credentialHelper 时拒绝发码', async () => {
+    const { base, store } = await startServer(); // DEMO_TASK 没有 credentialHelper
+    const cookie = await login(base);
+    const [row] = store.forUser(USER_ID).tasksOfTemplate('demo-task');
+    const res = await fetch(`${base}/api/tasks/${row.id}/pair-code`, {
+      method: 'POST',
+      headers: { Cookie: cookie },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('发码返回一条可直接粘贴运行的命令', async () => {
+    const { pairCode } = await setup();
+    const out = await pairCode();
+    assert.match(out.code, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+    // 命令里必须带服务器地址与码，用户复制就能跑
+    assert.match(out.command, /--push http:\/\/127\.0\.0\.1:\d+/);
+    assert.ok(out.command.includes(`--code ${out.code}`));
+    assert.ok(out.issuedAt > 0 && out.expiresAt > out.issuedAt);
+  });
+
+  it('带码推送后：凭据就位 + 可查到已推送 + 回发长期令牌', async () => {
+    const { push, pairCode, taskJson, pairStatus, row } = await setup();
+    const { code } = await pairCode();
+
+    const res = await push({ code, token: JWT });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.taskId, row.id);
+    assert.ok(body.pushToken, '首次配对应回发长期令牌，否则每月还要回页面点一次');
+    assert.equal(body.expiresAt, 1893456000 * 1000);
+
+    const detail = await taskJson();
+    assert.deepEqual(detail.task.missingCredentials, []);
+
+    const st = await pairStatus();
+    assert.ok(st.pushedAt > 0);
+  });
+
+  it('配对码只能用一次', async () => {
+    const { push, pairCode } = await setup();
+    const { code } = await pairCode();
+    assert.equal((await push({ code, token: JWT })).status, 200);
+    assert.equal((await push({ code, token: JWT })).status, 400);
+  });
+
+  it('之后用 pushToken 推送，不需要配对码，也不再回发新令牌', async () => {
+    const { push, pairCode, taskJson } = await setup();
+    const { code } = await pairCode();
+    const first = await (await push({ code, token: JWT })).json();
+
+    const res = await push({ pushToken: first.pushToken, token: JWT });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.pushToken, null, '已配对的令牌不该被反复重发');
+
+    assert.deepEqual((await taskJson()).task.missingCredentials, []);
+  });
+
+  it('伪造的 pushToken 被拒绝', async () => {
+    const { push, pairCode } = await setup();
+    const { code } = await pairCode();
+    const first = await (await push({ code, token: JWT })).json();
+    // 同一个 taskId，但随机串换掉
+    const forged = first.pushToken.replace(/_[^_]+$/, '_AAAAAAAAAAAAAAAAAAAAAAAA');
+    assert.equal((await push({ pushToken: forged, token: JWT })).status, 401);
+  });
+
+  it('不像 JWT 的值直接拒绝，不写库', async () => {
+    const { push, pairCode } = await setup();
+    const { code } = await pairCode();
+    const res = await push({ code, token: 'session=abc' });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /JWT/);
   });
 });
 

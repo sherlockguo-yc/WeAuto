@@ -20,8 +20,11 @@
  *   · 不联网上传，token 只去剪贴板
  *
  * 用法：
+ *   node scripts/grab-workbuddy-token.mjs --push https://weauto.example.com --code ABCD-1234
+ *       从任务页「一键生成」拿到的命令。跑完直接把 token 写进 WeAuto，不用复制粘贴。
  *   node scripts/grab-workbuddy-token.mjs
- *   node scripts/grab-workbuddy-token.mjs --print          # 同时打印完整 token
+ *       已经配对过（~/.weauto/bind.json 存在）时，自动推送，不带任何参数。
+ *   node scripts/grab-workbuddy-token.mjs --print          # 同时打印完整 token（不进剪贴板）
  *   node scripts/grab-workbuddy-token.mjs --app /path/to/WorkBuddy.app
  *   node scripts/grab-workbuddy-token.mjs --keep           # 抓完不恢复正常启动（调试用）
  *
@@ -59,6 +62,8 @@ function parseArgs(argv) {
     keep: false,
     out: null,
     timeout: CAPTURE_TIMEOUT_MS,
+    push: null,
+    code: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -68,6 +73,8 @@ function parseArgs(argv) {
     else if (a === '--print') out.print = true;
     else if (a === '--keep') out.keep = true;
     else if (a === '--out') out.out = argv[++i];
+    else if (a === '--push') out.push = argv[++i];
+    else if (a === '--code') out.code = argv[++i];
     else if (a === '--timeout') out.timeout = Number(argv[++i]) * 1000;
     else if (a === '-h' || a === '--help') out.help = true;
   }
@@ -419,6 +426,54 @@ async function copyToClipboard(text) {
   });
 }
 
+/* ───────────────────────── 推送到 WeAuto ───────────────────────── */
+
+/** 配对信息存这里：0600，只含服务器地址与长期 pushToken，不含 WorkBuddy 凭据 */
+const BIND_FILE = path.join(os.homedir(), '.weauto', 'bind.json');
+
+function readBind() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(BIND_FILE, 'utf8'));
+    return raw && typeof raw === 'object' ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeBind(data) {
+  fs.mkdirSync(path.dirname(BIND_FILE), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(BIND_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
+}
+
+/**
+ * 把 token 推给 WeAuto。
+ *
+ * 两条路：带 code（首次配对，服务器会回一个长期 pushToken）或带 pushToken（之后每月）。
+ * 不吞错误——推送失败必须让用户当场看见，否则他关掉终端会以为更新成功了。
+ */
+async function pushToWeAuto({ server, token, code, pushToken }) {
+  const base = String(server).replace(/\/+$/, '');
+  const body = { token };
+  if (code) body.code = code;
+  else if (pushToken) body.pushToken = pushToken;
+  else throw new Error('缺少配对码，也没有可用的 pushToken');
+
+  const res = await fetch(`${base}/api/tools/push-token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    /* 非 JSON：下面按状态码报错 */
+  }
+  if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+  return json ?? {};
+}
+
 const fmtLocal = (ms) =>
   new Date(ms).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 
@@ -472,7 +527,39 @@ async function main() {
   }
 
   const expMs = tokenExpiry(captured.token);
-  const copied = await copyToClipboard(captured.token);
+  const days = expMs === null ? null : Math.floor((expMs - Date.now()) / 86400000);
+
+  /* ── 优先推送到 WeAuto：推成功就不用再碰剪贴板和网页 ── */
+  const bind = readBind();
+  const server = args.push ? args.push.replace(/\/+$/, '') : (bind?.server ?? null);
+  const canPush = Boolean(server && (args.code || bind?.pushToken));
+
+  let pushed = null;
+  let pushError = null;
+  if (canPush) {
+    try {
+      pushed = await pushToWeAuto({
+        server,
+        token: captured.token,
+        code: args.code || null,
+        pushToken: args.code ? null : bind?.pushToken,
+      });
+      // 首次配对成功时服务器回发长期 pushToken，存下来以后就不用再打开网页
+      if (pushed.pushToken) {
+        writeBind({
+          server,
+          taskId: pushed.taskId,
+          pushToken: pushed.pushToken,
+          savedAt: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      pushError = err.message;
+    }
+  }
+
+  // 推送成功就不再动剪贴板：覆盖用户剪贴板是没必要的副作用
+  const copied = pushed ? false : await copyToClipboard(captured.token);
   if (args.out) {
     fs.writeFileSync(args.out, captured.token, { mode: 0o600 });
     console.log(`token 已写入 ${args.out}`);
@@ -481,20 +568,25 @@ async function main() {
   console.log('\n' + '─'.repeat(64));
   console.log('✓ 抓取成功');
   console.log(`  token      : ${mask(captured.token)}`);
-  if (expMs) {
-    const days = Math.floor((expMs - Date.now()) / 86400000);
-    console.log(`  到期       : ${fmtLocal(expMs)}（还剩 ${days} 天）`);
-  }
+  if (expMs !== null) console.log(`  到期       : ${fmtLocal(expMs)}（还剩 ${days} 天）`);
   console.log(`  来源请求   : ${captured.url}`);
-  console.log(`  剪贴板     : ${copied ? '已复制 ✓' : '复制失败，请加 --print 手动复制'}`);
+  if (pushed) console.log(`  WeAuto     : 已更新 ✓（${server}）`);
+  if (pushError) console.log(`  WeAuto     : 推送失败 — ${pushError}`);
+  if (!pushed) console.log(`  剪贴板     : ${copied ? '已复制 ✓' : '复制失败，请加 --print 手动复制'}`);
   console.log('─'.repeat(64));
   if (args.print) console.log(`\n${captured.token}\n`);
-  console.log('下一步：打开 WeAuto → 任务 → WorkBuddy 每日签到 → 凭据 WB_ACCESS_TOKEN 粘贴');
-  if (expMs) {
-    const days = Math.floor((expMs - Date.now()) / 86400000);
-    if (days <= 7) console.log(`⚠️  这枚 token 只剩 ${days} 天，请尽快使用`);
-    else console.log(`提示：token 约 ${days} 天后过期，到期前重跑本脚本即可`);
+
+  if (pushed) {
+    console.log('回去看一眼页面即可，它会自动刷新显示已更新。');
+    console.log(`以后每月直接运行 node ${path.basename(process.argv[1])} 就行，不用带参数、也不用打开网页。`);
+  } else if (pushError) {
+    console.log('token 已复制到剪贴板，可以到 WeAuto 任务页手动粘贴；');
+    console.log('或者回任务页点「一键生成」拿一条新的命令（配对码 10 分钟有效）。');
+  } else {
+    console.log('下一步：打开 WeAuto → 任务 → WorkBuddy 每日签到 → 凭据 WB_ACCESS_TOKEN 粘贴');
+    console.log('（在任务页点「一键生成」可以拿到带配对码的命令，跑完自动更新，不用手抄）');
   }
+  if (days !== null && days <= 7) console.log(`⚠️  这枚 token 只剩 ${days} 天，请尽快使用`);
 }
 
 main().catch((err) => die(err.message));

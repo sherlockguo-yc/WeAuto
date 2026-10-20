@@ -691,6 +691,25 @@ label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
 }
 .cred-helper .hint { margin: 8px 0 0; }
 
+/* 一键更新：展开的命令框。命令很长（带域名和码），必须能换行而不是撑破卡片 */
+.pair-box {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+.pair-box code {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.pair-box .btn-inline { margin-left: 0; }
+.pair-box .hint { margin: 0; }
+
 /* 行内小按钮：下载脚本 / 复制命令。次要操作，描边而非填充 */
 .btn-inline {
   display: inline-block;
