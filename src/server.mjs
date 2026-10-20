@@ -653,11 +653,25 @@ export function createServer({
    * Content-Disposition 用 attachment：否则浏览器可能把 .mjs 当源码内联渲染，
    * 用户看到的是一屏 JS 而不是一个下载。
    */
-  app.get('/api/tools/grab-workbuddy-token.mjs', (req, res) => {
+  /**
+   * 可下载的工具脚本 = 模板显式声明过的那些。
+   *
+   * 白名单而不是扫目录：scripts/ 里还躺着探针、构建脚本等内部工具，
+   * 把它们变成一个可枚举的静态目录既没必要也多一份暴露面。
+   */
+  const toolScripts = new Set(
+    [...tasks.values()].map((t) => t.credentialHelper?.download).filter(Boolean),
+  );
+
+  app.get('/api/tools/:file', (req, res) => {
+    const { file } = req.params;
+    // 冒号参数本来就匹配不到 `/`，这里再套一层白名单：路径穿越与「顺手读个别的文件」都挡掉
+    if (!toolScripts.has(file)) return res.status(404).json({ error: '没有这个工具脚本' });
+
     res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="grab-workbuddy-token.mjs"');
+    res.setHeader('Content-Disposition', `attachment; filename="${file}"`);
     res.setHeader('Cache-Control', 'no-cache');
-    res.sendFile(path.join(ROOT, 'scripts', 'grab-workbuddy-token.mjs'), (err) => {
+    res.sendFile(path.join(ROOT, 'scripts', file), (err) => {
       if (!err) return;
       // 部署包漏了 scripts/ 时的表现。给一句能定位的话，比空白 500 省一次排查。
       if (res.headersSent) return res.end();

@@ -104,6 +104,68 @@ function normalizeView(taskName, view) {
   });
 }
 
+/**
+ * 凭据获取引导的脚本名白名单。
+ *
+ * 只允许「小写字母/数字/连字符 + .mjs」，且不含路径分隔符。这个正则同时承担两件事：
+ * 挡住 `../` 之类的路径穿越，以及防止模板把 `/etc/passwd` 之类的东西声明成脚本。
+ * 真正的第二道闸在下载路由（只认模板声明过的名字），这里只是让非法声明在加载期就炸。
+ */
+const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9-]*\.mjs$/;
+
+/**
+ * 凭据获取引导（可选）。
+ *
+ * 有些凭据没法让用户"去注册一个 key"，只能在自己机器上抓——这时候光给一个输入框
+ * 等于把最难的一步丢给用户。这个字段让模板自己说明"怎么拿到这个值"，
+ * 界面只负责渲染，不认识任何一个具体任务名。和 view 字段同一套思路。
+ *
+ * 形态：
+ *   credentialHelper: {
+ *     download: 'grab-workbuddy-token.mjs',   // scripts/ 下的文件名，会渲染成下载链接
+ *     command: 'node grab-workbuddy-token.mjs', // 可选，渲染成可一键复制的命令
+ *     steps: ['token 会自动复制到剪贴板，粘到下面'], // 可选，补充文字步骤
+ *     note: '需要 Node 18+；运行时会重启客户端约 10 秒。',
+ *   }
+ */
+export function normalizeCredentialHelper(taskName, helper) {
+  if (helper === undefined || helper === null) return null;
+  if (typeof helper !== 'object' || Array.isArray(helper)) {
+    bad(`任务 ${taskName} 的 credentialHelper 必须是对象 { download, command, steps, note }`);
+  }
+  const allowed = ['download', 'command', 'steps', 'note'];
+  const extra = Object.keys(helper).filter((k) => !allowed.includes(k));
+  if (extra.length) {
+    bad(`任务 ${taskName} 的 credentialHelper 含未知字段：${extra.join(', ')}（允许 ${allowed.join(' / ')}）`);
+  }
+  if (helper.download !== undefined && (typeof helper.download !== 'string' || !SCRIPT_NAME_RE.test(helper.download))) {
+    bad(
+      `任务 ${taskName} 的 credentialHelper.download 必须是 scripts/ 下的 .mjs 文件名` +
+        `（小写字母/数字/连字符，如 grab-workbuddy-token.mjs），当前 ${JSON.stringify(helper.download)}`,
+    );
+  }
+  if (helper.command !== undefined && (typeof helper.command !== 'string' || !helper.command.trim())) {
+    bad(`任务 ${taskName} 的 credentialHelper.command 必须是非空字符串`);
+  }
+  if (helper.steps !== undefined) {
+    const ok = Array.isArray(helper.steps) && helper.steps.every((s) => typeof s === 'string' && s.trim());
+    if (!ok) bad(`任务 ${taskName} 的 credentialHelper.steps 必须是非空字符串数组`);
+  }
+  if (helper.note !== undefined && typeof helper.note !== 'string') {
+    bad(`任务 ${taskName} 的 credentialHelper.note 必须是字符串`);
+  }
+  // 三样都没有等于声明了一个空块：界面上会出现一个只有标题的框，不如不声明
+  if (helper.download === undefined && helper.command === undefined && helper.steps === undefined) {
+    bad(`任务 ${taskName} 的 credentialHelper 至少要有 download / command / steps 之一`);
+  }
+  return {
+    download: helper.download ?? null,
+    command: helper.command?.trim() ?? null,
+    steps: helper.steps ? [...helper.steps] : [],
+    note: helper.note ?? null,
+  };
+}
+
 function normalizeRetention(taskName, retention) {
   if (retention === undefined) return { ...DEFAULT_RETENTION };
   if (!retention || typeof retention !== 'object' || Array.isArray(retention)) {
@@ -283,6 +345,7 @@ export function assertValidTask(task, file) {
   normalizeSchedule(task.name, task.schedule);
   normalizeView(task.name, task.view);
   normalizeRetention(task.name, task.retention);
+  normalizeCredentialHelper(task.name, task.credentialHelper);
 }
 
 /* ─────────────────── 规范化 ─────────────────── */
@@ -314,6 +377,7 @@ export function normalizeTask(task, file) {
     retention: normalizeRetention(task.name, task.retention),
     schedule: normalizeSchedule(task.name, task.schedule),
     view: normalizeView(task.name, task.view),
+    credentialHelper: normalizeCredentialHelper(task.name, task.credentialHelper),
   };
 }
 
@@ -334,6 +398,7 @@ export function describeTask(task) {
     retention: task.retention,
     schedule: task.schedule,
     view: task.view,
+    credentialHelper: task.credentialHelper ?? null,
     file: task.file ?? null,
   };
 }

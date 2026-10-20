@@ -681,6 +681,45 @@ function credentialField(f) {
 }
 
 /**
+ * 「怎么拿到这个凭据」的内嵌引导。
+ *
+ * 有些凭据没法"去注册一个 key"——只能在自己机器上从客户端里抓。这种时候光给一个
+ * 空输入框，等于把最难的一步甩给用户，再去文档里找。所以引导直接长在输入框上方：
+ * 用户卡住的那一刻，答案就在眼前。
+ *
+ * 内容全部来自模板声明的 credentialHelper，这里不认识任何一个具体任务名。
+ * 将来再有同类任务，只改任务文件，界面不动。
+ */
+function credentialHelperBlock(task) {
+  const h = task.credentialHelper;
+  if (!h) return '';
+
+  const items = [];
+  if (h.download) {
+    items.push(
+      `<li>下载抓取脚本
+        <a class="btn-inline" href="/api/tools/${esc(h.download)}" download>下载 ${esc(h.download)}</a>
+      </li>`,
+    );
+  }
+  if (h.command) {
+    items.push(
+      `<li>在终端运行 <code>${esc(h.command)}</code>
+        <button type="button" class="btn-inline" data-action="copy-command"
+          data-cmd="${esc(h.command)}">复制命令</button>
+      </li>`,
+    );
+  }
+  for (const step of h.steps) items.push(`<li>${esc(step)}</li>`);
+
+  return `<div class="cred-helper">
+    <h3>怎么拿到 ${esc(task.requires[0] ?? '凭据')}</h3>
+    <ol>${items.join('')}</ol>
+    ${h.note ? `<p class="hint">${esc(h.note)}</p>` : ''}
+  </div>`;
+}
+
+/**
  * 配置区：调度 / 任务名与凭据。
  * 不再是独立页面，而是任务页里的一段——见 pageTaskDetail。
  *
@@ -792,6 +831,7 @@ function taskConfigBody({ task, credential = null }) {
         task.displayName,
       )}">
     </label>
+    ${credentialHelperBlock(task)}
     ${(credential?.fields ?? []).map(credentialField).join('')}
     <button type="submit" class="primary">保存</button>
   </form>

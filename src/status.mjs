@@ -91,6 +91,8 @@ export function summarizeTask({
     accounts: task.accounts,
     timeoutMs: config?.timeoutMs ?? task.timeoutMs,
     view: task.view,
+    /** 凭据怎么拿的内嵌引导（模板声明，界面只负责渲染）。没声明就是 null */
+    credentialHelper: task.credentialHelper ?? null,
     file: task.file,
     enabled,
     /** 我有没有给这个任务配过东西（启动过 / 改过时间 / 填过账号） */

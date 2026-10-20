@@ -365,6 +365,10 @@
       } else if (action === 'copy-invite') {
         var copied = await copyText(btn.dataset.url);
         flash(btn, copied ? '已复制 ✓' : '复制失败，请手动选中', copied ? 'ok' : 'error');
+      } else if (action === 'copy-command') {
+        // 命令来自任务模板声明（data-cmd），只做复制，不执行
+        var cmdCopied = await copyText(btn.dataset.cmd || '');
+        flash(btn, cmdCopied ? '已复制 ✓' : '复制失败，请手动选中', cmdCopied ? 'ok' : 'error');
       } else if (action === 'delete-user') {
         if (!window.confirm('删除这个账号？他的任务、凭据和执行历史会一起清掉，不可恢复。')) return;
         await api('DELETE', '/api/users/' + encodeURIComponent(btn.dataset.user));

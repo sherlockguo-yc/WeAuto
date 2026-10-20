@@ -656,6 +656,62 @@ button.flash-error { color: var(--bad); }
 }
 label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
 
+/* ── 凭据获取引导（模板声明 credentialHelper 时渲染） ──
+   底色比卡片深一档 + 左边一道强调线：它是「下一步该做这个」的操作提示，
+   不是普通说明文字，但也不该抢过主按钮的注意力。 */
+.cred-helper {
+  margin: 4px 0 14px;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+.cred-helper h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.cred-helper ol {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.9;
+}
+.cred-helper code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 1px 6px;
+}
+.cred-helper .hint { margin: 8px 0 0; }
+
+/* 行内小按钮：下载脚本 / 复制命令。次要操作，描边而非填充 */
+.btn-inline {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  text-decoration: none;
+  vertical-align: baseline;
+}
+.btn-inline:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
 /* ── 字段：标签在左、控件在右，同一行；控件限宽，不再拉满整张卡片 ──
    两列都用变量，调度表单的文案更长、控件更短，只改变量不改结构。 */
 .field,

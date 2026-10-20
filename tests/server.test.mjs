@@ -40,6 +40,19 @@ const DEMO_TASK = {
   run: async () => ({ status: 'success' }),
 };
 
+/** 带「凭据怎么拿」引导的模板：页面要渲染出下载链接与复制按钮 */
+const HELPER_TASK = {
+  ...DEMO_TASK,
+  name: 'helper-task',
+  displayName: '带取号指引的任务',
+  credentialHelper: {
+    download: 'grab-workbuddy-token.mjs',
+    command: 'node grab-workbuddy-token.mjs',
+    steps: ['跑完会自动复制到剪贴板'],
+    note: '需要 Node 18+',
+  },
+};
+
 let dir;
 const servers = [];
 const dbs = [];
@@ -150,8 +163,8 @@ describe('未登录时的边界', () => {
     assert.equal(body.templates, 1); // 不鉴权的接口只能报平台级信息
   });
 
-  it('凭据抓取脚本可匿名下载（朋友用 curl -O，不该先要登录）', async () => {
-    const { base } = await startServer();
+  it('模板声明的抓取脚本可匿名下载（朋友用 curl -O，不该先要登录）', async () => {
+    const { base } = await startServer({ extraTasks: [HELPER_TASK] });
     const res = await fetch(`${base}/api/tools/grab-workbuddy-token.mjs`);
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type'), /javascript/);
@@ -162,6 +175,15 @@ describe('未登录时的边界', () => {
     // 只断言「确实是那个脚本」，不断言实现细节——否则脚本一改测试就碎
     assert.match(body, /remote-debugging-port/);
     assert.ok(body.length > 1000, '脚本内容不像完整文件，检查下载端点是否读错路径');
+  });
+
+  it('没被模板声明的脚本一律 404（白名单，不是静态目录）', async () => {
+    // 这里的模板没有 credentialHelper，所以 scripts/ 下什么都不可下载
+    const { base } = await startServer();
+    for (const f of ['grab-workbuddy-token.mjs', 'probe-workbuddy.mjs']) {
+      const res = await fetch(`${base}/api/tools/${encodeURIComponent(f)}`);
+      assert.equal(res.status, 404, `${f} 不该可下载`);
+    }
   });
 
   it('页面跳转到登录页，接口返回 401', async () => {
@@ -179,6 +201,37 @@ describe('未登录时的边界', () => {
     const { base } = await startServer({ seedUser: false });
     const html = await (await fetch(`${base}/login`)).text();
     assert.match(html, /创建管理员/);
+  });
+});
+
+describe('凭据获取引导（模板声明才出现）', () => {
+  it('任务页渲染下载链接、命令与复制按钮', async () => {
+    const { base, store } = await startServer({ extraTasks: [HELPER_TASK] });
+    const cookie = await login(base);
+    const row = store.forUser(USER_ID).createTask('helper-task', { label: '带引导' });
+
+    const html = await (
+      await fetch(`${base}/tasks/${row.id}`, { headers: { Cookie: cookie } })
+    ).text();
+
+    // 标题用第一个 requires 字段拼出来，证明它读的是声明而不是写死的任务名
+    assert.match(html, /怎么拿到 DEMO_TOKEN/);
+    assert.match(html, /\/api\/tools\/grab-workbuddy-token\.mjs/);
+    assert.match(html, /data-action="copy-command"/);
+    assert.match(html, /需要 Node 18\+/);
+  });
+
+  it('没声明 credentialHelper 的模板不渲染这块', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    const [row] = store.forUser(USER_ID).tasksOfTemplate('demo-task');
+
+    const html = await (
+      await fetch(`${base}/tasks/${row.id}`, { headers: { Cookie: cookie } })
+    ).text();
+
+    assert.match(html, /WB_ACCESS_TOKEN|DEMO_TOKEN|任务名/); // 页面本身是正常的
+    assert.doesNotMatch(html, /cred-helper/);
   });
 });
 

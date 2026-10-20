@@ -96,6 +96,20 @@ export default {
   requires: ['WB_ACCESS_TOKEN'],
 
   /**
+   * 这个凭据没法"去某个后台注册一个 key"——它只能从桌面客户端进程里抓。
+   * 所以把抓取方法直接内置进配置页：用户卡在输入框时，答案就在输入框上方。
+   *
+   * 界面渲染这段时不认识 workbuddy 这个名字，纯按字段渲染；将来同类任务
+   * 只改自己的任务文件，UI 不用动。
+   */
+  credentialHelper: {
+    download: 'grab-workbuddy-token.mjs',
+    command: 'node grab-workbuddy-token.mjs',
+    steps: ['脚本跑完会把 token 自动复制到剪贴板，粘贴到下面这一栏'],
+    note: '需要 Node 18+。运行时会短暂重启 WorkBuddy（约 10 秒），完成后自动恢复原样。token 约 28 天过期，到期前重跑一次脚本即可。',
+  },
+
+  /**
    * 一人一号。token 本身就是身份，多账号要靠多份 WB_ACCESS_TOKEN，
    * 而 requires 是「任务 + 账号」维度注入的，配 accounts:true 反而会让人
    * 误以为同一份 token 能给多个号签。
