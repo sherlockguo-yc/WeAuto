@@ -216,9 +216,9 @@ describe('凭据获取引导（模板声明才出现）', () => {
 
     // 标题用第一个 requires 字段拼出来，证明它读的是声明而不是写死的任务名
     assert.match(html, /怎么拿到 DEMO_TOKEN/);
-    assert.match(html, /\/api\/tools\/grab-workbuddy-token\.mjs/);
-    // 有可下载脚本时走「一键生成」而不是静态命令：配对码要现发，不能提前渲染
-    assert.match(html, /data-action="pair-token"/);
+    // 下载的是「个性化」脚本（带配对信息），不是那个通用文件
+    assert.match(html, new RegExp(`/api/tasks/${row.id}/grabber\\.mjs`));
+    assert.match(html, /data-watch-pair=/);
     assert.match(html, /需要 Node 18\+/);
   });
 
@@ -345,6 +345,43 @@ describe('凭据一键更新（脚本直接推送）', () => {
     const res = await push({ code, token: 'session=abc' });
     assert.equal(res.status, 400);
     assert.match((await res.json()).error, /JWT/);
+  });
+
+  it('个性化脚本：配对信息已注入，拿它就能推送（不用再生成命令）', async () => {
+    const { base, cookie, row, push } = await setup();
+    const res = await fetch(`${base}/api/tasks/${row.id}/grabber.mjs`, { headers: { Cookie: cookie } });
+    assert.equal(res.status, 200);
+    // no-store：这份文件里带着令牌，不能被缓存后发给别人
+    assert.match(res.headers.get('cache-control'), /no-store/);
+
+    const src = await res.text();
+    const m = /const EMBEDDED_PAIRING = (\{.*?\});/s.exec(src);
+    assert.ok(m, '脚本里应该有注入的配对信息');
+
+    const embedded = JSON.parse(m[1]);
+    assert.equal(embedded.taskId, row.id);
+    assert.ok(embedded.pushToken.startsWith('wt1_'));
+    assert.match(embedded.server, /^http:\/\/127\.0\.0\.1:\d+$/);
+
+    // 真正的验收：用文件里那个令牌直接推送，链路必须通
+    const pushed = await push({ pushToken: embedded.pushToken, token: JWT });
+    assert.equal(pushed.status, 200);
+  });
+
+  it('个性化脚本需要登录才能下载', async () => {
+    const { base, row } = await setup();
+    assert.equal((await fetch(`${base}/api/tasks/${row.id}/grabber.mjs`)).status, 401);
+  });
+
+  it('重复下载复用同一个 pushToken（之前下载的文件不会突然失效）', async () => {
+    const { base, cookie, row } = await setup();
+    const fetchSrc = async () =>
+      (
+        await fetch(`${base}/api/tasks/${row.id}/grabber.mjs`, { headers: { Cookie: cookie } })
+      ).text();
+    const first = /"pushToken":"([^"]+)"/.exec(await fetchSrc())[1];
+    const second = /"pushToken":"([^"]+)"/.exec(await fetchSrc())[1];
+    assert.equal(first, second);
   });
 });
 

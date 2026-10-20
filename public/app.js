@@ -308,34 +308,7 @@
     btn._idleHtml = null;
   }
 
-  /* ── 凭据一键更新：申请的配对码 → 脚本推送 → 本页自动刷新 ── */
-
-  /**
-   * 把「带配对码的命令」显示在按钮下面。
-   * 用 DOM 拼装而不是 innerHTML：命令来自服务端拼好的字符串，没必要为它开注入口子。
-   */
-  function renderPairCommand(box, data) {
-    box.hidden = false;
-    box.textContent = '';
-
-    var code = document.createElement('code');
-    code.textContent = data.command;
-
-    var copy = document.createElement('button');
-    copy.type = 'button';
-    copy.className = 'btn-inline';
-    copy.dataset.action = 'copy-command';
-    copy.dataset.cmd = data.command;
-    copy.textContent = '复制命令';
-
-    var hint = document.createElement('p');
-    hint.className = 'hint';
-    hint.textContent = '10 分钟内有效、用完即失效。在终端粘贴运行，完成后本页会自动刷新。';
-
-    box.appendChild(code);
-    box.appendChild(copy);
-    box.appendChild(hint);
-  }
+  /* ── 凭据一键更新：下载个性化脚本 → 脚本推送 → 本页自动刷新 ── */
 
   /*
    * 轮询「脚本推上来了没有」。
@@ -365,6 +338,18 @@
     }
     setTimeout(tick, 3000);
   }
+
+  /*
+   * 点了「下载脚本」就开始轮询。
+   * 不等脚本真的跑完——用户下载完可能过几分钟才运行，所以窗口给 30 分钟。
+   * 不 preventDefault：这里只是顺手挂个监听，下载该怎么走还怎么走。
+   */
+  document.addEventListener('click', function (e) {
+    var link = e.target.closest('[data-watch-pair]');
+    if (!link) return;
+    var startedAt = Date.now();
+    watchPairing(link.dataset.watchPair, startedAt, startedAt + 30 * 60 * 1000);
+  });
 
   document.addEventListener('click', async function (e) {
     var btn = e.target.closest('[data-action]');
@@ -427,13 +412,7 @@
         // 命令来自任务模板声明（data-cmd），只做复制，不执行
         var cmdCopied = await copyText(btn.dataset.cmd || '');
         flash(btn, cmdCopied ? '已复制 ✓' : '复制失败，请手动选中', cmdCopied ? 'ok' : 'error');
-      } else if (action === 'pair-token') {
-        var pairTask = btn.dataset.task;
-        var pairBox = btn.parentElement.querySelector('.pair-box');
-        if (!pairBox) return; // 模板换了结构就别硬渲染，静默退出
-        var issued = await api('POST', '/api/tasks/' + pairTask + '/pair-code');
-        renderPairCommand(pairBox, issued);
-        watchPairing(pairTask, issued.issuedAt, issued.expiresAt);
+
       } else if (action === 'delete-user') {
         if (!window.confirm('删除这个账号？他的任务、凭据和执行历史会一起清掉，不可恢复。')) return;
         await api('DELETE', '/api/users/' + encodeURIComponent(btn.dataset.user));

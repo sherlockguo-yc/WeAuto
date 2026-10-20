@@ -701,15 +701,15 @@ function credentialHelperBlock(task) {
      * 配对码在点按钮时才申请（10 分钟寿命），所以服务端渲染阶段不放命令。
      */
     items.push(
-      `<li>第一次使用，先下载抓取脚本
-        <a class="btn-inline" href="/api/tools/${esc(h.download)}" download>下载 ${esc(h.download)}</a>
+      `<li>下载脚本（里面已经带上你这个任务的配对信息）
+        <a class="btn-inline" data-watch-pair="${esc(task.id)}"
+          href="/api/tasks/${esc(task.id)}/grabber.mjs" download>下载 ${esc(h.download)}</a>
       </li>`,
     );
     items.push(
-      `<li>生成更新命令
-        <button type="button" class="btn-inline" data-action="pair-token"
-          data-task="${esc(task.id)}">一键生成</button>
-        <div class="pair-box" hidden></div>
+      `<li>在终端运行 <code>node ${esc(h.download)}</code>
+        <button type="button" class="btn-inline" data-action="copy-command"
+          data-cmd="node ${esc(h.download)}">复制命令</button>
       </li>`,
     );
   } else if (h.command) {

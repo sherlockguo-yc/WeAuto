@@ -44,6 +44,15 @@ const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
 
 const DEFAULT_PORT = 9333;
+
+/**
+ * 配对信息。仓库里的这份是 null；从任务页「下载脚本」拿到的那份，服务端会把这一行
+ * 替换成 { server, taskId, pushToken }，于是运行时**不需要任何参数**。
+ *
+ * 这就是"下载完直接执行"的全部秘密：把原来要人工生成、粘贴的命令参数，
+ * 提前写进文件里。
+ */
+const EMBEDDED_PAIRING = null;
 /** 等客户端起来并出现 page target 的上限 */
 const BOOT_TIMEOUT_MS = 45_000;
 /** 挂上 CDP 后等 Authorization 头上限 */
@@ -531,8 +540,11 @@ async function main() {
 
   /* ── 优先推送到 WeAuto：推成功就不用再碰剪贴板和网页 ── */
   const bind = readBind();
-  const server = args.push ? args.push.replace(/\/+$/, '') : (bind?.server ?? null);
-  const canPush = Boolean(server && (args.code || bind?.pushToken));
+  // 优先级：命令行显式给的 > 服务端注入进本文件的 > 上次配对记下的
+  const embedded = EMBEDDED_PAIRING?.server ? EMBEDDED_PAIRING : null;
+  const server = args.push ? args.push.replace(/\/+$/, '') : (embedded?.server ?? bind?.server ?? null);
+  const inherited = args.code ? null : (embedded?.pushToken ?? bind?.pushToken ?? null);
+  const canPush = Boolean(server && (args.code || inherited));
 
   let pushed = null;
   let pushError = null;
@@ -542,7 +554,7 @@ async function main() {
         server,
         token: captured.token,
         code: args.code || null,
-        pushToken: args.code ? null : bind?.pushToken,
+        pushToken: inherited,
       });
       // 首次配对成功时服务器回发长期 pushToken，存下来以后就不用再打开网页
       if (pushed.pushToken) {

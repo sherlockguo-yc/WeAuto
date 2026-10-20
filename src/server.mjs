@@ -8,6 +8,7 @@
  *   · **凭据值永不出现在响应里**，只返回字段名与是否已设置
  *   · 页面全部服务端直出：手机端首屏不依赖 JS，JS 只负责「立即执行」这类动作
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import { LOGIN_RATE_LIMIT } from './config.mjs';
@@ -725,6 +726,62 @@ export function createServer({
     const t = mine(req).getTask(Number(req.params.id));
     if (!t) return res.status(404).json({ error: '没有这个任务' });
     res.json({ pushedAt: pairing.pushedAt(t.id) });
+  });
+
+  /**
+   * 个性化脚本：把配对信息直接写进文件，下载即用，**不需要再生成命令**。
+   *
+   * 这是「让用户少做一步」的最后一步优化：原来要先点按钮拿码、再复制命令、
+   * 再粘到终端——三步都可能出错（码过期、复制漏字符、粘错窗口）。
+   * 现在把手输的这一切提前烘进文件，用户只剩「下载 + 运行」。
+   *
+   * 为什么用 pushToken 而不是配对码：码 10 分钟就失效，用户完全可能下载完
+   * 过一小时才想起来跑。pushToken 长期有效，跑挂了也能重跑。
+   *
+   * 这份文件里含有一个只对「你这一个任务」有效的令牌，所以：
+   *   · 必须登录才能下载（别人拿不到你的文件）
+   *   · no-store，避免被浏览器/中间层缓存后发给别人
+   */
+  app.get('/api/tasks/:id(\\d+)/grabber.mjs', requireLogin, (req, res) => {
+    const t = mine(req).getTask(Number(req.params.id));
+    if (!t) return res.status(404).json({ error: '没有这个任务' });
+
+    const task = tasks.get(t.taskName);
+    const helper = task?.credentialHelper;
+    if (!helper?.download) return res.status(400).json({ error: '这个任务不支持一键更新凭据' });
+    if (!userSecrets) return res.status(503).json({ error: '凭据存储未就绪' });
+    if ((task.requires ?? []).length !== 1) {
+      return res.status(400).json({ error: '一键更新只支持只有一个凭据字段的任务' });
+    }
+
+    // 同一个任务复用同一个 pushToken：重复下载不会让之前那份文件失效
+    let pushToken = userSecrets.get(req.user.id, t.taskName, t.accountKey)?.WEAUTO_PUSH_TOKEN;
+    if (!pushToken) {
+      pushToken = makePushToken({ userId: req.user.id, taskId: t.id });
+      userSecrets.set(req.user.id, t.taskName, t.accountKey, { WEAUTO_PUSH_TOKEN: pushToken });
+    }
+
+    const source = fs.readFileSync(path.join(ROOT, 'scripts', helper.download), 'utf8');
+    const injected = source.replace(
+      'const EMBEDDED_PAIRING = null;',
+      `const EMBEDDED_PAIRING = ${JSON.stringify({
+        server: `${req.protocol}://${req.get('host')}`,
+        taskId: t.id,
+        pushToken,
+      })};`,
+    );
+    /*
+     * 注入失败必须报错，不能把未注入的文件发出去——那份文件跑起来会退化成
+     * 「找不到配对信息」，用户看到的是一句莫名其妙的提示，而我们这边毫无痕迹。
+     */
+    if (injected === source) {
+      return res.status(500).json({ error: '脚本缺少 EMBEDDED_PAIRING 锚点，注入失败（脚本被改过？）' });
+    }
+
+    res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${helper.download}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(injected);
   });
 
   /**
