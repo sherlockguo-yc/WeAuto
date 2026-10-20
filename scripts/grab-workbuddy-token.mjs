@@ -73,6 +73,7 @@ function parseArgs(argv) {
     timeout: CAPTURE_TIMEOUT_MS,
     push: null,
     code: null,
+    pushToken: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -84,6 +85,8 @@ function parseArgs(argv) {
     else if (a === '--out') out.out = argv[++i];
     else if (a === '--push') out.push = argv[++i];
     else if (a === '--code') out.code = argv[++i];
+    // Windows 的 .cmd 启动器用它把令牌直接传给脚本，不必落地任何文件
+    else if (a === '--push-token') out.pushToken = argv[++i];
     else if (a === '--timeout') out.timeout = Number(argv[++i]) * 1000;
     else if (a === '-h' || a === '--help') out.help = true;
   }
@@ -543,7 +546,9 @@ async function main() {
   // 优先级：命令行显式给的 > 服务端注入进本文件的 > 上次配对记下的
   const embedded = EMBEDDED_PAIRING?.server ? EMBEDDED_PAIRING : null;
   const server = args.push ? args.push.replace(/\/+$/, '') : (embedded?.server ?? bind?.server ?? null);
-  const inherited = args.code ? null : (embedded?.pushToken ?? bind?.pushToken ?? null);
+  const inherited = args.code
+    ? null
+    : (args.pushToken ?? embedded?.pushToken ?? bind?.pushToken ?? null);
   const canPush = Boolean(server && (args.code || inherited));
 
   let pushed = null;
@@ -590,13 +595,18 @@ async function main() {
 
   if (pushed) {
     console.log('回去看一眼页面即可，它会自动刷新显示已更新。');
-    console.log(`以后每月直接运行 node ${path.basename(process.argv[1])} 就行，不用带参数、也不用打开网页。`);
+    if (args.pushToken) {
+      // 从 Windows 启动器来的：脚本本体是临时文件，名字没有复用价值
+      console.log('以后每月回任务页重新下载启动器、双击运行即可。');
+    } else if (process.argv[1]) {
+      console.log(`以后每月直接运行 node ${path.basename(process.argv[1])} 就行，不用带参数、也不用打开网页。`);
+    }
   } else if (pushError) {
     console.log('token 已复制到剪贴板，可以到 WeAuto 任务页手动粘贴；');
-    console.log('或者回任务页点「一键生成」拿一条新的命令（配对码 10 分钟有效）。');
+    console.log('或者回任务页重新下载脚本（配对信息已内嵌，下载后直接运行即可）。');
   } else {
-    console.log('下一步：打开 WeAuto → 任务 → WorkBuddy 每日签到 → 凭据 WB_ACCESS_TOKEN 粘贴');
-    console.log('（在任务页点「一键生成」可以拿到带配对码的命令，跑完自动更新，不用手抄）');
+    console.log('下一步：打开 WeAuto 任务页，下载那份带配对信息的脚本重新运行；');
+    console.log('或者把上面的 token 手动粘贴到凭据输入框。');
   }
   if (days !== null && days <= 7) console.log(`⚠️  这枚 token 只剩 ${days} 天，请尽快使用`);
 }

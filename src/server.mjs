@@ -575,6 +575,8 @@ export function createServer({
           includeSkipped: d.includeSkipped,
           canRun: !scheduler.isRunning(d.summary.id, req.user.id),
           credential,
+          // 只有 Windows 能靠双击跑起来（.cmd 不需要权限位），其余平台给 .mjs
+          isWindows: /Windows/i.test(req.headers['user-agent'] ?? ''),
         }),
       }),
     );
@@ -742,16 +744,29 @@ export function createServer({
    *   · 必须登录才能下载（别人拿不到你的文件）
    *   · no-store，避免被浏览器/中间层缓存后发给别人
    */
-  app.get('/api/tasks/:id(\\d+)/grabber.mjs', requireLogin, (req, res) => {
+  /**
+   * 个性化脚本 / 启动器共用的前置校验。
+   * 失败时已经把响应写好了，调用方拿到 null 直接 return 即可。
+   */
+  function grabberTarget(req, res) {
     const t = mine(req).getTask(Number(req.params.id));
-    if (!t) return res.status(404).json({ error: '没有这个任务' });
-
+    if (!t) {
+      res.status(404).json({ error: '没有这个任务' });
+      return null;
+    }
     const task = tasks.get(t.taskName);
     const helper = task?.credentialHelper;
-    if (!helper?.download) return res.status(400).json({ error: '这个任务不支持一键更新凭据' });
-    if (!userSecrets) return res.status(503).json({ error: '凭据存储未就绪' });
+    if (!helper?.download) {
+      res.status(400).json({ error: '这个任务不支持一键更新凭据' });
+      return null;
+    }
+    if (!userSecrets) {
+      res.status(503).json({ error: '凭据存储未就绪' });
+      return null;
+    }
     if ((task.requires ?? []).length !== 1) {
-      return res.status(400).json({ error: '一键更新只支持只有一个凭据字段的任务' });
+      res.status(400).json({ error: '一键更新只支持只有一个凭据字段的任务' });
+      return null;
     }
 
     // 同一个任务复用同一个 pushToken：重复下载不会让之前那份文件失效
@@ -760,15 +775,18 @@ export function createServer({
       pushToken = makePushToken({ userId: req.user.id, taskId: t.id });
       userSecrets.set(req.user.id, t.taskName, t.accountKey, { WEAUTO_PUSH_TOKEN: pushToken });
     }
+    return { t, helper, pushToken, server: `${req.protocol}://${req.get('host')}` };
+  }
+
+  app.get('/api/tasks/:id(\\d+)/grabber.mjs', requireLogin, (req, res) => {
+    const target = grabberTarget(req, res);
+    if (!target) return;
+    const { t, helper, pushToken, server } = target;
 
     const source = fs.readFileSync(path.join(ROOT, 'scripts', helper.download), 'utf8');
     const injected = source.replace(
       'const EMBEDDED_PAIRING = null;',
-      `const EMBEDDED_PAIRING = ${JSON.stringify({
-        server: `${req.protocol}://${req.get('host')}`,
-        taskId: t.id,
-        pushToken,
-      })};`,
+      `const EMBEDDED_PAIRING = ${JSON.stringify({ server, taskId: t.id, pushToken })};`,
     );
     /*
      * 注入失败必须报错，不能把未注入的文件发出去——那份文件跑起来会退化成
@@ -782,6 +800,66 @@ export function createServer({
     res.setHeader('Content-Disposition', `attachment; filename="${helper.download}"`);
     res.setHeader('Cache-Control', 'no-store');
     res.send(injected);
+  });
+
+  /**
+   * Windows 双击启动器：一个 .cmd，用户下载后双击即可，不需要敲任何命令。
+   *
+   * 为什么 .cmd 能做到而 macOS 做不到（2026-10-20 实测）：
+   *   · Windows 的 .cmd 由 cmd.exe 通过文件关联执行，**不需要可执行权限位**；
+   *   · macOS 的 .command 必须有执行位，而浏览器下载不保留权限（HTTP 不传 mode），
+   *     实测 644 的文件双击毫无反应；用 zip 保住权限后又会撞 Gatekeeper 隔离标记。
+   *
+   * .cmd 里只放服务器地址和 pushToken，脚本本体运行时从公开端点现取：
+   * 把 20KB 的 JS 塞进批处理要转义一堆字符，既难维护又容易坏。
+   */
+  app.get('/api/tasks/:id(\\d+)/grabber.cmd', requireLogin, (req, res) => {
+    const target = grabberTarget(req, res);
+    if (!target) return;
+    const { helper, pushToken, server } = target;
+
+    const lines = [
+      '@echo off',
+      'chcp 65001 >nul',
+      'setlocal',
+      'title WorkBuddy token updater',
+      `set "SERVER=${server}"`,
+      `set "PUSH_TOKEN=${pushToken}"`,
+      'set "TMPFILE=%TEMP%\\wb-grab-%RANDOM%%RANDOM%.mjs"',
+      '',
+      'where node >nul 2>nul',
+      'if errorlevel 1 (',
+      '  echo Node.js 18+ is required. Get it from https://nodejs.org/',
+      '  echo.',
+      '  pause',
+      '  exit /b 1',
+      ')',
+      '',
+      'echo Fetching grabber...',
+      `powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri '${server}/api/tools/${helper.download}' -OutFile '%TMPFILE%' } catch { exit 1 }"`,
+      'if not exist "%TMPFILE%" (',
+      '  echo Download failed. Check your network and try again.',
+      '  echo.',
+      '  pause',
+      '  exit /b 1',
+      ')',
+      '',
+      'echo Updating WorkBuddy token...',
+      'echo.',
+      'node "%TMPFILE%" --push "%SERVER%" --push-token "%PUSH_TOKEN%"',
+      'set "RC=%ERRORLEVEL%"',
+      'del "%TMPFILE%" >nul 2>nul',
+      'echo.',
+      'pause',
+      'exit /b %RC%',
+      '',
+    ];
+
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'attachment; filename="update-workbuddy-token.cmd"');
+    res.setHeader('Cache-Control', 'no-store');
+    // CRLF：cmd.exe 对纯 LF 的批处理在某些版本上会解析出错
+    res.send(lines.join('\r\n'));
   });
 
   /**

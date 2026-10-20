@@ -373,6 +373,43 @@ describe('凭据一键更新（脚本直接推送）', () => {
     assert.equal((await fetch(`${base}/api/tasks/${row.id}/grabber.mjs`)).status, 401);
   });
 
+  it('Windows 启动器：一个可双击的 .cmd，里面带服务器与令牌', async () => {
+    const { base, cookie, row } = await setup();
+    const res = await fetch(`${base}/api/tasks/${row.id}/grabber.cmd`, { headers: { Cookie: cookie } });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-disposition'), /update-workbuddy-token\.cmd/);
+
+    const text = await res.text();
+    assert.match(text, /^@echo off\r\n/, '必须是 CRLF 的批处理');
+    assert.ok(text.includes(`set "SERVER=${base}"`), '必须把服务器地址写死进去');
+    assert.match(text, /set "PUSH_TOKEN=wt1_\d+_\d+_[A-Za-z0-9_-]+"/);
+    assert.match(text, /--push "%SERVER%" --push-token "%PUSH_TOKEN%"/);
+    // 脚本本体不塞进批处理，运行时从公开端点取
+    assert.ok(text.includes('/api/tools/grab-workbuddy-token.mjs'));
+  });
+
+  it('Windows 启动器也要登录才能下载', async () => {
+    const { base, row } = await setup();
+    assert.equal((await fetch(`${base}/api/tasks/${row.id}/grabber.cmd`)).status, 401);
+  });
+
+  it('页面按 UA 给不同的下载方式：Windows 给 .cmd，其它给 .mjs', async () => {
+    const { base, cookie, row } = await setup();
+    const html = async (ua) =>
+      (
+        await fetch(`${base}/tasks/${row.id}`, { headers: { Cookie: cookie, 'User-Agent': ua } })
+      ).text();
+
+    const win = await html('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    assert.match(win, new RegExp(`/api/tasks/${row.id}/grabber\\.cmd`));
+    assert.match(win, /双击运行它/);
+
+    const mac = await html('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+    assert.match(mac, new RegExp(`/api/tasks/${row.id}/grabber\\.mjs`));
+    assert.match(mac, /node grab-workbuddy-token\.mjs/);
+    assert.doesNotMatch(mac, /grabber\.cmd/);
+  });
+
   it('重复下载复用同一个 pushToken（之前下载的文件不会突然失效）', async () => {
     const { base, cookie, row } = await setup();
     const fetchSrc = async () =>

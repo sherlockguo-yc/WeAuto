@@ -534,6 +534,8 @@ export function pageTaskDetail({
   hiddenSkipped = 0,
   includeSkipped = false,
   credential = null,
+  /** 由 UA 判断：Windows 给可直接双击的 .cmd，其它平台给 .mjs + 一行命令 */
+  isWindows = false,
 }) {
   const hintHtml = credentialHint(task);
   const result = view.rows.length
@@ -581,7 +583,7 @@ ${hintHtml}
   <p class="hint" id="action-hint" role="status" aria-live="polite"></p>
 </section>
 
-${taskConfigBody({ task: task, credential: credential })}
+${taskConfigBody({ task: task, credential: credential, isWindows: isWindows })}
 
 <section class="card">
   <h2>最近一次结果</h2>
@@ -690,28 +692,40 @@ function credentialField(f) {
  * 内容全部来自模板声明的 credentialHelper，这里不认识任何一个具体任务名。
  * 将来再有同类任务，只改任务文件，界面不动。
  */
-function credentialHelperBlock(task) {
+function credentialHelperBlock(task, isWindows = false) {
   const h = task.credentialHelper;
   if (!h) return '';
 
   const items = [];
   if (h.download) {
     /*
-     * 有可下载脚本 = 支持「脚本自己把值推上来」：先下载，再点按钮拿一条带配对码的命令。
-     * 配对码在点按钮时才申请（10 分钟寿命），所以服务端渲染阶段不放命令。
+     * 两个平台给不同的东西，因为能力本身不同（2026-10-20 实测）：
+     *   · Windows 的 .cmd 由文件关联执行，不需要权限位 —— 下载后双击即可；
+     *   · macOS 的 .command 必须有执行位，而浏览器下载不保留权限，双击没反应。
+     *     所以 macOS 仍然给 .mjs + 一行 node 命令（不引入 Gatekeeper 的坑）。
      */
-    items.push(
-      `<li>下载脚本（里面已经带上你这个任务的配对信息）
-        <a class="btn-inline" data-watch-pair="${esc(task.id)}"
-          href="/api/tasks/${esc(task.id)}/grabber.mjs" download>下载 ${esc(h.download)}</a>
-      </li>`,
-    );
-    items.push(
-      `<li>在终端运行 <code>node ${esc(h.download)}</code>
-        <button type="button" class="btn-inline" data-action="copy-command"
-          data-cmd="node ${esc(h.download)}">复制命令</button>
-      </li>`,
-    );
+    if (isWindows) {
+      items.push(
+        `<li>下载启动器
+          <a class="btn-inline" data-watch-pair="${esc(task.id)}"
+            href="/api/tasks/${esc(task.id)}/grabber.cmd" download>下载 update-workbuddy-token.cmd</a>
+        </li>`,
+      );
+      items.push('<li><b>双击运行它</b>（首次可能弹一次系统确认，点「运行」）</li>');
+    } else {
+      items.push(
+        `<li>下载脚本（里面已经带上你这个任务的配对信息）
+          <a class="btn-inline" data-watch-pair="${esc(task.id)}"
+            href="/api/tasks/${esc(task.id)}/grabber.mjs" download>下载 ${esc(h.download)}</a>
+        </li>`,
+      );
+      items.push(
+        `<li>在终端运行 <code>node ${esc(h.download)}</code>
+          <button type="button" class="btn-inline" data-action="copy-command"
+            data-cmd="node ${esc(h.download)}">复制命令</button>
+        </li>`,
+      );
+    }
   } else if (h.command) {
     // 没有可下载脚本的模板：只能给一条命令，值由用户自己粘回下面的输入框
     items.push(
@@ -741,7 +755,7 @@ function credentialHelperBlock(task) {
  * 没有「账号列表」了：一个任务只跑一个账号，想跑第二个账号就回任务页
  * 再建一个任务。账号这个概念因此退到执行侧（凭据与历史按它分），界面不再暴露。
  */
-function taskConfigBody({ task, credential = null }) {
+function taskConfigBody({ task, credential = null, isWindows = false }) {
   // 有效调度 = 订阅里改过的（若有）否则模板默认。表单要能表达「我改过哪一种」
   const sch = task.schedule ?? null;
   const customized = !!task.scheduleCustomized && !!sch;
@@ -842,7 +856,7 @@ function taskConfigBody({ task, credential = null }) {
         task.displayName,
       )}">
     </label>
-    ${credentialHelperBlock(task)}
+    ${credentialHelperBlock(task, isWindows)}
     ${(credential?.fields ?? []).map(credentialField).join('')}
     <button type="submit" class="primary">保存</button>
   </form>
