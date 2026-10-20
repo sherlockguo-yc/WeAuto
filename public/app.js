@@ -230,6 +230,37 @@
   }
 
   /**
+   * 「10-18 创建 · 10-25 过期 · 已用 0/1」。
+   * 与 render.mjs 的 inviteMeta 是同一句文案的两份实现：整页由服务端渲染，
+   * 前端只补刚生成的那一行。行结构同理——这是这里既定的代价，改一处要记得改另一处。
+   */
+  var MD_FMT = new Intl.DateTimeFormat('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    timeZone: 'Asia/Shanghai',
+  });
+
+  function monthDay(ts) {
+    if (!ts) return '—';
+    var m = '';
+    var d = '';
+    var parts = MD_FMT.formatToParts(new Date(ts));
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].type === 'month') m = parts[i].value;
+      if (parts[i].type === 'day') d = parts[i].value;
+    }
+    return (m.length < 2 ? '0' + m : m) + '-' + (d.length < 2 ? '0' + d : d);
+  }
+
+  function inviteMeta(inv) {
+    return [
+      monthDay(inv.createdAt) + ' 创建',
+      inv.expiresAt ? monthDay(inv.expiresAt) + ' 过期' : '长期有效',
+      '已用 ' + inv.usedCount + '/' + inv.maxUses,
+    ].join(' · ');
+  }
+
+  /**
    * 生成邀请后不刷新页面：克隆页面里那个 <template> 造一行插到列表最上面。
    * 行结构只在 render.mjs 里维护一份，这里只填内容。
    * @returns {boolean} 页面上没有列表容器时返回 false（调用方退回刷新）
@@ -241,14 +272,20 @@
 
     var frag = tpl.content.cloneNode(true);
     var row = frag.querySelector('.invite-row');
-    row.querySelector('.row-main').textContent = made.invite.note || '（无备注）';
-    row.querySelector('.invite-url').textContent = made.url;
+    var nameEl = row.querySelector('.invite-name');
+    nameEl.textContent = made.invite.note || '（无备注）';
+    nameEl.classList.toggle('is-empty', !made.invite.note);
+    row.querySelector('.invite-meta').textContent = inviteMeta(made.invite);
     row.querySelector('[data-action="copy-invite"]').dataset.url = made.url;
     row.querySelector('[data-action="revoke-invite"]').dataset.code = made.invite.code;
 
     var empty = list.querySelector('.empty');
     if (empty) empty.remove();
     list.insertBefore(row, list.firstChild);
+
+    // 标题上的计数跟着加一，否则「邀请记录 5」和下面的 6 行会对不上
+    var count = document.querySelector('.invite-history .count');
+    if (count) count.textContent = String((Number(count.textContent) || 0) + 1);
     return true;
   }
 

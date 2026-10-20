@@ -928,16 +928,63 @@ function adminUserRow(u, { currentUserId = null, canDelete = false } = {}) {
       </div>`;
 }
 
+/** 邀请状态的展示口径：竖条颜色、徽章色调、「算不算已失效」都从这一张表出 */
+const INVITE_STATE = {
+  unused: { tone: 'ok', dead: false },
+  partial: { tone: 'wait', dead: false },
+  used: { tone: 'off', dead: true },
+  expired: { tone: 'off', dead: true },
+  revoked: { tone: 'off', dead: true },
+};
+
+/**
+ * 邀请记录的日期只到「月-日」（北京时间）。
+ * 一行小字里挤着三条信息，年份和时分都是噪音——这些码最长也就活一年。
+ */
+const MD = new Intl.DateTimeFormat('zh-CN', {
+  month: 'numeric',
+  day: 'numeric',
+  timeZone: 'Asia/Shanghai',
+});
+
+function monthDay(ts) {
+  if (!ts) return '—';
+  const parts = MD.formatToParts(new Date(ts));
+  const pick = (type) => (parts.find((p) => p.type === type) || {}).value || '';
+  return `${pick('month').padStart(2, '0')}-${pick('day').padStart(2, '0')}`;
+}
+
+/** 「10-18 创建 · 10-25 过期 · 已用 0/1」：扫一眼就知道这条还能不能用 */
+function inviteMeta({ createdAt, expiresAt, usedCount = 0, maxUses = 1 } = {}) {
+  return [
+    `${monthDay(createdAt)} 创建`,
+    expiresAt ? `${monthDay(expiresAt)} 过期` : '长期有效',
+    `已用 ${usedCount}/${maxUses}`,
+  ].join(' · ');
+}
+
 /**
  * 一行邀请码。列表由服务端渲染，但「生成后不刷新页面、直接把新行插到最上面」
  * 也需要在前端造出同样结构的 DOM —— 两边各写一遍结构迟早会走样，
  * 所以页面里再带一个由本函数渲染的空壳 <template>，前端克隆它、只填内容。
+ *
+ * 链接不铺在页面上：那串 URL 又长又没人读，占掉的视觉重量反而盖过了备注，
+ * 真要用的时候点「复制链接」即可（URL 在按钮的 data-url 上）。
  */
-function inviteRowHtml({ note = '', label = '未使用', url = '', code = '', tone = 'ok', canRevoke = true }) {
-  return `<div class="invite-row">
-      <span class="row-main mono">${esc(note || '（无备注）')}</span>
-      <span class="badges"><span class="badge badge-${tone === 'ok' ? 'ok' : 'off'}">${esc(label)}</span></span>
-      <span class="row-sub mono invite-url">${esc(url)}</span>
+function inviteRowHtml({
+  note = '',
+  label = '未使用',
+  url = '',
+  code = '',
+  state = 'unused',
+  meta = '',
+  canRevoke = true,
+}) {
+  const s = INVITE_STATE[state] ?? INVITE_STATE.used;
+  return `<div class="invite-row is-${esc(state)}${s.dead ? ' is-dead' : ''}">
+      <span class="invite-name${note ? '' : ' is-empty'}">${esc(note || '（无备注）')}</span>
+      <span class="invite-meta">${esc(meta)}</span>
+      <span class="badges"><span class="badge badge-${s.tone}">${esc(label)}</span></span>
       <span class="invite-actions">
         <button type="button" class="link-btn" data-action="copy-invite" data-url="${esc(url)}">复制链接</button>
         ${
@@ -1005,13 +1052,19 @@ ${
 <section class="card">
   <h2>邀请码</h2>
   <p class="sub">新用户只能凭邀请链接注册。默认单次使用、7 天过期，随时可撤销。</p>
-  <form class="inline-form invite-form" data-action="create-invite">
-    <label class="invite-note">备注（给谁的，备查）<input name="note" maxlength="60" placeholder="例如：给小明"></label>
-    <label class="invite-num">有效期（天，0 = 长期）<input type="number" name="expiresInDays" value="7" min="0" step="1"></label>
-    <label class="invite-num">可用次数<input type="number" name="maxUses" value="1" min="1" step="1"></label>
-    <button type="submit" class="primary">生成邀请链接</button>
-  </form>
-  <div class="invites" data-invite-list>
+  <div class="invite-create">
+    <h3>新建邀请</h3>
+    <form class="inline-form invite-form" data-action="create-invite">
+      <label class="invite-note">备注（给谁的，备查）<input name="note" maxlength="60" placeholder="例如：给小明"></label>
+      <label class="invite-num">有效期（天）<input type="number" name="expiresInDays" value="7" min="0" step="1"></label>
+      <label class="invite-num">可用次数<input type="number" name="maxUses" value="1" min="1" step="1"></label>
+      <button type="submit" class="primary">生成邀请链接</button>
+    </form>
+    <p class="hint">有效期天数填 0 表示长期有效；可用次数默认 1，只能注册一个账号。</p>
+  </div>
+  <div class="invite-history">
+    <h3>邀请记录 <span class="count">${invites.length}</span></h3>
+    <div class="invites" data-invite-list>
     ${
       invites.length
         ? invites
@@ -1029,13 +1082,15 @@ ${
                 label: label,
                 url: url,
                 code: i.code,
-                tone: i.state === 'unused' ? 'ok' : 'off',
+                state: i.state,
+                meta: inviteMeta(i),
                 canRevoke: i.state === 'unused' || i.state === 'partial',
               });
             })
             .join('')
         : '<p class="empty">还没有生成过邀请码</p>'
     }
+    </div>
   </div>
   ${inviteRowTemplate()}
 </section>`
