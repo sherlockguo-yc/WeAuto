@@ -739,11 +739,23 @@ function credentialHelperBlock(task, isWindows = false) {
       </li>`,
     );
   }
-  for (const step of h.steps) items.push(`<li>${esc(step)}</li>`);
+  // `?? []`：这个函数也可能拿到未经 normalizeTask 洗过的对象（测试、将来的其它调用点）
+  for (const step of h.steps ?? []) items.push(`<li>${esc(step)}</li>`);
+
+  /*
+   * 「跑完会刷新」不是用户要做的一步，所以**不放进编号列表**——放进去就会
+   * 读成"三步"，而实际只有两步操作。它是这个机制的结果说明，放在列表下方。
+   * 同一件事以后每月怎么办也在这里说清楚，免得用户以为每次都要重新下载。
+   */
+  const outcome = h.download
+    ? `<p class="cred-outcome">跑完后本页会自动刷新显示「已设置」，不用手动粘贴。
+        ${isWindows ? '以后每月双击同一个文件即可。' : '以后每月重复第 2 步即可。'}</p>`
+    : '';
 
   return `<div class="cred-helper">
     <h3>怎么拿到 ${esc(task.requires[0] ?? '凭据')}</h3>
     <ol>${items.join('')}</ol>
+    ${outcome}
     ${h.note ? `<p class="hint">${esc(h.note)}</p>` : ''}
   </div>`;
 }

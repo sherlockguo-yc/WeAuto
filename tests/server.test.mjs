@@ -48,7 +48,6 @@ const HELPER_TASK = {
   credentialHelper: {
     download: 'grab-workbuddy-token.mjs',
     command: 'node grab-workbuddy-token.mjs',
-    steps: ['跑完会自动复制到剪贴板'],
     note: '需要 Node 18+',
   },
 };
@@ -371,6 +370,23 @@ describe('凭据一键更新（脚本直接推送）', () => {
   it('个性化脚本需要登录才能下载', async () => {
     const { base, row } = await setup();
     assert.equal((await fetch(`${base}/api/tasks/${row.id}/grabber.mjs`)).status, 401);
+  });
+
+  it('引导块只给真实动作编号：2 项，结果说明不占编号', async () => {
+    const { base, cookie, row } = await setup();
+    const html = await (
+      await fetch(`${base}/tasks/${row.id}`, {
+        headers: { Cookie: cookie, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      })
+    ).text();
+
+    const start = html.indexOf('<div class="cred-helper">');
+    assert.ok(start >= 0);
+    const block = html.slice(start, html.indexOf('</div>', start));
+
+    // 用户读到的步数 = 编号项数量。多一项就会被理解成多一步操作（曾经发生过）
+    assert.equal((block.match(/<li>/g) || []).length, 2);
+    assert.match(block, /cred-outcome/, '「跑完会刷新」应作为结果说明，而不是第 3 步');
   });
 
   it('Windows 启动器：一个可双击的 .cmd，里面带服务器与令牌', async () => {

@@ -105,8 +105,7 @@ export default {
   credentialHelper: {
     download: 'grab-workbuddy-token.mjs',
     command: 'node grab-workbuddy-token.mjs',
-    steps: ['跑完回到本页，会自动刷新显示已更新'],
-    note: '需要 Node 18+。运行时会短暂重启 WorkBuddy（约 10 秒），完成后自动恢复原样。首次配对后，之后每月直接运行 node grab-workbuddy-token.mjs 即可，不必再打开本页。',
+    note: '需要 Node 18+。运行时会短暂重启 WorkBuddy（约 10 秒），完成后自动恢复原样。',
   },
 
   /**

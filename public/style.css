@@ -691,6 +691,15 @@ label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
 }
 .cred-helper .hint { margin: 8px 0 0; }
 
+/* 结果说明：不是用户要做的步骤，所以不编号、也不跟步骤混排。
+   比 hint 稍亮一档——它回答的是「我做完会发生什么」，比技术备注更值得先看到 */
+.cred-helper .cred-outcome {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
 /* 一键更新：展开的命令框。命令很长（带域名和码），必须能换行而不是撑破卡片 */
 .pair-box {
   margin-top: 8px;
