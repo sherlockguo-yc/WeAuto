@@ -146,6 +146,37 @@ v5 把「订阅 + 账号」两层拍平成「一行一个任务」（SQLite 改�
 迁移自旧的 `secrets.age`（age 加密、全站一份）：启动时由 `bootstrap.mjs` 读入并加密到
 `user_id=1` 名下，只做一次（用 `meta.tenant_bootstrap_v3` 标记），原文件保留作回滚依据。
 
+### 5.1 凭据获取引导（credentialHelper）
+
+有些凭据没法"去后台注册一个 key"，只能从用户本机运行的客户端里抓——WorkBuddy 的
+`WB_ACCESS_TOKEN` 就是这样：它只存在于桌面客户端进程内存里，磁盘上是加密的。
+
+模板可以在 `credentialHelper` 里声明获取方式，任务页把它渲染在凭据输入框**正上方**：
+用户卡在输入框的那一刻，答案就在眼前。
+
+| 字段 | 含义 |
+|---|---|
+| `download` | `scripts/` 下的文件名，渲染成个性化下载链接（需登录） |
+| `command` | 可一键复制的命令 |
+| `steps` | 参与编号的补充步骤。**"跑完会怎样"不要写在这里**——那是结果不是动作，会被读成多一步 |
+| `note` | 技术备注（依赖、耗时），灰色小字，不编号 |
+
+本机脚本通过 `POST /api/tools/push-token` 把值推回服务器，鉴权靠 `pushToken`
+（按任务绑定、长期有效、与普通凭据一样密文存储）。这一步**不能**依赖登录态：
+脚本那一侧没有 Cookie。配对码 `pair-code` 是它的备用通道（10 分钟、一次性）。
+
+**平台差异（2026-10-20 实测，不是推测）**：
+
+| | Windows | macOS |
+|---|---|---|
+| 下载物 | `update-workbuddy-token.cmd`，内嵌服务器地址与 `pushToken` | `grab-workbuddy-token.mjs`，内嵌同样的信息 |
+| 执行方式 | **双击即可**（`.cmd` 走文件关联，不需要权限位） | 必须在终端跑一次 `node <文件>` |
+| 原因 | — | 浏览器下载不保留执行位：`.command` 权限 644 时双击无反应；用 zip 保住权限后又被 Gatekeeper 隔离标记拦下 |
+
+> **WorkBuddy 与 CodeBuddy 是两个产品。** 本项目的 WorkBuddy 任务只允许出现
+> `www.workbuddy.cn` 域名。曾误用 CodeBuddy 控制台的 OAuth client 验证授权流程，
+> 得到的是另一个产品的登录页、且报"账号不存在"——那次结论作废，教训见 §11.8。
+
 ---
 
 ## 6. 模板契约
@@ -160,6 +191,12 @@ export default {
   accounts: false,            // true = 允许为这个模板建多个任务（一个任务一个账号）
   visibility: 'public',       // 'internal' = 只有 admin 可见可启用
   schedule: { window: { start: '09:00', end: '09:50' } },
+  // 可选：凭据只能在用户本机抓时，声明怎么抓（渲染在凭据输入框上方，见 §5.1）
+  credentialHelper: {
+    download: 'grab-workbuddy-token.mjs',
+    command: 'node grab-workbuddy-token.mjs',
+    note: '需要 Node 18+。',
+  },
   async run({ secrets, account, request, CookieJar, log, now }) {
     return { status: 'success', message: '完成', data: {} };
   },
@@ -168,6 +205,9 @@ export default {
 
 `visibility: 'internal'` 的模板对非 admin 返回 **404 而不是 403**——403 会证实它存在，
 等于把 internal 清单泄露出去。
+
+`credentialHelper.download` 只接受 `^[a-z0-9][a-z0-9-]*\.mjs$`：同一份正则同时挡住路径穿越
+和"把 `/etc/passwd` 声明成脚本"。下载路由另外只认模板声明过的文件名（白名单），不扫目录。
 
 ---
 
@@ -251,6 +291,50 @@ git push (main) → GitHub Actions → Release: weauto.tar.gz
 6. **`runs.jsonl` 与 CLI 路径并存**——`bin/weauto.mjs run` 仍走老的 JSONL 路径，
    不再被调度使用，仅用于手工调试。
 7. **每次执行都重新登录 v2free**——Cookie 仅 1 小时有效，`remember_me` 实测无效。
+8. **WorkBuddy token 只有 28 天，且拿不到 refresh_token**。续期发生在客户端**主进程**里
+   （`POST /v2/auth/token/refresh`，令牌走 `X-Refresh-Token` 头），渲染层没有任何续期代码，
+   内存遍历也搜不到令牌——所以每月要重跑一次本机脚本。任务在剩余 ≤7 天时会报警。
+9. **服务器无法主动获取用户本机的东西**。WeAuto 部署在 N150，与用户电脑之间没有任何通道。
+   所有"一键"能力都必须由**本机进程主动推送**（`POST /api/tools/push-token`），服务端只能等。
+   这是架构边界，不是实现取舍。
+10. **macOS 做不到"下载即双击"**（实测见 §5.1）。要彻底不碰终端，只能装常驻定时任务。
+
+### 11.1 为什么没有「网页点一个按钮就授权」（方案 B，已否决）
+
+理论上唯一能跳开本机脚本的做法：让 WorkBuddy 的 SSO 把 WeAuto 视为一个 OAuth 客户端，
+走授权码 + PKCE，回调到 weauto 域名，再用 code 换 `access_token` + `refresh_token`。
+
+**2026-10-20 用真实账号实测后否决**，证据：
+
+| 探测 | 结果 |
+|---|---|
+| realm 发现 | `www.workbuddy.cn/auth/realms/` 下只有 `copilot` 一个（`workbuddy`/`wb`/`personal`/`oneid` 全部 404） |
+| 授权页（client=`console`，回调指向本站 `/healthz`，PKCE） | 打开的是**另一个产品的控制台登录页**，登录直接报「账号不存在，请联系企业管理员」 |
+| 设备码（device_code） | discovery 声明支持，但该 client 返回 `unauthorized_client` |
+| 密码模式 | 同样 `unauthorized_client`；且本就不该做——把主账号密码交给自建服务不成立 |
+| 客户端实际登录路径 | 走 OneID（`/oneid/authz/oidc/v2/sso/`），第三方站点驱动不了 |
+
+**它不只是"技术上没通"，还有两个否决理由：**
+
+1. 那个 realm 被多个产品共用，浏览器登录页的品牌不是 WorkBuddy。让 WorkBuddy 用户去
+   一个"不像 WorkBuddy"的页面登录，体验比现在跑一次脚本更差。
+2. 就算某天打通，我们用的是别人家的 client 配置，对方随时可以收紧——把每月一次的
+   自动签到建在这上面，等于埋一颗随时会响的雷。
+
+**结论**：不投入实现。要"页面点按钮"，只剩一条路——本机装一个常驻小代理（见 §11.2）。
+
+### 11.2 如果一定要"页面点按钮"：本机代理
+
+纯网页拿不到 token，但"网页点按钮 + 本机有个常驻小程序"可以：
+
+1. 一次性安装：一个极小的本地程序（macOS launchd / Windows 计划任务），启动时读取
+   `~/.weauto/bind.json`（已有的 server + pushToken）。
+2. 它每隔一分钟问一次服务端「有没有人点了按钮」（用 pushToken 鉴权，没有就 204）。
+3. 用户在页面点「更新凭据」→ 服务端记一条待办 → 代理在一分钟内收到 → 抓 token → 推送 →
+   页面自动刷新。
+
+代价：**首次要在本机装一个常驻程序**；抓取时仍需重启客户端（除非让客户端常驻调试端口，
+那等于把 token 暴露给本机任意进程）。所以它省掉的是"每月手动跑"，不是"装东西"。
 
 ---
 
