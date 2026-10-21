@@ -74,7 +74,7 @@ src/
 tasks/                    模板：v2free-checkin.mjs、workbuddy-checkin.mjs
 scripts/                  probe.mjs、import-runs.mjs 等一次性脚本
 public/                   app.js（前端交互）、style.css
-tests/                    node:test，22 个文件（fixtures/ 放真实页面快照）
+tests/                    node:test，23 个文件（fixtures/ 放真实页面快照）
 data/                     weauto.db、jwt-secret、master-key、.env（已 gitignore）
 ```
 
@@ -191,6 +191,15 @@ v5 把「订阅 + 账号」两层拍平成「一行一个任务」（SQLite 改�
 | 下载物 | `update-workbuddy-token.cmd`，内嵌服务器地址与 `pushToken` | `grab-workbuddy-token.mjs`，内嵌同样的信息 |
 | 执行方式 | **双击即可**（`.cmd` 走文件关联，不需要权限位） | 必须在终端跑一次 `node <文件>` |
 | 原因 | — | 浏览器下载不保留执行位：`.command` 权限 644 时双击无反应；用 zip 保住权限后又被 Gatekeeper 隔离标记拦下 |
+
+**客户端怎么找**（`scripts/grab-workbuddy-token.mjs` 的 `findApp`）：枚举**所有存在的盘符**，
+每个盘试 `WorkBuddy` / `Program Files\WorkBuddy` / `Program Files (x86)\WorkBuddy` /
+`Programs\WorkBuddy` / `Apps\WorkBuddy`，再扫每个盘的**一级目录 × `WorkBuddy`**
+（覆盖 `D:\Soft\WorkBuddy` 这种自定义安装目录）。通配只扫一层：再深就变成全盘扫描，
+机械盘上几十秒，而双击的人只会以为它卡死了。命中多份时取 **exe 的 mtime 最新**那份
+（升级后新装的那个）；都找不到才报错，并提示用 `--app` 指定路径。
+这条逻辑只在 Windows 上跑，所以候选列表与挑选规则做成了可注入的纯函数，
+由 `tests/grabber-locate.test.mjs` 在其它平台上钉住。
 
 > **WorkBuddy 与 CodeBuddy 是两个产品。** 本项目的 WorkBuddy 任务只允许出现
 > `www.workbuddy.cn` 域名。曾误用 CodeBuddy 控制台的 OAuth client 验证授权流程，

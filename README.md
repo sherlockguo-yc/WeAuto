@@ -164,7 +164,7 @@ git push (main) → GitHub Actions → Release: weauto.tar.gz（不含 node_modu
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v20.18.3/bin:$PATH"
-npm test        # node --test tests/*.test.mjs，22 个文件
+npm test        # node --test tests/*.test.mjs，23 个文件
 ```
 
 CI 在打包之前跑测试，不过就不发 Release。覆盖：迁移与 schema、多租户隔离、凭据加密往返、
