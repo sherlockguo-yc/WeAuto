@@ -35,7 +35,8 @@ WeAuto 是一个**常驻 HTTP 服务 + Web 界面**的自动化任务平台，�
 | 何时执行、Web 展示与手动触发 | **WeAuto 自带**（不再是 WeMonitor） |
 | 进程是否活着 | WeMonitor（TCP 探活） |
 
-运行时依赖：`better-sqlite3`、`jsonwebtoken`、`express`；凭据解密的 `age` 只用于**迁移旧凭据**。
+运行时依赖：`better-sqlite3`、`express`、`jsonwebtoken`、`bcryptjs`（密码哈希，cost=12）。
+凭据解密的 `age` 只用于**迁移 v1 的旧凭据**（见 §5）。
 
 ---
 
@@ -46,7 +47,7 @@ bin/weauto-serve.mjs      常驻服务入口（组件装配都在这里）
 bin/weauto.mjs            CLI 入口（run / list / status，历史路径）
 src/
   config.mjs              运行期配置：端口、JWT secret、主密钥、TENANT_LIMITS
-  db.mjs                  SQLite 连接与迁移（v1–v4，只追加不改）
+  db.mjs                  SQLite 连接与迁移（v1–v5，只追加不改）
   bootstrap.mjs           启动期回填：旧数据归入第一个账号
   store.mjs               数据访问层（**只提供绑定用户的视图** forUser）
   user-secrets.mjs        每用户凭据加密（AES-256-GCM）
@@ -59,20 +60,30 @@ src/
   schedule.mjs            种子化随机调度 + effectiveSchedule
   server.mjs              HTTP 路由与页面
   render.mjs              服务端直出 HTML
+  task-contract.mjs       模板契约校验（加载期拒绝不合规的声明）
+  pairing.mjs             配对码：本机脚本把凭据推回服务端的备用通道
+  credentials.mjs         凭据字段的读写与「已设置 / 未设置」视图
+  format.mjs              结果视图渲染（只认任务声明的 view）
+  http.mjs                CookieJar + fetch 封装
+  history.mjs             runs.jsonl 读写（CLI 路径，仅手工调试）
+  lock.mjs                进程锁（陈旧判定 + 年龄兜底）
+  runner.mjs              CLI 执行路径（写 JSONL，与 Web 路径并存）
+  secrets.mjs             age 解密（只用于迁移 v1 的旧凭据）
+  util.mjs                路径常量、dotenv 解析、时区计算
   auth/                   账号（users / password / token）
-tasks/v2free-checkin.mjs  v2free 签到模板
+tasks/                    模板：v2free-checkin.mjs、workbuddy-checkin.mjs
 scripts/                  probe.mjs、import-runs.mjs 等一次性脚本
 public/                   app.js（前端交互）、style.css
-tests/                    node:test，20 个文件
+tests/                    node:test，22 个文件（fixtures/ 放真实页面快照）
 data/                     weauto.db、jwt-secret、master-key、.env（已 gitignore）
 ```
 
 ---
 
-## 3. 数据模型（schema 版本 4）
+## 3. 数据模型（schema 版本 5）
 
 ```
-users ──┬── subscriptions ── subscription_accounts
+users ──┬── subscriptions（一行 = 一个任务）
         ├── user_secrets（每用户加密凭据）
         ├── invites（created_by / used_by）
         └── runs ── run_logs
@@ -231,6 +242,19 @@ export default {
 | `network-error` | 超时或任务抛异常 | ❌ |
 | `config-error` | 凭据缺字段或解密失败 | ❌ |
 
+上表是**执行结果**（写进 `runs`）。页面上的「今日状态」是**推导出来的**（`status.mjs`，不存库），
+取值比这张表多四个：
+
+| 今日状态 | 含义 |
+|---|---|
+| `pending` | 还没到点，等着 |
+| `disabled` | 任务被停用了 |
+| `manual` | 没配调度，只能手动触发 |
+| `missed` | **窗口已过 / 计划时刻已过且未执行**——今天不会再自动跑成，标「待执行」就是在骗人，所以单列一项并计入「需要处理」 |
+
+调度器**不写「跳过」记录**：每 30 秒写一条「窗口已过」会瞬间淹掉执行历史，
+这些状态全由「计划 + 实际记录」现算。
+
 ---
 
 ## 8. 调度与执行
@@ -242,6 +266,8 @@ export default {
 - **单用户串行**：同一用户同时只跑一个任务
 - **全局并发上限 4**（`TENANT_LIMITS.maxConcurrent`）
 - **配额**：每用户每天 100 次（手动触发也计入），超限写一条 `skipped` 并写明原因
+- **上限**（`TENANT_LIMITS`，运营参数集中在一处、由装配层注入，**各模块自己不读环境变量**）：
+  每用户最多 20 个任务、间隔任务的最小间隔 5 分钟
 - 停用的用户、**停止状态的任务**、已下线的模板都不进入调度目标
 
 **执行器**负责：幂等 → 配额 → 取该用户该账号的凭据 → 跑（任务自带的 `timeoutMs` 超时）→
@@ -269,6 +295,11 @@ export default {
 
 写操作有 CSRF 保护（非同源拒绝）；登录与注册有按 IP 的失败限速。
 
+**本机脚本的通道不走页面**：`GET /api/tools/:file` 下载凭据抓取脚本（只认模板声明过的文件名，
+不扫目录），`POST /api/tools/push-token` 接收脚本推回的凭据——它靠按任务绑定的 `pushToken` 鉴权，
+**不能依赖登录态**（脚本那一侧没有 Cookie）；`/api/tasks/:id/pair-code` 与 `/pair-status`
+是同一件事的备用配对通道（10 分钟、一次性）。背景见 §5.1。
+
 **破坏性操作不用 `window.confirm`**：删除任务、撤销邀请码、删除账号都走 `askConfirm()`
 （`public/app.js`）——原生 `<dialog>` + `showModal()`，宽屏居中一张小卡、窄屏转底部抽屉，
 标题带上对象名（「删除任务「签到」？」），确认按钮实心红、取消是描边幽灵按钮。
@@ -281,10 +312,14 @@ Esc 关闭、点遮罩关闭、Tab 留在框内、关闭后焦点还给原按钮
 ## 10. 部署
 
 ```
-git push (main) → GitHub Actions → Release: weauto.tar.gz
+git push (main) → GitHub Actions → Release: weauto.tar.gz（只含源码，不含 node_modules）
+  → 上传到 Cloudflare R2（dl.sherlockguo.com）
   → webhook / cron → deploy-agent → rsync 到 ~/weauto/ → restart.sh
 ```
 
+- 包里**不含 `node_modules`**：带依赖的包 7.1MB 而 N150 出境到 GitHub 只有几 KB/s，
+  现在依赖由 `restart.sh` 从 npmmirror 装到 `~/weauto-deps` 并软链回部署目录
+  （部署目录每轮被 `rsync --delete` 清空，放在里面会被删）
 - 端口 **18991**，域名 `weauto.sherlockguo.com`（Cloudflare Tunnel，路由在 CF Dashboard 配置，
   **禁止改 `config.yml` 的 ingress**）
 - `restart.sh` 需带 flock（且子进程要 `9>&-`，否则锁被继承造成死锁）
@@ -376,3 +411,4 @@ npm test        # node --test tests/*.test.mjs
 | `task-v2free.test.mjs` | 页面解析（基于真实快照） |
 | `schedule.test.mjs` / `util.test.mjs` / `format.test.mjs` | 时区与调度算法、格式化 |
 | `history.test.mjs` / `lock.test.mjs` / `credentials.test.mjs` / `contract.test.mjs` | 历史路径与跨仓库契约 |
+| `pairing.test.mjs` / `task-workbuddy.test.mjs` | 配对码通道；WorkBuddy 抓取脚本 |

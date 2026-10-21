@@ -120,6 +120,10 @@ export default {
 | `skipped` | 未到点、已完成或配额超限 |
 | `failed` / `blocked` / `network-error` / `config-error` | 业务失败 / 被风控 / 超时异常 / 凭据缺失或解密失败 |
 
+上表是执行结果。页面上还有几个**推导出来的**今日状态（不存库）：`pending`（还没到点）、
+`disabled`（已停用）、`manual`（没配调度）、`missed`（窗口或计划时刻已过且未执行，
+今天不会再自动跑成，计入「需要处理」）。
+
 ---
 
 ## 配置

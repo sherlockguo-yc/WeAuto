@@ -1,8 +1,8 @@
 # WeAuto 多租户化（v3）—— 需求文档
 
-> 状态：**已确认**（2026-10-14）。10 个决策点全部定稿（§2、§10），可按 §11 进入编码。
-> 前序：[`weauto.md`](weauto.md)（v1 被动 CLI，已冻结）、[`weauto-standalone.md`](weauto-standalone.md)（v2 单租户服务化）
-> 本文件回答「**为什么**这么做」与「**怎么**做」；实现完成后现状描述写入 `docs/功能规格/weauto.md`。
+> 状态：**已实现**（2026-10-15 完成，实施结果见 §12）。10 个决策点全部定稿（§2、§10）。
+> 前序：[`weauto.md`](weauto.md)（v1 被动 CLI，已冻结）、[`weauto-standalone.md`](weauto-standalone.md)（v2 单租户服务化，已实现并被本文取代）
+> 本文件回答「**为什么**这么做」与「**怎么**做」；现状描述在 `docs/功能规格/weauto.md`，本文不再随实现更新。
 
 ---
 
@@ -253,7 +253,8 @@ API：`/api/*` 全部按 `req.user.id` 过滤。特别注意 `POST /api/tasks/:n
 
 ## 6. 邀请码注册流程
 
-1. admin 在 `/settings` 生成：`POST /api/invites` → `{ code, url }`，参数 `{ expiresInDays, maxUses, note }`
+1. admin 在**账号管理页 `/admin/users`** 生成（不是 `/settings`，那是个人弹层）：
+   `POST /api/invites` → `{ code, url }`，参数 `{ expiresInDays, maxUses, note }`
 2. 链接形如 `https://weauto.sherlockguo.com/register?code=xxx`
 3. `GET /register`：校验码存在 / 未过期 / 未用完 / 未撤销 → 显示表单；否则显示具体原因。表单上必须有一段**凭据披露说明**（已确认要写），措辞要点：
    - 你填的账号密码会**加密后存在本站数据库**
