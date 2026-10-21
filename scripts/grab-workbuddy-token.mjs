@@ -36,6 +36,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileP = promisify(execFile);
@@ -103,26 +104,117 @@ function die(msg, code = 1) {
 
 /* ───────────────────────── 定位与启停客户端 ───────────────────────── */
 
+/** 盘符探测的起点：A/B 是软驱，不值得探（探一下可能真的要等磁头） */
+const FIRST_DRIVE = 'C'.charCodeAt(0);
+const LAST_DRIVE = 'Z'.charCodeAt(0);
+
+/**
+ * 现在存在哪些盘。
+ *
+ * 单个盘掉线（拔掉的 U 盘、没放碟的光驱、断开的映射网络盘）在这里表现为 access 抛错，
+ * 忽略即可。唯一要留意的代价：**断开的映射网络盘**会让 access 卡住一两秒，
+ * 那种情况下整个探测会慢，但不会错。
+ */
+function existingDrives() {
+  const out = [];
+  for (let code = FIRST_DRIVE; code <= LAST_DRIVE; code++) {
+    const root = `${String.fromCharCode(code)}:\\`;
+    try {
+      fs.accessSync(root, fs.constants.F_OK);
+      out.push(root);
+    } catch {
+      /* 没有这个盘 */
+    }
+  }
+  return out;
+}
+
+/** WorkBuddy 安装器允许改目录，所以每个盘的常见位置都要试 */
+const WIN_STANDARD_DIRS = [
+  'WorkBuddy',
+  'Program Files\\WorkBuddy',
+  'Program Files (x86)\\WorkBuddy',
+  'Programs\\WorkBuddy',
+  'Apps\\WorkBuddy',
+];
+
+/**
+ * Windows 上的候选位置：**每个存在的盘** × 常见目录，再加每个盘「一级目录 × WorkBuddy」。
+ *
+ * 以前只写了 C 盘的几个位置，装在 D 盘的用户只能自己 --app——而安装器默认就让用户改目录，
+ * 把 Electron 客户端装到数据盘的人不少。
+ *
+ * 通配只扫**一层**（`D:\*\WorkBuddy\WorkBuddy.exe`）：再深就变成全盘扫描，机械盘上要几十秒，
+ * 而双击 .cmd 的人只会以为它卡死了。一层刚好覆盖 `D:\Soft\WorkBuddy`、`D:\Apps\WorkBuddy`
+ * 这类最常见的自定义目录。
+ *
+ * 纯函数（盘符与目录列表都可注入），所以能在非 Windows 上测。
+ */
+export function windowsCandidates({
+  drives = [],
+  readdir = (root) => fs.readdirSync(root, { withFileTypes: true }),
+} = {}) {
+  const out = [];
+  const add = (p) => {
+    if (!out.includes(p)) out.push(p);
+  };
+
+  for (const drive of drives) {
+    for (const sub of WIN_STANDARD_DIRS) add(path.win32.join(drive, sub, 'WorkBuddy.exe'));
+
+    let entries = [];
+    try {
+      entries = readdir(drive);
+    } catch {
+      continue; // 空光驱、刚拔掉的 U 盘
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      add(path.win32.join(drive, entry.name, 'WorkBuddy', 'WorkBuddy.exe'));
+    }
+  }
+  return out;
+}
+
+/** 文件修改时间，读不到当 0：排不上序也总比整个流程炸掉好 */
+function mtimeOf(file) {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 多份安装里挑一个。
+ *
+ * 旧版本没卸干净、或换过安装目录时会出现多个 WorkBuddy.exe。升级后的那份 mtime 最新，
+ * 用它是唯一「不用问用户又能选对」的判据。
+ */
+export function pickNewest(paths, mtime = mtimeOf) {
+  return [...paths].sort((a, b) => mtime(b) - mtime(a))[0];
+}
+
 /** 各平台常见的安装位置。找不到就让用户用 --app 指定，不去全盘扫描 */
-function candidateApps() {
+function candidateApps(drives) {
   if (IS_MAC) {
     return [
       '/Applications/WorkBuddy.app',
       path.join(os.homedir(), 'Applications', 'WorkBuddy.app'),
     ];
   }
-  if (IS_WIN) {
-    const local = process.env.LOCALAPPDATA ?? '';
-    const pf = process.env.ProgramFiles ?? 'C:\\Program Files';
-    const pf86 = process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)';
-    return [
-      path.join(local, 'Programs', 'WorkBuddy', 'WorkBuddy.exe'),
-      path.join(local, 'WorkBuddy', 'WorkBuddy.exe'),
-      path.join(pf, 'WorkBuddy', 'WorkBuddy.exe'),
-      path.join(pf86, 'WorkBuddy', 'WorkBuddy.exe'),
-    ];
+  if (!IS_WIN) return [];
+
+  const list = windowsCandidates({ drives });
+  // %LOCALAPPDATA% 一定在系统盘，但它下面那一层不是标准目录名，单独补
+  const local = process.env.LOCALAPPDATA ?? '';
+  if (local) {
+    list.unshift(
+      path.win32.join(local, 'Programs', 'WorkBuddy', 'WorkBuddy.exe'),
+      path.win32.join(local, 'WorkBuddy', 'WorkBuddy.exe'),
+    );
   }
-  return [];
+  return list;
 }
 
 function findApp(explicit) {
@@ -130,13 +222,25 @@ function findApp(explicit) {
     if (!fs.existsSync(explicit)) die(`--app 指定的路径不存在：${explicit}`, 2);
     return explicit;
   }
-  for (const p of candidateApps()) {
-    if (fs.existsSync(p)) return p;
-  }
+
+  const drives = IS_WIN ? existingDrives() : [];
+  const tried = candidateApps(drives);
+
+  const hits = tried.filter((p) => fs.existsSync(p));
+  if (hits.length === 1) return hits[0];
+  if (hits.length > 1) return pickNewest(hits);
+
+  // 候选可能有几十条（每个盘 × 每个一级目录），全列出来是一屏噪音，
+  // 所以只交代查过哪儿 + 怎么手动指定
+  const where = IS_WIN
+    ? `查过：${drives.map((d) => d.slice(0, 2)).join('、') || '（没有可用盘符）'} 盘上的 ` +
+      `${WIN_STANDARD_DIRS.join(' / ')}，以及各盘一级目录下的 *\\WorkBuddy`
+    : `已尝试：\n${tried.map((p) => `    · ${p}`).join('\n')}`;
+
   die(
-    `没找到 WorkBuddy 客户端。请用 --app 指定安装路径。\n  已尝试：\n${candidateApps()
-      .map((p) => `    · ${p}`)
-      .join('\n')}`,
+    `没找到 WorkBuddy 客户端。\n  ${where}\n` +
+      `  装在别处时用 --app 指定，例如：\n` +
+      `    node grab-workbuddy-token.mjs --app "D:\\Soft\\WorkBuddy\\WorkBuddy.exe"`,
     2,
   );
 }
@@ -611,4 +715,7 @@ async function main() {
   if (days !== null && days <= 7) console.log(`⚠️  这枚 token 只剩 ${days} 天，请尽快使用`);
 }
 
-main().catch((err) => die(err.message));
+// 只有直接 `node grab-workbuddy-token.mjs` 才跑；被 import 时（测试）什么都不做
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => die(err.message));
+}
