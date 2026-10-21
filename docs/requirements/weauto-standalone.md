@@ -445,7 +445,7 @@ v1 的 WeAuto 之所以那么「轻」，是因为它**不是一个一直在跑�
 
 ### 12.8 P1 实施结果（2026-10-14）
 
-- 仓库：`https://github.com/sherlockguo-yc/we-auth`，tag `v0.1.0`（公开，三个项目用 git 依赖引入，CI 不需要 token）
+- 仓库：`https://github.com/sherlockguo-yc/we-auth`，tag `v0.1.0`（公开，三个项目用 git 依赖引入，CI 不需要 token）—— **该仓库已于 2026-10-21 删除，本节仅供历史记录**
 - 形态：CJS 核心（WeMonitor 是 CJS，ESM 服务可 `import` 复用同一份代码）
 - `better-sqlite3` 为 **peerDependency**，由宿主项目提供，避免一个进程出现两份不同 ABI 的原生模块
 - 测试：40 个用例通过，覆盖登录/注册/封禁/归档/pending、防用户名枚举、token 边界（跨 secret、过期、篡改）、**存量 cost=10 与 cost=12 哈希的向后兼容**、以及迁移脚本的端到端（dry-run / apply / 幂等 / `--prefer` 冲突处理 / 来源库缺失降级）
@@ -498,7 +498,7 @@ we-auth 已完成并测试过的代码（用户库、密码校验、JWT、40 个
 
 - 附带收益：**备份问题自动消失**。WeAuto 自己的 `~/weauto/data` 走既有的 `$HOME/<服务>/data` 备份约定，不需要 §12.7 里那套「给 WeMonitor 引入仅备份目录概念」的改动
 - 已推送到 WeMonitor 的备份页改动（`f225ef0`）**仍然成立且有用**：它修掉了「无 `health_target` 的备份条目被误显示为『已停用的服务』」，为将来任何仅备份目标留下正确语义，属独立的正向修复
-- `sherlockguo-yc/we-auth` 仓库保留在 GitHub 作为参考，不再被任何项目引用
+- `sherlockguo-yc/we-auth` 仓库已于 **2026-10-21 删除**（GitHub 远程仓库与本地副本一并删除），代码去向见 §14.4；此后无任何项目引用它
 
 ### 13.5 仍然成立的部分
 
