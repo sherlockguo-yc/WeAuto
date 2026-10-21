@@ -129,6 +129,8 @@ function existingDrives() {
   return out;
 }
 
+const WIN_APP_NAME = 'WorkBuddy.exe';
+
 /** WorkBuddy 安装器允许改目录，所以每个盘的常见位置都要试 */
 const WIN_STANDARD_DIRS = [
   'WorkBuddy',
@@ -195,7 +197,142 @@ export function pickNewest(paths, mtime = mtimeOf) {
   return [...paths].sort((a, b) => mtime(b) - mtime(a))[0];
 }
 
-/** 各平台常见的安装位置。找不到就让用户用 --app 指定，不去全盘扫描 */
+/* ───────────────── Windows：从系统自己的记录里找 ─────────────────
+ * 进程 → App Paths → 卸载项 → 快捷方式，越靠前越「就是它」。
+ * 四类线索合并成**一次** PowerShell 调用：每启一次 powershell.exe 要 ~400ms，
+ * 分开三次就是 1.2 秒，而这条路径每次双击都会走。
+ * 输出 JSON，解析放在 hintsFromOutput 里（纯函数，可在非 Windows 上测）。
+ */
+export const PS_HINTS = `$ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$found = New-Object System.Collections.ArrayList
+function Add-Hit($p) {
+  # 用叶子文件名比对而不是正则：路径正则里要写双反斜杠，这里少一层转义就少一个坑
+  if ($p -and (Split-Path -Leaf $p) -eq 'WorkBuddy.exe' -and (Test-Path -LiteralPath $p)) { [void]$found.Add($p) }
+}
+# 1) 正在运行的客户端：它跑着的时候，这个路径是唯一可信的
+Get-Process -Name WorkBuddy | Select-Object -First 1 -ExpandProperty Path | ForEach-Object { Add-Hit $_ }
+# 2) App Paths：NSIS / Squirrel 安装器几乎都会写这一项
+foreach ($k in 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WorkBuddy.exe','HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WorkBuddy.exe','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\WorkBuddy.exe') {
+  Add-Hit (Get-ItemProperty -Path $k).'(default)'
+}
+# 3) 卸载项：DisplayIcon 常常带 ",0" 图标序号，取逗号前那截
+foreach ($k in 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*') {
+  Get-ItemProperty -Path $k | Where-Object { $_.DisplayName -like '*WorkBuddy*' } | ForEach-Object {
+    if ($_.DisplayIcon) { Add-Hit ($_.DisplayIcon.Split(',')[0]) }
+    if ($_.InstallLocation) { Add-Hit (Join-Path $_.InstallLocation 'WorkBuddy.exe') }
+  }
+}
+# 4) 开始菜单与桌面快捷方式：用户自己拖到桌面的那份也算。
+#    目录用 [Environment]::GetFolderPath 取，不拼 %ProgramData% 之类的路径
+$sh = New-Object -ComObject WScript.Shell
+foreach ($d in @([Environment]::GetFolderPath('CommonStartMenu'), [Environment]::GetFolderPath('StartMenu'), [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'))) {
+  Get-ChildItem -Path $d -Recurse -Filter *.lnk | ForEach-Object { Add-Hit ($sh.CreateShortcut($_.FullName).TargetPath) }
+}
+ConvertTo-Json -InputObject @($found) -Compress
+`;
+
+/**
+ * 解析上面那段 PowerShell 的输出。
+ *
+ * PowerShell 只返回一条时 ConvertTo-Json 会退化成字符串（不是数组），
+ * 被策略拦掉时则可能是一段错误文本——三种形态都得能吃下，最差也要返回空数组
+ * 让后面的分级继续走，不能因为解析失败就整条流程挂掉。
+ */
+export function hintsFromOutput(stdout) {
+  const text = String(stdout ?? '').trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    return list.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim());
+  } catch {
+    return text
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => /WorkBuddy\.exe$/i.test(s));
+  }
+}
+
+async function systemHints() {
+  try {
+    const { stdout } = await execFileP(
+      'powershell',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', PS_HINTS],
+      { maxBuffer: 4 * 1024 * 1024, timeout: 20_000, windowsHide: true },
+    );
+    return hintsFromOutput(stdout);
+  } catch {
+    // PowerShell 被组策略禁用 / 超时被杀：静默降级，后面的分级照样能找
+    return [];
+  }
+}
+
+/** 递归扫描时直接跳过的目录名（小写）：这些地方不会有客户端，却能吃掉大半时间 */
+const WIN_SKIP_DIRS = new Set([
+  'windows',
+  '$recycle.bin',
+  'system volume information',
+  'node_modules',
+  '.git',
+  'package cache',
+]);
+
+/**
+ * 兜底：递归遍历，直到找到 WorkBuddy.exe。
+ *
+ * **不限深度**——「不管装在哪都能找到」靠的就是这一层，限了深度就等于又把边界推给用户。
+ * 代价是可能几十秒，所以：
+ *   · 跳过系统目录（上面的 WIN_SKIP_DIRS），这几棵子树往往占掉大半时间
+ *   · 不跟符号链接 / junction：Windows 上 junction 可以成环，会原地打转
+ *   · 拿不到权限的目录直接跳过（$Recycle.Bin、部分系统目录）
+ *   · 带时间上限，超时返回 null，由调用方提示用 --app
+ *   · onProgress 每扫一批回调一次，双击运行的人至少能看见它在动
+ */
+export function scanTree({
+  roots = [],
+  readdir = (dir) => fs.readdirSync(dir, { withFileTypes: true }),
+  target = WIN_APP_NAME,
+  skip = WIN_SKIP_DIRS,
+  maxMs = 120_000,
+  now = Date.now,
+  onProgress = null,
+} = {}) {
+  const started = now();
+  const wanted = target.toLowerCase();
+  const stack = [...roots];
+  let visited = 0;
+
+  while (stack.length) {
+    if (now() - started > maxMs) return null;
+
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = readdir(dir);
+    } catch {
+      continue;
+    }
+
+    visited += 1;
+    if (onProgress && visited % 5000 === 0) onProgress(visited, dir);
+
+    const subdirs = [];
+    for (const entry of entries) {
+      if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (!skip.has(entry.name.toLowerCase())) subdirs.push(path.win32.join(dir, entry.name));
+      } else if (entry.name.toLowerCase() === wanted) {
+        return path.win32.join(dir, entry.name);
+      }
+    }
+    // 倒序压栈，出栈顺序就是目录名的自然顺序 —— 只是让日志读起来正常
+    for (let i = subdirs.length - 1; i >= 0; i--) stack.push(subdirs[i]);
+  }
+  return null;
+}
+
+/** 各平台常见的安装位置（分级里的第 2 级；真正找不到还有第 3 级递归兜底） */
 function candidateApps(drives) {
   if (IS_MAC) {
     return [
@@ -217,29 +354,63 @@ function candidateApps(drives) {
   return list;
 }
 
-function findApp(explicit) {
+/**
+ * 定位客户端。**分级**，便宜的先来、贵的兜底，命中即停：
+ *
+ *   0. `--app`（用户显式指定，最高优先级）
+ *   1. 系统记录：运行中的进程 / App Paths / 卸载项 / 快捷方式
+ *   2. 各盘常见目录 + 一级通配（`D:\Soft\WorkBuddy` 这类）
+ *   3. 递归遍历每个固定盘（跳过系统目录，最多 120 秒，带进度）
+ *
+ * 第 3 层是「装哪都能找到」的保证：不限深度、不猜目录。它慢，所以只在前面全落空时才跑。
+ */
+async function findApp(explicit) {
   if (explicit) {
     if (!fs.existsSync(explicit)) die(`--app 指定的路径不存在：${explicit}`, 2);
     return explicit;
   }
 
-  const drives = IS_WIN ? existingDrives() : [];
-  const tried = candidateApps(drives);
+  if (IS_MAC) {
+    const tried = candidateApps([]);
+    const hits = tried.filter((p) => fs.existsSync(p));
+    if (hits.length) return pickNewest(hits);
+    die(
+      `没找到 WorkBuddy 客户端。请用 --app 指定安装路径。\n  已尝试：\n${tried
+        .map((p) => `    · ${p}`)
+        .join('\n')}`,
+      2,
+    );
+  }
 
-  const hits = tried.filter((p) => fs.existsSync(p));
-  if (hits.length === 1) return hits[0];
-  if (hits.length > 1) return pickNewest(hits);
+  if (!IS_WIN) die(`暂不支持 ${process.platform}`, 2);
 
-  // 候选可能有几十条（每个盘 × 每个一级目录），全列出来是一屏噪音，
-  // 所以只交代查过哪儿 + 怎么手动指定
-  const where = IS_WIN
-    ? `查过：${drives.map((d) => d.slice(0, 2)).join('、') || '（没有可用盘符）'} 盘上的 ` +
-      `${WIN_STANDARD_DIRS.join(' / ')}，以及各盘一级目录下的 *\\WorkBuddy`
-    : `已尝试：\n${tried.map((p) => `    · ${p}`).join('\n')}`;
+  const drives = existingDrives();
+
+  // 1) 系统记录
+  const hinted = (await systemHints()).filter((p) => fs.existsSync(p));
+  if (hinted.length) return pickNewest(hinted);
+
+  // 2) 常见目录 + 一级通配
+  const known = candidateApps(drives).filter((p) => fs.existsSync(p));
+  if (known.length) return pickNewest(known);
+
+  // 3) 兜底：真的去各盘里翻
+  console.log(`  常见位置都没有，开始在 ${drives.map((d) => d.slice(0, 2)).join('、')} 盘里查找…`);
+  const scanned = scanTree({
+    roots: drives,
+    onProgress: (count) => console.log(`  已扫描 ${count} 个目录…`),
+  });
+  if (scanned) return scanned;
+
+  const where =
+    `查过：系统记录（进程 / App Paths / 卸载项 / 快捷方式）、` +
+    `${drives.map((d) => d.slice(0, 2)).join('、') || '（没有可用盘符）'} 盘上的 ` +
+    `${WIN_STANDARD_DIRS.join(' / ')}，以及各盘一级目录下的 *\\WorkBuddy；` +
+    `最后递归扫描了所有盘（超过 120 秒或已扫完）。`;
 
   die(
     `没找到 WorkBuddy 客户端。\n  ${where}\n` +
-      `  装在别处时用 --app 指定，例如：\n` +
+      `  如果它确实装在某个很深的目录里，请用 --app 直接指定：\n` +
       `    node grab-workbuddy-token.mjs --app "D:\\Soft\\WorkBuddy\\WorkBuddy.exe"`,
     2,
   );
@@ -603,7 +774,7 @@ async function main() {
   }
   if (!IS_MAC && !IS_WIN) die(`暂不支持 ${process.platform}，本脚本只覆盖 macOS 与 Windows`, 2);
 
-  const appPath = findApp(args.app);
+  const appPath = await findApp(args.app);
   const appName = args.appName ?? path.basename(appPath).replace(/\.(app|exe)$/i, '');
   console.log(`客户端：${appPath}`);
 
