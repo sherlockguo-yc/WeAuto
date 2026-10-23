@@ -2,7 +2,7 @@
  * 任务执行器 —— 锁 → 调度门禁 → 幂等检查 → 解密凭据 → 执行 → 落记录
  */
 import { appendRun, hasSuccessOn } from './history.mjs';
-import { CookieJar, request } from './http.mjs';
+import { CookieJar, createRequester } from './http.mjs';
 import { acquireLock } from './lock.mjs';
 import { getTask } from './registry.mjs';
 import { shouldRunNow } from './schedule.mjs';
@@ -69,7 +69,8 @@ export async function runTask(taskName, opts = {}) {
       const secrets = loadSecrets(task.requires ?? []);
       const ctx = {
         secrets,
-        request,
+        // CLI 路径没有账号维度，用任务名做种子——同一任务每天同一个 UA 即可
+        request: createRequester({ seed: taskName }),
         CookieJar,
         log,
         now: new Date(),

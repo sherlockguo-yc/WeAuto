@@ -46,14 +46,22 @@ export function effectiveSchedule(task, override) {
 /**
  * 计算某任务在指定日期的目标执行时刻（自午夜起的秒数）
  * 同一任务同一天结果恒定 —— 这是幂等与可测试的基础。
+ *
+ * accountKey 参与种子：同一模板的多个账号必须落在窗口内的**不同**时刻。
+ * 不含账号时（CLI 单账号路径、旧调用）退回只用任务名，行为与以前完全一致。
+ *
+ * 为什么账号必须进种子：不含账号时 3 个 v2free 账号当天的目标秒数一模一样，
+ * 全靠调度器「同一用户只许一个在飞」把它们串行到 30 秒一个 —— 那是兜底，
+ * 不是设计。出口 IP 只有一个，账号该在时间上散开。
  */
-export function targetSecondsOfDay(taskName, window, date) {
+export function targetSecondsOfDay(taskName, window, date, accountKey = '') {
   const start = hhmmToSeconds(window.start);
   const end = hhmmToSeconds(window.end);
   if (end <= start) {
     throw new Error(`调度窗口非法：${window.start} – ${window.end}（结束须晚于开始）`);
   }
-  const digest = crypto.createHash('sha256').update(`${taskName}:${date}`).digest();
+  const seed = accountKey ? `${taskName}:${accountKey}` : taskName;
+  const digest = crypto.createHash('sha256').update(`${seed}:${date}`).digest();
   return start + (digest.readUInt32BE(0) % (end - start));
 }
 
@@ -61,9 +69,9 @@ export function targetSecondsOfDay(taskName, window, date) {
  * 判断此刻是否该执行
  * @returns {{date: string, target: number, targetLabel: string, current: number, reached: boolean}}
  */
-export function shouldRunNow(taskName, window, now = new Date()) {
+export function shouldRunNow(taskName, window, now = new Date(), accountKey = '') {
   const date = dateInTZ(now);
-  const target = targetSecondsOfDay(taskName, window, date);
+  const target = targetSecondsOfDay(taskName, window, date, accountKey);
   const current = secondsOfDayInTZ(now);
   return {
     date,
@@ -75,9 +83,9 @@ export function shouldRunNow(taskName, window, now = new Date()) {
 }
 
 /** 供 CLI 展示：某个任务今日的预期执行时刻 */
-export function describeWindow(taskName, window, now = new Date()) {
+export function describeWindow(taskName, window, now = new Date(), accountKey = '') {
   const date = dateInTZ(now);
-  const target = targetSecondsOfDay(taskName, window, date);
+  const target = targetSecondsOfDay(taskName, window, date, accountKey);
   return {
     date,
     window: `${window.start}–${window.end}`,

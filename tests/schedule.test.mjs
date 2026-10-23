@@ -75,6 +75,32 @@ describe('targetSecondsOfDay', () => {
     assert.throws(() => targetSecondsOfDay('t', { start: '10:00', end: '09:00' }, DATE), /调度窗口非法/);
     assert.throws(() => targetSecondsOfDay('t', { start: '09:00', end: '09:00' }, DATE), /调度窗口非法/);
   });
+
+  /*
+   * 多账号错峰：出口 IP 只有一个，同模板的多个账号若落在同一秒，
+   * 目标站看到的就是「同一 IP 同一时刻打来若干次登录」——这是要避免的形态。
+   */
+  it('同一任务的多个账号落在不同时刻，且都在窗口内', () => {
+    const accounts = ['a-11111111', 'a-22222222', 'a-33333333', 'a-44444444', 'a-55555555'];
+    const targets = accounts.map((k) => targetSecondsOfDay(TASK, WINDOW, DATE, k));
+    const start = 9 * 3600;
+    const end = start + 50 * 60;
+
+    assert.equal(new Set(targets).size, accounts.length, '每个账号应有独立时刻，不能撞车');
+    for (const t of targets) {
+      assert.ok(t >= start && t < end, `目标时刻应在窗口内，实际 ${secondsToHHMM(t)}`);
+    }
+
+    const span = Math.max(...targets) - Math.min(...targets);
+    assert.ok(span > 1800, `5 个账号应散布在半小时以上，实际跨度 ${span}s`);
+  });
+
+  it('不传 accountKey 时退回只用任务名（CLI 路径行为不变）', () => {
+    assert.equal(
+      targetSecondsOfDay(TASK, WINDOW, DATE),
+      targetSecondsOfDay(TASK, WINDOW, DATE, ''),
+    );
+  });
 });
 
 describe('shouldRunNow', () => {

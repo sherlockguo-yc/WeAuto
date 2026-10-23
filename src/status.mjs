@@ -61,6 +61,8 @@ export function summarizeTask({
     nowMs,
     hasSuccessToday,
     hasScheduledRun: schedule?.kind === 'once' ? store.hasScheduledRun(task.name, accountKey) : false,
+    // 与调度器同源：界面显示的「今日目标时刻」必须和实际执行用的是同一个种子
+    accountKey,
     random,
   });
 

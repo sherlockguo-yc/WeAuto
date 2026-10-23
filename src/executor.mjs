@@ -10,7 +10,7 @@
  * 与 `src/runner.mjs`（CLI 用、写 JSONL）暂时并存：CLI 路径是当前每天在跑签到的
  * 那条路，不动它以免打断线上；等 P2c 把历史导入数据库后统一成一条。
  */
-import { CookieJar, request } from './http.mjs';
+import { CookieJar, createRequester } from './http.mjs';
 import { SecretsError, loadSecrets } from './secrets.mjs';
 import { STATUS } from './task-contract.mjs';
 import { dateInTZ } from './util.mjs';
@@ -103,7 +103,12 @@ export function createExecutor({
       secrets: {},
       /** 多账号：契约里预留的 account 现在有了真实取值（单账号模板仍为 null） */
       account: accountKey ? { key: accountKey } : null,
-      request,
+      /*
+       * 绑定到「这个账号」的 request：UA 按账号固定，不同账号不同。
+       * 传 task.name 兜底，保证单账号模板也有一个稳定的 UA，而不是随机漂移。
+       * 域名节流在 request 内部，所有账号共用同一张时间表。
+       */
+      request: createRequester({ seed: accountKey ? `${task.name}:${accountKey}` : task.name }),
       CookieJar,
       log: record,
       now: new Date(startedAt),

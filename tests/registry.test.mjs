@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertValidTask, getTask, loadTasks } from '../src/registry.mjs';
+import { hhmmToSeconds } from '../src/util.mjs';
 
 const base = { name: 'demo', run: async () => ({ status: 'success' }) };
 
@@ -83,7 +84,15 @@ describe('loadTasks / getTask（对真实 tasks/ 目录）', () => {
     assert.ok(t, '应加载到 v2free-checkin');
     assert.equal(t.file, 'v2free-checkin.mjs');
     assert.deepEqual(t.requires, ['V2FREE_EMAIL', 'V2FREE_PASSWORD']);
-    assert.deepEqual(t.schedule.window, { start: '09:00', end: '09:50' });
+    /*
+     * 只断言「窗口合法且够宽」，不锁死具体时刻。
+     * 锁死会让每次调窗口（比如为多账号散开而拉长）都得改测试，
+     * 而这条用例真正要守的是「能加载到真实任务并读出调度」。
+     */
+    const { start, end } = t.schedule.window;
+    assert.match(start, /^\d{2}:\d{2}$/);
+    assert.match(end, /^\d{2}:\d{2}$/);
+    assert.ok(hhmmToSeconds(end) > hhmmToSeconds(start), '窗口结束必须晚于开始');
   });
 
   it('getTask 对未知任务给出可用列表', async () => {

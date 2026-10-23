@@ -19,7 +19,7 @@
  *     取不到：客户端用 keyblob 加密存储，明文只存在于进程内存。
  *     因此策略是「本地解 JWT 的 exp 做过期预警 + 到期前提醒用户重填」，不做自动续期。
  */
-import { readJson, request } from '../src/http.mjs';
+import { readJson, request as defaultRequest } from '../src/http.mjs';
 import { timestampInTZ } from '../src/util.mjs';
 import { STATUS } from '../src/task-contract.mjs';
 
@@ -127,7 +127,8 @@ export default {
     { key: 'tokenDaysLeft', label: '凭据剩余天数', type: 'number' },
   ],
 
-  async run({ secrets, log }) {
+  /* request 由执行器注入（UA 按账号固定）；默认值只为直接调 task.run 的场景兜底 */
+  async run({ secrets, log, request = defaultRequest }) {
     const token = secrets.WB_ACCESS_TOKEN;
     const expMs = tokenExpiryMs(token);
     const left = daysLeft(expMs);

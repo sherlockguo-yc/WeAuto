@@ -32,6 +32,7 @@ export const ONCE_GRACE_MS = 5 * 60_000;
  * @param {number} args.nowMs
  * @param {boolean} args.hasSuccessToday window 类：今天是否已成功（幂等依据）
  * @param {boolean} args.hasScheduledRun once 类：是否已被调度执行过
+ * @param {string} [args.accountKey] 窗口类错峰种子的一部分：同模板的多账号要落在不同时刻
  * @param {() => number} [args.random] 仅用于间隔抖动；测试传固定值
  * @returns {{due: boolean, reason: string, nextState: object}}
  */
@@ -41,6 +42,7 @@ export function planTask({
   nowMs,
   hasSuccessToday = false,
   hasScheduledRun = false,
+  accountKey = '',
   random = Math.random,
 }) {
   const sch = task.schedule;
@@ -54,7 +56,7 @@ export function planTask({
       state.today_date === today && state.today_target_ts
         ? state.today_target_ts
         : startOfDayBeijingMs(today) +
-          targetSecondsOfDay(task.name, sch.window, today) * 1000;
+          targetSecondsOfDay(task.name, sch.window, today, accountKey) * 1000;
     const nextState = { today_date: today, today_target_ts: target };
     const label = secondsToHHMM(
       Math.round((target - startOfDayBeijingMs(today)) / 1000),
@@ -249,6 +251,7 @@ export function createScheduler({
             : false,
           hasScheduledRun:
             task.schedule?.kind === 'once' ? mine.hasScheduledRun(cfg.taskName, accountKey) : false,
+          accountKey,
           random,
         });
 

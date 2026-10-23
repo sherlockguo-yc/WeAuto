@@ -12,7 +12,7 @@
  *   · 账户页内嵌 crispSessionData 结构化数组，含 traffic / expire / plan 等字段，
  *     比正则解析 HTML 更可靠，作为面板取数的数据源
  */
-import { CookieJar, readJson, request } from '../src/http.mjs';
+import { CookieJar, readJson, request as defaultRequest } from '../src/http.mjs';
 import { formatBytes } from '../src/format.mjs';
 
 const BASE = 'https://v2free.net';
@@ -114,11 +114,21 @@ export default {
   /** 允许一个人配多个 v2free 账号，各自独立签到 */
   accounts: true,
 
-  /** 北京时间窗口；实际执行时刻由种子化随机决定，每天不同 */
-  schedule: { window: { start: '09:00', end: '09:50' } },
+  /**
+   * 北京时间窗口，实际执行时刻由种子化随机决定（种子含账号，见 src/schedule.mjs）。
+   *
+   * 窗口从 50 分钟拉长到 120 分钟：出口 IP 只有一个（N150），同一站点的多个账号
+   * 必须靠时间拉开，而不是靠调度器「同一用户只许一个在飞」那 30 秒兜底。
+   * 3 个账号在 120 分钟里的平均间隔约 40 分钟。
+   */
+  schedule: { window: { start: '08:30', end: '10:30' } },
 
-  /** 登录 + 读两次账户页 + 签到，实测数秒内完成 */
-  timeoutMs: 30_000,
+  /**
+   * 登录 + 读两次账户页 + 签到，请求本身实测数秒。
+   * 45s 而非 30s：每个请求之间还有 1~3 秒的同域名节流（见 src/http.mjs），
+   * 4 个请求最坏要额外等 9 秒，30 秒的预算会被吃掉三分之一。
+   */
+  timeoutMs: 45_000,
 
   /**
    * 结果字段声明 —— 界面照这个渲染，**因此以后再加任务不需要改界面代码**。
@@ -133,7 +143,11 @@ export default {
     { key: 'lastCheckin', label: '上次签到', type: 'datetime' },
   ],
 
-  async run({ secrets, log }) {
+  /*
+   * request 由执行器注入（绑定到本账号的 UA），默认值只为「直接调 task.run」的场景兜底。
+   * 不要在这里 import 模块级 request 来用——那样多个账号会共用同一个 UA。
+   */
+  async run({ secrets, log, request = defaultRequest }) {
     const jar = new CookieJar();
 
     /* ── 1. 登录 ── */
