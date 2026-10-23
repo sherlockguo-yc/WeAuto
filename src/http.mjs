@@ -3,10 +3,12 @@
  *
  * Node 原生 fetch 不维护 Cookie，故自行实现：只需覆盖同名 cookie 的 Map。
  *
- * 两类「看起来像机器」的特征在这一层统一处理，任务作者不需要知道：
+ * 三类「看起来像机器」的特征在这一层统一处理，任务作者不需要知道：
  *   · **UA**：全站一个固定值会让目标站把不同账号看成同一个人。createRequester
  *     按 seed 选一个固定 UA —— 同一账号永远同一个（每次换浏览器才不正常），
  *     不同账号互不相同。
+ *   · **附带请求头**：Node 的 fetch 只发 UA + Cookie，连 Accept 都不发。真实的
+ *     Chrome 会带 8~10 个头，缺了它们比 UA 固定更容易被设备指纹识别。
  *   · **节奏**：同一域名连续请求至少间隔 1~3 秒。「4 个请求 2 秒打完」是自动化
  *     最容易被识别的特征，真实用户点完登录不会在 200ms 内点签到。
  */
@@ -45,6 +47,112 @@ export function userAgentFor(seed) {
   if (!seed) return DEFAULT_UA;
   const digest = crypto.createHash('sha256').update(String(seed)).digest();
   return UA_POOL[digest[0] % UA_POOL.length];
+}
+
+/* ───────────────────── 浏览器附带请求头 ───────────────────── */
+
+/** 大小写不敏感地取 header（任务里可能写 'referer'，也可能写 'Referer'） */
+function headerOf(headers, name) {
+  const lower = name.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === lower) return v;
+  }
+  return undefined;
+}
+
+/**
+ * 从 UA 推断浏览器家族、版本与平台。
+ *
+ * 为什么要推断：附加头必须与 UA **自洽**。Safari 从不发 sec-ch-ua，
+ * 一个自称 Safari 却带着 Chrome Client Hints 的请求，比不带更可疑。
+ */
+function browserProfile(ua) {
+  const v = (re) => re.exec(ua)?.[1]?.split('.')[0] ?? '';
+  const platform = /Windows/.test(ua) ? 'Windows' : 'macOS';
+  if (ua.includes('Firefox/')) return { family: 'firefox', version: v(/Firefox\/([\d.]+)/), platform };
+  if (ua.includes('Edg/')) return { family: 'edge', version: v(/Edg\/([\d.]+)/), platform };
+  if (ua.includes('Chrome/')) return { family: 'chrome', version: v(/Chrome\/([\d.]+)/), platform };
+  return { family: 'safari', version: v(/Version\/([\d.]+)/), platform };
+}
+
+/** Chrome / Edge 专有的 Client Hints；Safari 与 Firefox 一个都不发 */
+function clientHints({ family, version, platform }) {
+  if (family === 'safari' || family === 'firefox') return {};
+  const brands =
+    family === 'edge'
+      ? `"Microsoft Edge";v="${version}", "Chromium";v="${version}", "Not_A Brand";v="24"`
+      : `"Chromium";v="${version}", "Not_A Brand";v="24", "Google Chrome";v="${version}"`;
+  return {
+    'sec-ch-ua': brands,
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': `"${platform}"`,
+  };
+}
+
+/** 地址栏导航（Chrome 131 的真实 Accept） */
+const NAV_ACCEPT =
+  'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,' +
+  'image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
+/** axios / fetch 发 JSON 时的默认值 */
+const JSON_ACCEPT = 'application/json, text/plain, */*';
+/** XMLHttpRequest 的默认值（jQuery ajax 也是它） */
+const ANY_ACCEPT = '*/*';
+/** 中文用户的实际值，与「深圳家宽」的地理位置一致 */
+const ACCEPT_LANGUAGE = 'zh-CN,zh;q=0.9,en;q=0.8';
+
+/**
+ * Sec-Fetch-Site 由「Referer 与目标是否同源」推导。
+ * none 只出现在地址栏直接输入，XHR 一定有来源，所以 XHR 缺 Referer 时按同源处理。
+ */
+function fetchSite(url, referer, kind) {
+  if (!referer) return kind === 'navigate' ? 'none' : 'same-origin';
+  try {
+    return new URL(referer).host === new URL(url).host ? 'same-origin' : 'cross-site';
+  } catch {
+    return kind === 'navigate' ? 'none' : 'same-origin';
+  }
+}
+
+/**
+ * 生成「真实浏览器会发、而 Node fetch 默认不发」的请求头。
+ *
+ * 三条原则，缺一条就会帮倒忙：
+ *   1. 必须与 UA 自洽（Safari 不发 sec-ch-ua；Windows 不发 macOS 平台）
+ *   2. 只发浏览器真会发的头 —— 发明一个 no-such-header 只是自我安慰
+ *   3. 任务显式传的 header 一律优先（见 request 里的展开顺序）
+ *
+ * 刻意**不发** zstd：Chrome 123+ 确实会带，但 Node 20 的 undici 解不了，
+ * 服务器真按 zstd 返回时拿到的是乱码——省一个头换一次全站失败，不值得。
+ */
+function browserHeaders({ url, headers, ua }) {
+  const xrw = headerOf(headers, 'x-requested-with');
+  const contentType = String(headerOf(headers, 'content-type') ?? '');
+
+  // 三类请求的头集不同：打开页面 / XHR / JSON API
+  let kind = 'navigate';
+  if (xrw) kind = 'xhr';
+  else if (contentType.includes('application/json')) kind = 'json';
+
+  const out = {
+    Accept: kind === 'json' ? JSON_ACCEPT : kind === 'xhr' ? ANY_ACCEPT : NAV_ACCEPT,
+    'Accept-Language': ACCEPT_LANGUAGE,
+    'Accept-Encoding': 'gzip, deflate, br',
+    ...clientHints(browserProfile(ua)),
+    'Sec-Fetch-Site': fetchSite(url, headerOf(headers, 'referer'), kind),
+  };
+
+  if (kind === 'navigate') {
+    out['Upgrade-Insecure-Requests'] = '1';
+    out['Sec-Fetch-Dest'] = 'document';
+    out['Sec-Fetch-Mode'] = 'navigate';
+    out['Sec-Fetch-User'] = '?1';
+  } else {
+    // XHR 与 fetch 一律是 empty + cors，无论同域还是跨域
+    out['Sec-Fetch-Dest'] = 'empty';
+    out['Sec-Fetch-Mode'] = 'cors';
+  }
+
+  return out;
 }
 
 /** 同一域名两次请求的最小间隔基数 */
@@ -138,8 +246,9 @@ export class CookieJar {
  * 发起请求，自动带上 jar 中的 Cookie 并吸收新 Cookie
  * @param {string} url
  * @param {{jar?: CookieJar, method?: string, headers?: Record<string,string>, body?: any,
- *          timeout?: number, ua?: string, throttle?: boolean}} opts
- *   `ua` 由 createRequester 注入；`throttle:false` 仅供测试跳过节流等待
+ *          timeout?: number, ua?: string, throttle?: boolean, impersonate?: boolean}} opts
+ *   `ua` 由 createRequester 注入；`throttle:false` 仅供测试跳过节流等待；
+ *   `impersonate:false` 关掉浏览器附带头（调试目标站原始响应时用）
  */
 export async function request(url, opts = {}) {
   const {
@@ -150,6 +259,7 @@ export async function request(url, opts = {}) {
     timeout = 30_000,
     ua = DEFAULT_UA,
     throttle = true,
+    impersonate = true,
   } = opts;
 
   // 节流必须在创建 AbortController 之前：排队等待不该消耗这次请求的超时预算
@@ -159,7 +269,17 @@ export async function request(url, opts = {}) {
   const timer = setTimeout(() => ac.abort(), timeout);
 
   try {
-    const finalHeaders = { 'User-Agent': ua, ...headers };
+    /*
+     * 展开顺序即优先级：浏览器默认头 < UA < 调用方显式 header < Cookie。
+     * UA 取调用方显式值优先，否则 browserHeaders 会按另一个 UA 生成
+     * sec-ch-ua，出现「自称 Safari 却带 Chrome Client Hints」的自相矛盾。
+     */
+    const effectiveUa = headerOf(headers, 'user-agent') ?? ua;
+    const finalHeaders = {
+      ...(impersonate ? browserHeaders({ url, headers, ua: effectiveUa }) : {}),
+      'User-Agent': effectiveUa,
+      ...headers,
+    };
     const cookieHeader = jar?.header();
     if (cookieHeader) finalHeaders.Cookie = cookieHeader;
 

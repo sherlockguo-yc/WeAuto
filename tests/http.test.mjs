@@ -24,7 +24,7 @@ let sent = [];
 beforeEach(() => {
   sent = [];
   globalThis.fetch = async (url, init = {}) => {
-    sent.push({ url: String(url), ua: init.headers?.['User-Agent'] });
+    sent.push({ url: String(url), ua: init.headers?.['User-Agent'], headers: init.headers ?? {} });
     return new Response('ok', { status: 200 });
   };
   resetDomainThrottle();
@@ -87,6 +87,112 @@ describe('createRequester', () => {
       headers: { 'User-Agent': 'custom-agent/1.0' },
     });
     assert.equal(sent[0].ua, 'custom-agent/1.0');
+  });
+});
+
+describe('浏览器附带请求头', () => {
+  const SAFARI_UA =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 ' +
+    '(KHTML, like Gecko) Version/17.6 Safari/605.1.15';
+  const CHROME_WIN_UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+
+  it('导航请求带 document/navigate 全套头', async () => {
+    await request('https://nav.test/user', { throttle: false, ua: CHROME_WIN_UA });
+    const h = sent[0].headers;
+    assert.match(h.Accept, /text\/html/);
+    assert.equal(h['Accept-Language'], 'zh-CN,zh;q=0.9,en;q=0.8');
+    assert.ok(h['Accept-Encoding'].includes('gzip'));
+    assert.equal(h['Sec-Fetch-Dest'], 'document');
+    assert.equal(h['Sec-Fetch-Mode'], 'navigate');
+    assert.equal(h['Sec-Fetch-User'], '?1');
+    assert.equal(h['Upgrade-Insecure-Requests'], '1');
+  });
+
+  it('XHR 请求用 empty/cors 与 */*，且不带 Upgrade-Insecure-Requests', async () => {
+    await request('https://nav.test/user/checkin', {
+      throttle: false,
+      method: 'POST',
+      ua: CHROME_WIN_UA,
+      headers: { 'X-Requested-With': 'XMLHttpRequest', Referer: 'https://nav.test/user' },
+    });
+    const h = sent[0].headers;
+    assert.equal(h.Accept, '*/*');
+    assert.equal(h['Sec-Fetch-Dest'], 'empty');
+    assert.equal(h['Sec-Fetch-Mode'], 'cors');
+    assert.equal(h['Upgrade-Insecure-Requests'], undefined);
+  });
+
+  it('JSON API 请求的 Accept 是 application/json', async () => {
+    await request('https://api.test/claim', {
+      throttle: false,
+      method: 'POST',
+      ua: CHROME_WIN_UA,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    assert.match(sent[0].headers.Accept, /application\/json/);
+  });
+
+  it('Sec-Fetch-Site 由 Referer 与目标是否同源推导', async () => {
+    await request('https://site.test/a', { throttle: false, ua: CHROME_WIN_UA });
+    assert.equal(sent[0].headers['Sec-Fetch-Site'], 'none', '无 Referer 的导航 = 地址栏输入');
+
+    await request('https://site.test/b', {
+      throttle: false,
+      ua: CHROME_WIN_UA,
+      headers: { Referer: 'https://site.test/a' },
+    });
+    assert.equal(sent[1].headers['Sec-Fetch-Site'], 'same-origin');
+
+    await request('https://site.test/c', {
+      throttle: false,
+      ua: CHROME_WIN_UA,
+      headers: { Referer: 'https://other.test/a' },
+    });
+    assert.equal(sent[2].headers['Sec-Fetch-Site'], 'cross-site');
+  });
+
+  it('Safari 不发 Client Hints（发了就是自曝）', async () => {
+    await request('https://safari.test/', { throttle: false, ua: SAFARI_UA });
+    const h = sent[0].headers;
+    assert.equal(h['sec-ch-ua'], undefined);
+    assert.equal(h['sec-ch-ua-platform'], undefined);
+  });
+
+  it('Chrome 的 Client Hints 与 UA 平台自洽', async () => {
+    await request('https://chrome.test/', { throttle: false, ua: CHROME_WIN_UA });
+    const h = sent[0].headers;
+    assert.match(h['sec-ch-ua'], /Chrome";v="130"/);
+    assert.equal(h['sec-ch-ua-platform'], '"Windows"');
+    assert.equal(h['sec-ch-ua-mobile'], '?0');
+  });
+
+  it('macOS 的 Chrome 报 macOS 平台', async () => {
+    await request('https://chrome.test/', {
+      throttle: false,
+      headers: { 'User-Agent': DEFAULT_UA },
+    });
+    assert.equal(sent[0].headers['sec-ch-ua-platform'], '"macOS"');
+    // 显式传入的 UA 必须胜出，不能出现「UA 是 Mac 但头里还是池中那个」
+    assert.equal(sent[0].headers['User-Agent'], DEFAULT_UA);
+  });
+
+  it('调用方显式传的 header 覆盖默认值', async () => {
+    await request('https://override.test/', {
+      throttle: false,
+      ua: CHROME_WIN_UA,
+      headers: { Accept: 'application/xml' },
+    });
+    assert.equal(sent[0].headers.Accept, 'application/xml');
+  });
+
+  it('impersonate:false 只发 UA（调试目标站原始响应用）', async () => {
+    await request('https://raw.test/', { throttle: false, ua: CHROME_WIN_UA, impersonate: false });
+    const h = sent[0].headers;
+    assert.equal(h['User-Agent'], CHROME_WIN_UA);
+    assert.equal(h.Accept, undefined);
+    assert.equal(h['Sec-Fetch-Site'], undefined);
   });
 });
 
