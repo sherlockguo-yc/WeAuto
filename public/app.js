@@ -355,6 +355,9 @@
     btn.textContent = note || '＋备注';
     btn.classList.toggle('is-empty', !note);
     btn.title = note ? note + '（点击修改）' : '点击添加备注';
+    // 名字与备注之间的分隔点是 .row-main.has-note 画出来的，清空备注时要一起去掉
+    var main = btn.closest('.row-main');
+    if (main) main.classList.toggle('has-note', !!note);
   }
 
   function startNoteEdit(btn) {

@@ -569,14 +569,21 @@ a.row-main:hover { color: var(--accent); }
 /* ── 账号备注（管理员用）：名字右侧同行「jason · 抖音号老张」 ──
    点一下就地变输入框。虚线底线是「这里可以改」的唯一提示——
    它没有按钮底色，不加线会被当成用户名的一部分。
+
+   用 text-decoration 画虚线而不是 border-bottom：border 画在 inline-block
+   的 padding box 底边，而中文只占到行盒上部，两者之间永远空出一截，
+   看着就是「线没贴着字」。下划线跟着文字基线走，偏移量由
+   text-underline-offset 控制，才是真正的对齐。
+   padding-bottom 留 4px 是给下划线留位置：overflow: hidden（省略号要用）
+   会把超出 padding box 的部分裁掉，不留就会被裁掉半条线。
+
    写两遍 .user-row 是因为通用 button:hover 会铺底色（权重 0,2,1），
    光靠 .user-note:hover 压不住。 */
 .user-row .user-note {
   display: inline-block;
   margin-left: 2px;
-  padding: 0 0 1px;
+  padding: 0 0 4px;
   border: 0;
-  border-bottom: 1px dashed color-mix(in srgb, var(--off) 60%, transparent);
   background: none;
   color: var(--dim);
   font: inherit;
@@ -590,25 +597,28 @@ a.row-main:hover { color: var(--accent); }
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: baseline;
-  transition: color 0.16s ease, border-color 0.16s ease;
+  /* 线的颜色跟着文字走（currentColor），hover 换字色时不必再写一条规则 */
+  text-decoration: underline dashed color-mix(in srgb, currentColor 55%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: color 0.16s ease;
 }
-/* 分隔点用伪元素而不是写进文字：清空备注后它会跟着 .is-empty 一起消失，
-   不需要前端另外改文案。 */
-.user-row .user-note::before {
+/* 分隔点挂在用户名的 ::after 上，而不是按钮的 ::before：
+   text-decoration 会连伪元素一起划上，点被划穿看着像少了一个字符。
+   只在有备注时出现，否则「sherlockguo · ＋备注」里那个点没有分隔意义。 */
+.user-row .row-main.has-note .user-name::after {
   content: '·';
-  margin-right: 7px;
+  margin: 0 7px 0 2px;
   color: var(--off);
 }
 .user-row .user-note:hover {
   background: none;
-  border-bottom-color: currentColor;
   color: var(--accent);
 }
 .user-row .user-note.is-empty {
   color: var(--off);
-  border-bottom-color: transparent;
+  text-decoration: none;
 }
-.user-row .user-note.is-empty::before { content: none; }
 .user-row .user-note.is-empty:hover { color: var(--accent); }
 
 /* 就地编辑时的输入框：贴着名字后面那一小段，不撑满整行 */

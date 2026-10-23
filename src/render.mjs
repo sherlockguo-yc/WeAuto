@@ -915,7 +915,7 @@ function adminUserRow(u, { currentUserId = null, canDelete = false } = {}) {
       </span>`;
   const note = String(u.note ?? '');
   return `<div class="user-row">
-        <span class="row-main"><span class="user-name">${esc(u.username)}</span><button
+        <span class="row-main${note ? ' has-note' : ''}"><span class="user-name">${esc(u.username)}</span><button
           type="button"
           class="user-note${note ? '' : ' is-empty'}"
           data-action="edit-user-note"
