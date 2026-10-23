@@ -9,6 +9,9 @@
  *   · POST /user/checkin  {"ret":1,...} 签到成功
  *                         {"ret":0,"msg":"您似乎已经签到过了..."} 今日已签
  *                         {"ret":0,"msg":"请求过于频繁，请稍后再试"} 站点限流
+ *     ret=1 时还带 trafficInfo.unUsedTraffic（签到后的剩余流量）。站点前端就是拿
+ *     这个字段刷新页面上那个「剩余」数字的（见 data/probe-user.html 的签到回调），
+ *     所以它是签到之后的口径，比再读一次账户页更可信。
  *   · 账户页内嵌 crispSessionData 结构化数组，含 traffic / expire / plan 等字段，
  *     比正则解析 HTML 更可靠，作为面板取数的数据源
  */
@@ -101,6 +104,36 @@ export function gainedTraffic({ msg, before, after }) {
   if (b == null || a == null) return null;
   const diff = a - b;
   return diff > 0 ? diff : null;
+}
+
+/**
+ * 签到接口返回的「当前剩余流量」。
+ *
+ * 站点自己的前端签到成功后就拿这个字段刷新页面上的「剩余」
+ * （`$$.getElementById('remain').innerHTML = data.trafficInfo['unUsedTraffic']`），
+ * 所以它一定落在签到之后；回读的账户页则可能被限流、命中缓存，甚至直接失败。
+ *
+ * 解析不成流量的值一律丢掉：宁可显示「—」，也不把一个像流量的字符串当真数字。
+ */
+export function remainFromCheckin(json) {
+  const v = json?.trafficInfo?.unUsedTraffic;
+  if (typeof v === 'number') return Number.isFinite(v) && v >= 0 ? v : null;
+  const text = typeof v === 'string' ? v.trim() : '';
+  return text !== '' && parseTraffic(text) != null ? text : null;
+}
+
+/**
+ * 成功签到的那一句话。
+ *
+ * 两个数字都要塞进 message：概览「最近执行」、执行历史、任务页副标题都只渲染
+ * message，不渲染 view 行——只写「签到成功」等于最常被看到的那一屏什么都没说。
+ * 拿不到的数字直接省略，不编一个出来。
+ */
+export function successMessage({ gain, remain } = {}) {
+  const parts = [];
+  if (Number.isFinite(gain) && gain > 0) parts.push(`获得了 ${formatBytes(gain)} 流量`);
+  if (remain != null && remain !== '') parts.push(`剩余 ${formatBytes(remain)}`);
+  return parts.length ? `签到成功，${parts.join('，')}` : '签到成功';
 }
 
 export default {
@@ -222,28 +255,40 @@ export default {
 
     /* ── 4. 回读页面，取签到后的最新流量 ── */
     let latest = info;
+    let lastCheckinAfter = null;
     try {
       const after = await request(`${BASE}/user`, { jar, headers: { Referer: `${BASE}/user` } });
-      latest = parseSessionData(await after.text()) ?? info;
+      const afterHtml = await after.text();
+      latest = parseSessionData(afterHtml) ?? info;
+      lastCheckinAfter = parseLastCheckin(afterHtml);
     } catch {
-      /* 回读失败不影响签到结论 */
+      /* 回读失败不影响签到结论：签到接口自己带着剩余流量，见下 */
     }
-    const data = { ...latest, lastCheckin: parseLastCheckin(html) };
+
+    /*
+     * 剩余流量优先取签到接口的 trafficInfo.unUsedTraffic —— 站点前端签到成功后
+     * 就是拿它刷新页面上的「剩余」，所以它一定落在签到之后；
+     * 回读的页面拿不到有效值时，自然退回回读值，再退回签到前的值。
+     */
+    const fromCheckin = remainFromCheckin(checkJson);
+    const data = {
+      ...latest,
+      ...(fromCheckin != null ? { remainTraffic: fromCheckin } : null),
+      // 签到成功后页面上的「上次签到」已经翻成今天；沿用签到前那一份会让这行停在昨天
+      lastCheckin: lastCheckinAfter ?? lastCheckin,
+    };
 
     if (checkJson.ret === 1) {
-      // 只有真的签到成功才有「本次获得」；其余分支留空，界面显示「—」
+      // 只有真的签到成功才有「本次获得」；其余分支留空，界面显示「—」。
+      // 差值仍用回读页面的数字（与签到前同源），不拿接口值去和页面值相减。
       const gain = gainedTraffic({
         msg: checkJson.msg,
         before: info?.remainTraffic,
         after: latest?.remainTraffic,
       });
-      // message 里必须带上获得的流量：概览页「最近执行」只渲染 message，不渲染 view 行，
-      // 写「签到成功」等于那一行什么都没说。数字宁可在详情页与「本次获得」重复一次，
-      // 也不能在最常被看到的那一屏里缺失。
-      // 拿不到数字（站点文案没给、签到前后差值也没变）时退回短句，不编一个数字出来。
       return {
         status: 'success',
-        message: gain ? `签到成功，获得了 ${formatBytes(gain)} 流量` : '签到成功',
+        message: successMessage({ gain, remain: data.remainTraffic }),
         data: gain ? { ...data, gainedTraffic: gain } : data,
       };
     }

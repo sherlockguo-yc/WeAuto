@@ -20,6 +20,8 @@ import {
   parseLastCheckin,
   parseSessionData,
   parseTraffic,
+  remainFromCheckin,
+  successMessage,
 } from '../tasks/v2free-checkin.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -137,5 +139,58 @@ describe('gainedTraffic', () => {
 
   it('任一侧解析不了就返回 null', () => {
     assert.equal(gainedTraffic({ msg: null, before: null, after: '1GB' }), null);
+  });
+});
+
+/**
+ * 签到接口的 trafficInfo.unUsedTraffic 是「签到后还剩多少」的唯一权威来源
+ * （站点前端签到后就用它刷页面上的「剩余」）。它缺失或解析不了时必须返回 null，
+ * 让调用方退回回读页面的值——绝不能把一个非流量字符串塞进结果里冒充数字。
+ */
+describe('remainFromCheckin', () => {
+  it('取签到成功响应里的 remaining', () => {
+    assert.equal(remainFromCheckin({ ret: 1, trafficInfo: { unUsedTraffic: '1.97GB' } }), '1.97GB');
+  });
+
+  it('接口给字节数时原样返回数字', () => {
+    assert.equal(remainFromCheckin({ ret: 1, trafficInfo: { unUsedTraffic: 12345678 } }), 12345678);
+  });
+
+  it('没有该字段（如已签到 / 限流的响应）返回 null', () => {
+    assert.equal(remainFromCheckin({ ret: 0, msg: '您似乎已经签到过了...' }), null);
+    assert.equal(remainFromCheckin({ ret: 1 }), null);
+    assert.equal(remainFromCheckin(null), null);
+  });
+
+  it('字段值解析不成流量时返回 null，不当作数字', () => {
+    assert.equal(remainFromCheckin({ trafficInfo: { unUsedTraffic: '不适用.' } }), null);
+    assert.equal(remainFromCheckin({ trafficInfo: { unUsedTraffic: '' } }), null);
+    assert.equal(remainFromCheckin({ trafficInfo: { unUsedTraffic: -1 } }), null);
+  });
+});
+
+/**
+ * message 是概览「最近执行」与执行历史里唯一可见的文字，签到后要一眼看到
+ * 「领了多少 + 还剩多少」。缺哪个就省哪个，不能编。
+ */
+describe('successMessage', () => {
+  it('获得量与剩余量都有时两个都写', () => {
+    assert.equal(
+      successMessage({ gain: 1.5 * 1024 ** 3, remain: '12.3GB' }),
+      '签到成功，获得了 1.5 GB 流量，剩余 12.3GB',
+    );
+  });
+
+  it('只有获得量时不多写一个「剩余」', () => {
+    assert.equal(successMessage({ gain: 512 * 1024 ** 2 }), '签到成功，获得了 512 MB 流量');
+  });
+
+  it('只有剩余量（站点文案没给获得量）时也能看出还剩多少', () => {
+    assert.equal(successMessage({ remain: '485.94MB' }), '签到成功，剩余 485.94MB');
+  });
+
+  it('两个都没有时退回短句', () => {
+    assert.equal(successMessage({}), '签到成功');
+    assert.equal(successMessage({ gain: null, remain: null }), '签到成功');
   });
 });

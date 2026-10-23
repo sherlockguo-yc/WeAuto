@@ -363,8 +363,10 @@ git push (main) → GitHub Actions → Release: weauto.tar.gz（只含源码，�
    `request()` 对同一域名强制 1~3 秒间隔；UA 按账号固定从池中选取。**仍未支持代理**，
    一旦出口 IP 被拉黑，该站点上所有账号一起失效。
 3. **未实现 TOTP**——v2free 账号未开两步验证；如开启需在任务内补约 25 行 TOTP 生成。
-4. **`v2free-checkin` 依赖页面结构**——账户数据解析自页面内嵌的 `crispSessionData`，
-   站点改版会导致 `data.remainTraffic` 为 null。
+4. **`v2free-checkin` 依赖站点两处结构**——套餐/到期等字段解析自账户页内嵌的
+   `crispSessionData`，「签到后剩余流量」优先取签到接口返回的 `trafficInfo.unUsedTraffic`
+   （站点前端签到成功后就拿它刷新页面上的「剩余」），回读账户页作兜底。
+   两处任一站改版都只会让对应字段为 null，界面显示「—」，不会伪造数字。
 5. **凭据加密不防主机入侵**——主密钥在服务器上，这是自建部署的固有性质。
 6. **`runs.jsonl` 与 CLI 路径并存**——`bin/weauto.mjs run` 仍走老的 JSONL 路径，
    不再被调度使用，仅用于手工调试。
@@ -436,7 +438,7 @@ npm test        # node --test tests/*.test.mjs
 | `server.test.mjs` | 未登录边界、转义、CSRF、邀请注册、删号、平台页 |
 | `auth-*.test.mjs` | 密码哈希、token 签发验签、账号存储 |
 | `task-contract.test.mjs` / `registry.test.mjs` | 模板契约校验 |
-| `task-v2free.test.mjs` | 页面解析（基于真实快照） |
+| `task-v2free.test.mjs` | 页面解析（基于真实快照）、签到接口剩余流量、成功 message 的组句 |
 | `schedule.test.mjs` / `util.test.mjs` / `format.test.mjs` | 时区与调度算法、格式化 |
 | `history.test.mjs` / `lock.test.mjs` / `credentials.test.mjs` / `contract.test.mjs` | 历史路径与跨仓库契约 |
 | `pairing.test.mjs` / `task-workbuddy.test.mjs` | 配对码通道；WorkBuddy 抓取脚本 |
