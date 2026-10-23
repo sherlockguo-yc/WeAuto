@@ -634,6 +634,20 @@
       } else if (action === 'toggle-user') {
         var id = btn.dataset.user;
         var status = btn.dataset.status;
+        // 停用会立刻把人踢下线、他的任务也全部停跑，所以先问一句；
+        // 启用是恢复访问，没有不可逆后果，点了就生效。
+        // 名字同样只取 .user-name：.row-main 还包着备注，拼出来会变成「jason抖音号老张」。
+        if (status === 'active') {
+          var userRow = btn.closest('.user-row');
+          var whoEl = userRow && userRow.querySelector('.user-name');
+          agreed = await askConfirm({
+            title: whoEl ? '停用账号「' + whoEl.textContent.trim() + '」？' : '停用这个账号？',
+            body: '停用后该账号无法登录，任务不再执行。数据保留，可随时启用。',
+            confirmText: '停用',
+            trigger: btn,
+          });
+          if (!agreed) return;
+        }
         await api('PATCH', '/api/users/' + id, { status: status === 'active' ? 'disabled' : 'active' });
         location.reload();
       }
