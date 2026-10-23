@@ -337,6 +337,82 @@
     return data;
   }
 
+  /* ── 账号备注的行内编辑 ─────────────────────────────────
+     点名字右边那段文字，就地换成输入框：回车或失焦保存，Esc 放弃。
+     不刷新整页——改的只是行内一个词，刷新会丢滚动位置。
+
+     保存失败必须把原文写回去：页面上留着一个服务端并没有存下的备注，
+     比不显示备注更误导（下次看列表会以为它已经是这个值）。
+
+     按钮与输入框互相替换而不是并存：并存要额外管焦点与显隐，
+     两者宽度不同还会让名字左右跳。
+     ------------------------------------------------------ */
+  var NOTE_MAX = 60;
+
+  /** 把按钮恢复成「一段备注文字」。空备注退回占位文字，否则看不出这里能点 */
+  function paintNote(btn, note) {
+    btn.dataset.note = note;
+    btn.textContent = note || '＋备注';
+    btn.classList.toggle('is-empty', !note);
+    btn.title = note ? note + '（点击修改）' : '点击添加备注';
+  }
+
+  function startNoteEdit(btn) {
+    var original = btn.dataset.note || '';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'user-note-input';
+    input.maxLength = NOTE_MAX;
+    input.value = original;
+    input.placeholder = '这个账号是谁，例如：抖音号老张';
+    input.setAttribute('aria-label', '账号备注');
+
+    // 回车之后输入框被换走会再触发一次 blur，两条路只能走一条
+    var done = false;
+
+    async function finish(save) {
+      if (done) return;
+      done = true;
+      // 先换回按钮：请求期间不该留着输入框，它一直占着焦点
+      input.replaceWith(btn);
+      if (!save) {
+        btn.focus();
+        return;
+      }
+
+      var value = input.value.replace(/\s+/g, ' ').trim();
+      if (value === original) return; // 没改就不发请求
+
+      paintNote(btn, value);
+      btn.disabled = true;
+      try {
+        await api('PATCH', '/api/users/' + encodeURIComponent(btn.dataset.user), { note: value });
+      } catch (err) {
+        paintNote(btn, original);
+        hint(err.message || '备注保存失败', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener('blur', function () {
+      finish(true);
+    });
+
+    btn.replaceWith(input);
+    input.focus();
+    input.select();
+  }
+
   var sleep = function (ms) {
     return new Promise(function (r) {
       setTimeout(r, ms);
@@ -481,6 +557,14 @@
       return;
     }
 
+    // 账号备注：这一下只是把文字换成输入框，保存发生在回车 / 失焦。
+    // 所以走自己的分支并提前 return，不能被下面的「按钮置灰 + 等接口」流程接管。
+    if (action === 'edit-user-note') {
+      e.preventDefault();
+      startNoteEdit(btn);
+      return;
+    }
+
     var name = btn.dataset.task;
     btn.disabled = true;
     try {
@@ -531,9 +615,10 @@
         flash(btn, cmdCopied ? '已复制 ✓' : '复制失败，请手动选中', cmdCopied ? 'ok' : 'error');
 
       } else if (action === 'delete-user') {
-        // 按钮上只有 id，名字在同一行的 .row-main 里
+        // 按钮上只有 id，名字在同一行的 .user-name 里。
+        // 不能取 .row-main：那一段还包着备注，拼出来的确认标题会变成「jason抖音号老张」
         var row = btn.closest('.user-row');
-        var who = row && row.querySelector('.row-main');
+        var who = row && row.querySelector('.user-name');
         agreed = await askConfirm({
           title: who ? '删除账号「' + who.textContent.trim() + '」？' : '删除这个账号？',
           body: '他的任务、凭据和执行历史会一起清掉，不可恢复。',

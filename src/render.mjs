@@ -893,7 +893,11 @@ function taskConfigBody({ task, credential = null, isWindows = false }) {
  *
  * 停用与删除都对自己不渲染：停用自己等于把自己锁在门外，删除自己会让请求
  * 在半途把自己的会话注销掉——服务端各拦一道，这里直接不给按钮，
- * 免得「点了才报错」。
+ * 免得「点了才报错」。备注是例外：给自己写备注不会锁住任何人，所以自己那行也能改。
+ *
+ * 备注显示成「名字 · 备注」，点一下就地变成输入框（前端只换控件，保存走
+ * PATCH /api/users/:id）。没写备注时占位文字是「＋备注」而不是留空，
+ * 否则管理员看不出这里可以点。
  */
 function adminUserRow(u, { currentUserId = null, canDelete = false } = {}) {
   const actions =
@@ -909,8 +913,16 @@ function adminUserRow(u, { currentUserId = null, canDelete = false } = {}) {
             : ''
         }
       </span>`;
+  const note = String(u.note ?? '');
   return `<div class="user-row">
-        <span class="row-main">${esc(u.username)}</span>
+        <span class="row-main"><span class="user-name">${esc(u.username)}</span><button
+          type="button"
+          class="user-note${note ? '' : ' is-empty'}"
+          data-action="edit-user-note"
+          data-user="${u.id}"
+          data-note="${esc(note)}"
+          title="${note ? `${esc(note)}（点击修改）` : '点击添加备注'}"
+        >${esc(note || '＋备注')}</button></span>
         <span class="badges">
           <span class="badge badge-${u.role === 'admin' ? 'ok' : 'off'}">${esc(
             u.role === 'admin' ? '管理员' : '普通',

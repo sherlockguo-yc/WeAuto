@@ -1103,7 +1103,7 @@ export function createServer({
 
   /**
    * 没有 POST /api/users（管理员代建账号）：账号一律由本人凭邀请链接在 /register
-   * 自建，管理员不代填别人的密码。管理员仍能改角色、停用、删号。
+   * 自建，管理员不代填别人的密码。管理员仍能改角色、停用、删号，以及写备注。
    */
 
   /**
@@ -1173,6 +1173,14 @@ export function createServer({
     }
     if (req.body.status) auth.setStatus(id, req.body.status);
     if (req.body.role) auth.setRole(id, req.body.role);
+    // 备注：空串是有意义的输入（清空备注），所以判类型而不是判真假。
+    // 截断与换行折叠在数据层做，接口只负责拒绝非字符串。
+    if (req.body.note !== undefined) {
+      if (typeof req.body.note !== 'string') {
+        return res.status(400).json({ error: '备注必须是文本' });
+      }
+      auth.setNote(id, req.body.note);
+    }
     res.json({ ok: true, user: auth.getUser(id) });
   });
 

@@ -551,10 +551,12 @@ a.row-main:hover { color: var(--accent); }
   justify-self: end;
 }
 
-/* 账号行：名字 + 徽章 + 操作挤在一行，宽不下才换行 */
+/* 账号行：名字 + 徽章 + 操作挤在一行，宽不下才换行。
+   第一列用 minmax(0, 1fr)：名字旁边还有可长可短的备注，
+   裸 1fr 的最小宽度是内容宽度，长备注会把徽章挤出屏幕。 */
 .user-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 4px 10px;
   padding: 12px 0;
   border-top: 1px solid var(--border);
@@ -563,6 +565,61 @@ a.row-main:hover { color: var(--accent); }
 .user-row .badges { display: flex; gap: 6px; align-items: center; }
 .user-row .row-sub { grid-column: 1 / -1; color: var(--dim); font-size: 13px; }
 .user-row .link-btn { grid-column: 1 / -1; justify-self: start; padding-left: 0; }
+
+/* ── 账号备注（管理员用）：名字右侧同行「jason · 抖音号老张」 ──
+   点一下就地变输入框。虚线底线是「这里可以改」的唯一提示——
+   它没有按钮底色，不加线会被当成用户名的一部分。
+   写两遍 .user-row 是因为通用 button:hover 会铺底色（权重 0,2,1），
+   光靠 .user-note:hover 压不住。 */
+.user-row .user-note {
+  display: inline-block;
+  margin-left: 2px;
+  padding: 0 0 1px;
+  border: 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--off) 60%, transparent);
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 450;
+  letter-spacing: 0;
+  line-height: 1.4;
+  /* 备注最长 60 字：留 22ch 的展示位，再长就省略；窄屏不许超过名字所在那一列 */
+  max-width: min(22ch, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: baseline;
+  transition: color 0.16s ease, border-color 0.16s ease;
+}
+/* 分隔点用伪元素而不是写进文字：清空备注后它会跟着 .is-empty 一起消失，
+   不需要前端另外改文案。 */
+.user-row .user-note::before {
+  content: '·';
+  margin-right: 7px;
+  color: var(--off);
+}
+.user-row .user-note:hover {
+  background: none;
+  border-bottom-color: currentColor;
+  color: var(--accent);
+}
+.user-row .user-note.is-empty {
+  color: var(--off);
+  border-bottom-color: transparent;
+}
+.user-row .user-note.is-empty::before { content: none; }
+.user-row .user-note.is-empty:hover { color: var(--accent); }
+
+/* 就地编辑时的输入框：贴着名字后面那一小段，不撑满整行 */
+.user-row .user-note-input {
+  margin-left: 8px;
+  width: min(240px, 46vw);
+  padding: 3px 8px;
+  font-size: 13.5px;
+  border-radius: var(--radius-xs);
+  vertical-align: baseline;
+}
 
 /* ── 状态徽章：同色淡淡底 + 同色描边，比纯描边更容易扫到 ── */
 .badge {

@@ -22,6 +22,21 @@ export const ROLES = ['user', 'admin'];
 export const USERNAME_RE = /^[a-zA-Z0-9_\u4e00-\u9fa5]{2,32}$/;
 export const PASSWORD_MIN = 8;
 export const PASSWORD_MAX = 128;
+/** 备注上限。它显示在账号行里与用户名同一行，再长就只能截断，索性在写入时就收住 */
+export const NOTE_MAX = 60;
+
+/**
+ * 备注是单行文字：折叠换行与连续空白后截断。
+ *
+ * 归一化放在数据层而不是渲染层：写库时就只有一种形态，
+ * 页面上列表、将来的导出、搜素都不会各自遇到「有换行的备注」。
+ */
+export function normalizeNote(note) {
+  return String(note ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, NOTE_MAX);
+}
 
 /** 注册/改密的校验，返回错误文案或 null */
 export function validateNewCredentials(username, password) {
@@ -44,6 +59,8 @@ export function toPublic(row) {
     status: row.status,
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at || null,
+    /** 管理员写的备注（这个人是谁）。普通用户看不到，只用在 /admin/users */
+    note: row.note ?? '',
     /** 会话版本号。注销 / 改密时 +1，用于让之前的 token 失效 */
     sessionEpoch: row.session_epoch ?? 0,
   };
@@ -61,6 +78,7 @@ export function createUserStore(db) {
     ),
     setStatus: db.prepare('UPDATE users SET status = ? WHERE id = ?'),
     setRole: db.prepare('UPDATE users SET role = ? WHERE id = ?'),
+    setNote: db.prepare('UPDATE users SET note = ? WHERE id = ?'),
     setPassword: db.prepare('UPDATE users SET password_hash = ? WHERE id = ?'),
     touchLogin: db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?'),
     remove: db.prepare('DELETE FROM users WHERE id = ?'),
@@ -89,6 +107,12 @@ export function createUserStore(db) {
     setRole(id, role) {
       if (!ROLES.includes(role)) throw new Error(`未知角色：${role}`);
       sel.setRole.run(role, id);
+      return toPublic(sel.byId.get(id));
+    },
+
+    /** 写备注。空串表示清空；超长与换行在这里就被收住，调用方不必自己截 */
+    setNote(id, note) {
+      sel.setNote.run(normalizeNote(note), id);
       return toPublic(sel.byId.get(id));
     },
 

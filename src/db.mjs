@@ -317,6 +317,18 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 6,
+    description: '账号备注：管理员用来记住这个人是谁',
+    up(db) {
+      /* 用户注册时自己起的用户名往往是网名（jason、GGBond），管理员看不出是谁。
+         备注只给管理员看，普通用户既看不到也改不了，所以放在 users 上而不是
+         另开一张表：它和 role / status 一样是管理员对这个账号的标注，
+         一个账号一条，没有历史与审计需求。
+         DEFAULT '' 而不是可空：查询方不必区分 null 与空串（两者都表示「还没写」）。 */
+      db.exec(`ALTER TABLE users ADD COLUMN note TEXT NOT NULL DEFAULT '';`);
+    },
+  },
 ];
 
 /** 用 meta 表记录 schema 版本（用户表之外的第一张表，永远存在） */

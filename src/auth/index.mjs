@@ -22,6 +22,8 @@ import {
   USERNAME_RE,
   PASSWORD_MIN,
   PASSWORD_MAX,
+  NOTE_MAX,
+  normalizeNote,
   validateNewCredentials,
   createUserStore,
   toPublic,
@@ -108,6 +110,8 @@ export function createAuth({ db, jwtSecret, tokenTtl = DEFAULT_TTL } = {}) {
     countUsers: () => store.count(),
     setStatus: (id, status) => store.setStatus(id, status),
     setRole: (id, role) => store.setRole(id, role),
+    /** 备注只给管理员用（/admin/users 的行内编辑），普通用户既读不到也写不了 */
+    setNote: (id, note) => store.setNote(id, note),
     removeUser: (id) => store.remove(id),
 
     setPassword(id, newPassword) {
@@ -126,4 +130,4 @@ export function createAuth({ db, jwtSecret, tokenTtl = DEFAULT_TTL } = {}) {
   };
 }
 
-export { STATUS, ROLES, USERNAME_RE, PASSWORD_MIN, PASSWORD_MAX };
+export { STATUS, ROLES, USERNAME_RE, PASSWORD_MIN, PASSWORD_MAX, NOTE_MAX, normalizeNote };

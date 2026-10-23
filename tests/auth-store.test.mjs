@@ -135,6 +135,23 @@ describe('账号管理', () => {
     assert.equal(auth.login('pwd', 'new-pass-22').ok, true);
   });
 
+  it('备注：默认为空，可写可清空，换行折叠、超长截断', () => {
+    const { auth } = fresh();
+    auth.register({ username: 'noted', password: PW });
+    const u = auth.listUsers()[0];
+    assert.equal(u.note, '', '新账号的备注应是空串而不是 undefined');
+
+    auth.setNote(u.id, '  抖音号老张\n备用账号  ');
+    // 换行会被折叠成一个空格：备注在页面上是单行文字，留着换行只会在渲染时被压掉
+    assert.equal(auth.listUsers()[0].note, '抖音号老张 备用账号');
+
+    auth.setNote(u.id, '长'.repeat(200));
+    assert.equal(auth.listUsers()[0].note.length, 60);
+
+    auth.setNote(u.id, '');
+    assert.equal(auth.listUsers()[0].note, '');
+  });
+
   it('删除账号后无法登录', () => {
     const { auth } = fresh();
     auth.register({ username: 'gone', password: PW });

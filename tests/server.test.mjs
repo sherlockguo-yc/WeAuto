@@ -1083,6 +1083,47 @@ describe('账号删除', () => {
     assert.match((await res.json()).error, /不能修改自己的角色/);
   });
 
+  it('管理员能给账号写备注，列表里能看到', async () => {
+    const { base, auth } = await startServer();
+    const cookie = await login(base);
+    auth.register({ username: 'jasonguo', password: 'pass-word-1' });
+    const other = auth.listUsers().find((u) => u.username === 'jasonguo');
+
+    const res = await fetch(`${base}/api/users/${other.id}`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: '抖音号老张' }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(auth.getUser(other.id).note, '抖音号老张');
+
+    const html = await (await fetch(`${base}/admin/users`, { headers: { cookie } })).text();
+    assert.match(html, /data-action="edit-user-note"/);
+    assert.match(html, /抖音号老张/);
+  });
+
+  it('备注会被转义，且不是文本的备注被拒绝', async () => {
+    const { base, auth } = await startServer();
+    const cookie = await login(base);
+    auth.register({ username: 'xssed', password: 'pass-word-1' });
+    const other = auth.listUsers().find((u) => u.username === 'xssed');
+
+    await fetch(`${base}/api/users/${other.id}`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: '<img src=x onerror=alert(1)>' }),
+    });
+    const html = await (await fetch(`${base}/admin/users`, { headers: { cookie } })).text();
+    assert.equal(html.includes('<img src=x'), false, '备注必须经过 esc()');
+
+    const bad = await fetch(`${base}/api/users/${other.id}`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 42 }),
+    });
+    assert.equal(bad.status, 400);
+  });
+
   it('普通用户删不了别人', async () => {
     const { base, auth } = await startServer({ seedRole: 'user' });
     const cookie = await login(base);
