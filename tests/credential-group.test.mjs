@@ -130,6 +130,22 @@ describe('secretsLoaderFor 跨组兜底', () => {
     );
   });
 
+  /*
+   * 线上真实形状：每个任务实例建出来时各自分配一个随机 accountKey，
+   * 所以「签到」和「活跃」的同一个 WorkBuddy 账号在库里是两个 key。
+   * 按 accountKey 对齐会让整个机制静默失效——这条用例就是那次踩坑的记录。
+   */
+  it('两个任务的 accountKey 不同时也能兜底', () => {
+    const us = freshUserSecrets();
+    us.set(USER_ID, 'wb-checkin', 'a-1111', { TOKEN: 'from-checkin' });
+
+    const load = secretsLoaderFor(us, () => ['wb-checkin']);
+    assert.equal(
+      load({ userId: USER_ID, taskName: 'wb-active', accountKey: 'a-2222', requires: ['TOKEN'] }).TOKEN,
+      'from-checkin',
+    );
+  });
+
   it('没传 peersOf 时行为与改造前一致：不跨任务找', () => {
     const us = freshUserSecrets();
     us.set(USER_ID, 'wb-checkin', '', { TOKEN: 'from-checkin' });
@@ -148,6 +164,12 @@ describe('missingWithPeers（界面标记用）', () => {
     us.set(USER_ID, 'wb-checkin', '', { TOKEN: 'x' });
     assert.deepEqual(us.missingWithPeers(USER_ID, 'wb-active', '', ['TOKEN'], ['wb-checkin']), []);
     assert.deepEqual(us.missingWithPeers(USER_ID, 'wb-active', '', ['TOKEN'], []), ['TOKEN']);
+  });
+
+  it('跨 accountKey 也能识别（线上真实形状）', () => {
+    const us = freshUserSecrets();
+    us.set(USER_ID, 'wb-checkin', 'a-1111', { TOKEN: 'x' });
+    assert.deepEqual(us.missingWithPeers(USER_ID, 'wb-active', 'a-2222', ['TOKEN'], ['wb-checkin']), []);
   });
 
   it('兄弟的字段名不同时仍算缺', () => {

@@ -93,7 +93,8 @@ export function secretsLoaderFor(userSecrets, peersOf = () => []) {
     let missing = requires.filter((k) => !found[k]);
     if (missing.length) {
       for (const peer of peersOf(taskName)) {
-        const theirs = userSecrets.get(userId, peer, accountKey);
+        // 跨账号取：每个任务实例的 accountKey 是各自生成的，按它对齐等于永远找不到
+        const theirs = userSecrets.fieldsOfTask(userId, peer);
         for (const k of missing) {
           if (theirs[k]) found[k] = theirs[k];
         }
@@ -170,17 +171,49 @@ export function createUserSecrets(db, masterKey) {
   }
 
   /**
+   * 这个用户在这个模板下配过的**全部**字段，不看账号维度。
+   *
+   * 为什么必须忽略 accountKey：每个任务实例建出来时都拿到一个独立随机 key
+   * （`a-xxxxxxxx`），所以「签到任务」和「活跃任务」的同一个 WorkBuddy 账号
+   * 在库里是两个不同的 accountKey。按 accountKey 对齐会让凭据组彻底失效——
+   * 实测就是这么踩到的（签到存了 a-aec5e101，活跃是 a-458e8015）。
+   *
+   * 代价：模板声明 `accounts: true` 且有多个账号时，兜底会取到「任意一个」。
+   * 这个代价是可接受的：能跑起来比对着空凭据报错好，而且只有显式声明了
+   * 同一个 credentialGroup 才会走到这里。
+   */
+  function fieldsOfTask(userId, taskName) {
+    const out = {};
+    for (const acc of accountsOf(userId)) {
+      if (acc.taskName !== taskName) continue;
+      const found = get(userId, taskName, acc.accountKey);
+      for (const [k, v] of Object.entries(found)) if (out[k] === undefined) out[k] = v;
+    }
+    return out;
+  }
+
+  /** 同 fieldsOfTask，但只回字段名（不解密，界面标记用） */
+  function fieldNamesOfTask(userId, taskName) {
+    const out = new Set();
+    for (const acc of accountsOf(userId)) {
+      if (acc.taskName !== taskName) continue;
+      for (const f of fieldNames(userId, taskName, acc.accountKey)) out.add(f);
+    }
+    return [...out];
+  }
+
+  /**
    * 缺哪些必需字段 —— 把凭据组的兄弟算进去。
    *
-   * 判据必须和 `secretsLoaderFor` 的兜底范围一致，否则会出现「界面标着待填凭据、
-   * 任务其实每天正常跑」这种自相矛盾的状态。
+   * 判据必须和 `secretsLoaderFor` 的兜底范围一致（都是跨账号），否则会出现
+   * 「界面标着待填凭据、任务其实每天正常跑」这种自相矛盾的状态。
    */
   function missingWithPeers(userId, taskName, accountKey, required = [], peers = []) {
     const rest = missing(userId, taskName, accountKey, required);
     if (!rest.length) return [];
     const covered = new Set();
     for (const peer of peers) {
-      for (const field of fieldNames(userId, peer, accountKey)) covered.add(field);
+      for (const field of fieldNamesOfTask(userId, peer)) covered.add(field);
     }
     return rest.filter((k) => !covered.has(k));
   }
@@ -229,6 +262,8 @@ export function createUserSecrets(db, masterKey) {
   return {
     get,
     fieldNames,
+    fieldsOfTask,
+    fieldNamesOfTask,
     fieldStatus,
     missing,
     missingWithPeers,
