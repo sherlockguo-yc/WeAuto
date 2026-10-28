@@ -951,6 +951,9 @@ label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
   flex: 0 0 200px;
   scroll-snap-align: start;
   display: grid;
+  /* 说明行吃掉剩余高度，meta（几点跑 / 要填凭据）统一贴到卡片底部。
+     轨道里几个卡片高度相同，说明长短不一时中间那张就显得对不齐 */
+  grid-template-rows: auto 1fr auto;
   gap: 6px;
   align-content: start;
   text-align: left;
