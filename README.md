@@ -196,7 +196,7 @@ src/
   auth/                    账号（users / password / token）
   credentials.mjs http.mjs history.mjs lock.mjs pairing.mjs runner.mjs
   secrets.mjs task-contract.mjs format.mjs util.mjs
-tasks/                     模板：v2free-checkin.mjs、workbuddy-checkin.mjs
+tasks/                     模板：v2free-checkin.mjs、workbuddy-checkin.mjs、workbuddy-active.mjs
 scripts/                   probe.mjs、import-runs.mjs 等一次性脚本
 public/                    app.js（前端交互）、style.css
 tests/                     node:test，22 个文件（fixtures/ 放真实页面快照）

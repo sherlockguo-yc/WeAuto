@@ -71,7 +71,7 @@ src/
   secrets.mjs             age 解密（只用于迁移 v1 的旧凭据）
   util.mjs                路径常量、dotenv 解析、时区计算
   auth/                   账号（users / password / token）
-tasks/                    模板：v2free-checkin.mjs、workbuddy-checkin.mjs
+tasks/                    模板：v2free-checkin.mjs、workbuddy-checkin.mjs、workbuddy-active.mjs
 scripts/                  probe.mjs、import-runs.mjs 等一次性脚本
 public/                   app.js（前端交互）、style.css
 tests/                    node:test，23 个文件（fixtures/ 放真实页面快照）
