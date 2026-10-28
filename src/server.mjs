@@ -542,18 +542,39 @@ export function createServer({
    * 单独抽出来而不是塞进 detailOf()，是因为 detailOf() 也被 /api/tasks/:id 用，
    * 那里只要状态和历史，没必要为每个接口调用多查一遍凭据。
    */
+  /**
+   * 字段 → 「这个值是从哪个兄弟模板借来的」。
+   *
+   * 自己配过的字段不进来（自己那份优先），只记录需要跨模板兜底的。
+   * 界面靠它把「未设置」改成「复用自 X 任务」——否则用户明明没填过，
+   * 却看到输入框写着「已设置」，比写着「未设置」还让人困惑。
+   */
+  function sharedFieldSources(userId, taskName, accountKey = '') {
+    const out = new Map();
+    if (!userSecrets) return out;
+    const own = new Set(userSecrets.fieldNames(userId, taskName, accountKey));
+    for (const peer of credentialPeers(tasks, taskName)) {
+      const label = tasks.get(peer)?.displayName ?? peer;
+      for (const field of userSecrets.fieldNamesOfTask(userId, peer)) {
+        if (own.has(field) || out.has(field)) continue;
+        out.set(field, label);
+      }
+    }
+    return out;
+  }
+
   function credentialOf({ userId, taskName, accountKey = '' }) {
     const task = tasks.get(taskName);
+    const shared = sharedFieldSources(userId, taskName, accountKey);
+    const own = userSecrets ? new Set(userSecrets.fieldNames(userId, taskName, accountKey)) : new Set();
     return {
       credential: {
         subscribed: true,
         accountKey,
-        fields: (task?.requires ?? []).map((key) => ({
-          key,
-          set: userSecrets
-            ? !!userSecrets.fieldStatus(userId, taskName, accountKey, [key])[key]
-            : false,
-        })),
+        fields: (task?.requires ?? []).map((key) => {
+          const from = own.has(key) ? null : (shared.get(key) ?? null);
+          return { key, set: own.has(key) || !!from, from };
+        }),
       },
     };
   }

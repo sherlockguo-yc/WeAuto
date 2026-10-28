@@ -123,7 +123,15 @@ async function startServer({
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   servers.push(server);
-  return { base: `http://127.0.0.1:${server.address().port}`, store, auth, scheduler, invites, db };
+  return {
+    base: `http://127.0.0.1:${server.address().port}`,
+    store,
+    auth,
+    scheduler,
+    invites,
+    db,
+    userSecrets,
+  };
 }
 
 /** 用 admin 身份生成一个邀请码（多个 describe 都要用，所以放模块级） */
@@ -565,6 +573,36 @@ describe('接口行为', () => {
     const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
     assert.match(html, /DEMO_TOKEN/);
     assert.match(html, /未设置/);
+  });
+
+  /*
+   * 凭据组复用后，用户根本没在这个任务下填过东西，输入框却写着「已设置」会很怪。
+   * 要让他知道值是从哪个兄弟模板来的——否则第一反应是「我什么时候填的？是不是串了？」
+   */
+  it('同组模板配过的字段显示「复用自」，而不是「未设置」或光秃秃的「已设置」', async () => {
+    const sibling = {
+      ...DEMO_TASK,
+      name: 'sibling-task',
+      displayName: '兄弟模板',
+      credentialGroup: 'demo-group',
+    };
+    const grouped = {
+      ...DEMO_TASK,
+      name: 'grouped-task',
+      displayName: '同组模板',
+      credentialGroup: 'demo-group',
+    };
+    const { base, store, userSecrets } = await startServer({ extraTasks: [sibling, grouped] });
+
+    // accountKey 刻意与兄弟模板不同：线上就是这个形状
+    const created = store.forUser(USER_ID).createTask('grouped-task', { accountKey: 'a-mine' });
+    userSecrets.set(USER_ID, 'sibling-task', 'a-peer', { DEMO_TOKEN: 'peer-secret-value' });
+
+    const cookie = await login(base);
+    const html = await (await fetch(`${base}/tasks/${created.id}`, { headers: { cookie } })).text();
+    assert.match(html, /复用自「兄弟模板」/);
+    assert.doesNotMatch(html, /已设置，留空表示不修改/);
+    assert.doesNotMatch(html, /peer-secret-value/);
   });
 });
 

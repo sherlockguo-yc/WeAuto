@@ -677,7 +677,11 @@ function credentialField(f) {
     )}</code></span>
     <span class="field-control">
       <input type="password" name="${esc(f.key)}" autocomplete="new-password" placeholder="${
-        f.set ? '已设置，留空表示不修改' : '未设置'
+        f.set
+          ? f.from
+            ? `复用自「${esc(f.from)}」，留空表示不修改`
+            : '已设置，留空表示不修改'
+          : '未设置'
       }">
       <button type="button" class="reveal" data-action="toggle-reveal" aria-label="显示密码" title="显示密码">
         ${ICON.eye}${ICON.eyeOff.replace('<svg', '<svg hidden')}
