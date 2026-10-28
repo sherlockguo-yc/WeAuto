@@ -115,6 +115,12 @@ export default {
    */
   accounts: false,
 
+  /**
+   * 与 workbuddy-active 共用一把 token：填过任意一个，另一个就能跑。
+   * 换 key 时只改一处，不会漏掉另一个任务。
+   */
+  credentialGroup: 'workbuddy',
+
   /** 北京时间窗口；实际执行时刻由种子化随机决定，每天不同 */
   schedule: { window: { start: '09:00', end: '09:50' } },
 

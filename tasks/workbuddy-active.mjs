@@ -335,6 +335,9 @@ export default {
 
   accounts: false,
 
+  /** 与 workbuddy-checkin 共用一把 token：签到任务填过就不用再抓一次 */
+  credentialGroup: 'workbuddy',
+
   schedule: { window: { start: '09:00', end: '09:50' } },
 
   /** 起 sandbox + 一轮对话，实测 40~60s；上限留三倍余量 */

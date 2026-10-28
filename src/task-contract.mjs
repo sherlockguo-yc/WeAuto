@@ -330,6 +330,18 @@ export function assertValidTask(task, file) {
   if (task.accounts !== undefined && typeof task.accounts !== 'boolean') {
     bad(`任务 ${task.name} 的 accounts 必须是布尔值`);
   }
+  /*
+   * 凭据组：同一站点的一族模板共用一把钥匙（如签到与活跃都要 WB_ACCESS_TOKEN）。
+   * 只影响「缺字段时去哪找」，不改变存储结构——见 user-secrets.secretsLoaderFor。
+   * 不写就自成一组，等于「不再找别人」，与旧行为完全一致。
+   */
+  if (task.credentialGroup !== undefined) {
+    if (typeof task.credentialGroup !== 'string' || !TASK_NAME_RE.test(task.credentialGroup)) {
+      bad(
+        `任务 ${task.name} 的 credentialGroup 非法：只允许小写字母、数字与连字符（如 workbuddy）`,
+      );
+    }
+  }
   if (task.visibility !== undefined && !['public', 'internal'].includes(task.visibility)) {
     bad(`任务 ${task.name} 的 visibility 只能是 public / internal，当前是 ${task.visibility}`);
   }
@@ -371,6 +383,8 @@ export function normalizeTask(task, file) {
     tags: task.tags ? [...task.tags] : [],
     requires: task.requires ? [...task.requires] : [],
     accounts: task.accounts ?? false,
+    /** 凭据组：缺字段时可去同组的其它模板找（默认自成一组） */
+    credentialGroup: task.credentialGroup ?? task.name,
     /** public：所有人可见可订阅；internal：只有 admin 看得见（自用模板、还在调试的模板） */
     visibility: task.visibility ?? 'public',
     timeoutMs: task.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -394,6 +408,7 @@ export function describeTask(task) {
     tags: task.tags,
     requires: task.requires,
     accounts: task.accounts,
+    credentialGroup: task.credentialGroup ?? task.name,
     timeoutMs: task.timeoutMs,
     retention: task.retention,
     schedule: task.schedule,

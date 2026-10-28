@@ -16,6 +16,7 @@ import { renderView } from './format.mjs';
 import * as render from './render.mjs';
 import { describeSchedule, summarizeAll, summarizeTask } from './status.mjs';
 import { normalizeSchedule } from './task-contract.mjs';
+import { credentialPeers } from './registry.mjs';
 import {
   createPairing,
   looksLikeJwt,
@@ -189,6 +190,25 @@ export function createServer({
   };
 
   /**
+   * 这个账号还缺哪些凭据字段。
+   *
+   * 「缺」要算上凭据组：同组兄弟模板配过同名字段就算有。否则用户明明只填过
+   * 一次 token，另一个任务却一直挂着「待填凭据」，而它其实跑得好好的。
+   */
+  const missingCredentialsOf = (userId, taskName, accountKey) => {
+    if (!userSecrets) return [];
+    const task = tasks.get(taskName);
+    if (!task) return [];
+    return userSecrets.missingWithPeers(
+      userId,
+      taskName,
+      accountKey,
+      task.requires,
+      credentialPeers(tasks, taskName),
+    );
+  };
+
+  /**
    * 列表/概览的统一入口：可见模板 + 我的数据 + 每个账号缺哪些凭据。
    *
    * 凭据缺失在这里就算出来，是为了让列表能给「待填凭据」打标——
@@ -200,10 +220,7 @@ export function createServer({
       store: mine(req),
       nowMs: now(),
       missingCredentials: userSecrets
-        ? (taskName, accountKey) => {
-            const task = tasks.get(taskName);
-            return task ? userSecrets.missing(req.user.id, taskName, accountKey, task.requires) : [];
-          }
+        ? (taskName, accountKey) => missingCredentialsOf(req.user.id, taskName, accountKey)
         : null,
     });
 
@@ -493,7 +510,7 @@ export function createServer({
       accountKey: t.accountKey,
       label: t.label,
       config: { enabled: t.enabled, schedule: t.schedule, timeoutMs: t.timeoutMs },
-      missingCredentials: userSecrets ? userSecrets.missing(userId, t.taskName, t.accountKey, task.requires) : [],
+      missingCredentials: missingCredentialsOf(userId, t.taskName, t.accountKey),
     });
     const historyAccountKey = t.accountKey;
     // 窗口 = 最近 50 条（含 skipped），用来算「其中被隐藏了几条 skipped」

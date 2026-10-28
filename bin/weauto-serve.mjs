@@ -14,7 +14,7 @@ import { DB_FILE, openDb } from '../src/db.mjs';
 import { bootstrapTenancy, pickOwnerId } from '../src/bootstrap.mjs';
 import { createExecutor } from '../src/executor.mjs';
 import { createInvites } from '../src/invites.mjs';
-import { loadTasks } from '../src/registry.mjs';
+import { credentialPeers, loadTasks } from '../src/registry.mjs';
 import { createScheduler } from '../src/scheduler.mjs';
 import { createServer } from '../src/server.mjs';
 import { createStore } from '../src/store.mjs';
@@ -95,8 +95,9 @@ async function main() {
     tasks,
     execute: createExecutor({
       store,
-      // 每用户凭据：只给这个用户这个账号、且只给任务声明过的字段
-      secretsLoader: secretsLoaderFor(userSecrets),
+      // 每用户凭据：只给这个用户这个账号、且只给任务声明过的字段；
+      // 同组模板（同一把钥匙的兄弟任务）可互相兜底
+      secretsLoader: secretsLoaderFor(userSecrets, (taskName) => credentialPeers(tasks, taskName)),
       quotaPerDay: TENANT_LIMITS.quotaPerDay,
       log: (m) => console.log(m),
     }),

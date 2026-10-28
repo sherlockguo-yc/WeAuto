@@ -77,12 +77,30 @@ export function decryptValue(blob, key) {
  *
  * 只把任务声明过的字段交出去，缺字段抛 `SecretsError`——执行器会把它转成
  * CONFIG 状态显示在页面上，比「执行到一半才发现没密码」好排查得多。
+ *
+ * 【凭据组】`peersOf(taskName)` 给出同组其它模板名。自己的字段优先，缺的才去
+ * 兄弟模板里按**同名字段**找。这样「WorkBuddy 签到填过一次 token」就能让同组
+ * 的活跃任务直接跑起来，不必让用户再抓一遍——同一把钥匙存两份，换 key 时
+ * 必然会漏改一处。
+ *
+ * 兜底范围必须是显式的：只跨 `credentialGroup` 相同、且字段名完全一致的字段，
+ * 绝不按「都叫 TOKEN 就大概是同一个」去猜。
  */
-export function secretsLoaderFor(userSecrets) {
+export function secretsLoaderFor(userSecrets, peersOf = () => []) {
   return function loadUserSecrets({ userId, taskName, accountKey = '', requires = [] } = {}) {
     if (!requires.length) return {};
     const found = userSecrets.get(userId, taskName, accountKey);
-    const missing = requires.filter((k) => !found[k]);
+    let missing = requires.filter((k) => !found[k]);
+    if (missing.length) {
+      for (const peer of peersOf(taskName)) {
+        const theirs = userSecrets.get(userId, peer, accountKey);
+        for (const k of missing) {
+          if (theirs[k]) found[k] = theirs[k];
+        }
+        missing = requires.filter((k) => !found[k]);
+        if (!missing.length) break;
+      }
+    }
     if (missing.length) {
       throw new SecretsError(
         `缺少凭据字段：${missing.join('、')}（账号「${accountKey || '默认'}」）`,
@@ -151,6 +169,22 @@ export function createUserSecrets(db, masterKey) {
     return required.filter((k) => !present.has(k));
   }
 
+  /**
+   * 缺哪些必需字段 —— 把凭据组的兄弟算进去。
+   *
+   * 判据必须和 `secretsLoaderFor` 的兜底范围一致，否则会出现「界面标着待填凭据、
+   * 任务其实每天正常跑」这种自相矛盾的状态。
+   */
+  function missingWithPeers(userId, taskName, accountKey, required = [], peers = []) {
+    const rest = missing(userId, taskName, accountKey, required);
+    if (!rest.length) return [];
+    const covered = new Set();
+    for (const peer of peers) {
+      for (const field of fieldNames(userId, peer, accountKey)) covered.add(field);
+    }
+    return rest.filter((k) => !covered.has(k));
+  }
+
   /** 写入（局部更新：只动 patch 里出现的字段）。空字符串视为「删除该字段」 */
   function set(userId, taskName, accountKey = '', patch = {}) {
     const now = Date.now();
@@ -197,6 +231,7 @@ export function createUserSecrets(db, masterKey) {
     fieldNames,
     fieldStatus,
     missing,
+    missingWithPeers,
     set,
     removeAccount,
     removeUser,

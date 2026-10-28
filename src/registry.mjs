@@ -48,6 +48,31 @@ export async function loadTasks() {
   return tasks;
 }
 
+/**
+ * 同一个凭据组里的**其它**模板名。
+ *
+ * 用途：用户只在一处填过 token 时，让同组的另一个任务也能跑起来
+ * （WorkBuddy 的签到与活跃就是同一把 WB_ACCESS_TOKEN）。
+ *
+ * 只返回「组名相同」的兄弟，不按字段名猜——两个不相干站点都用 `TOKEN`
+ * 这种字段名很常见，跨组兜底会拿到错的值，而且失败现象是「鉴权失败」，
+ * 排查时根本想不到是凭据串了。
+ *
+ * @param {Map<string, object>} tasks 已规范化任务
+ * @param {string} taskName
+ * @returns {string[]}
+ */
+export function credentialPeers(tasks, taskName) {
+  const self = tasks.get(taskName);
+  if (!self) return [];
+  const out = [];
+  for (const [name, task] of tasks) {
+    if (name === taskName) continue;
+    if (task.credentialGroup === self.credentialGroup) out.push(name);
+  }
+  return out;
+}
+
 /** 按名称取任务，不存在时报出可用列表 */
 export async function getTask(name) {
   const tasks = await loadTasks();
