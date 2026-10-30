@@ -382,8 +382,15 @@ export function normalizeTask(task, file) {
     group: task.group ?? '未分组',
     tags: task.tags ? [...task.tags] : [],
     requires: task.requires ? [...task.requires] : [],
+    /**
+     * 预留字段，**不做门禁**：v7 起「多账号」由「建多个账号 + 建多个任务」表达，
+     * 同一个模板本来就允许建任意多个任务。保留它是为了不破坏已有模板的写法。
+     */
     accounts: task.accounts ?? false,
-    /** 凭据组：缺字段时可去同组的其它模板找（默认自成一组） */
+    /**
+     * 凭据组（站点）：同组模板共用同一个账号（一个 WorkBuddy 账号一份 token）。
+     * 不写 = 模板名自成一组。字段并集由 registry.credentialGroups 计算。
+     */
     credentialGroup: task.credentialGroup ?? task.name,
     /** public：所有人可见可订阅；internal：只有 admin 看得见（自用模板、还在调试的模板） */
     visibility: task.visibility ?? 'public',

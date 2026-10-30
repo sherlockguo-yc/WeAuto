@@ -40,9 +40,11 @@ export function summarizeTask({
   store,
   nowMs,
   random = Math.random,
-  /** 任务的身份：id 用于链接与操作，accountKey 是执行侧的维度（凭据/状态/历史按它分） */
+  /** 任务的身份：id 用于链接与操作，accountKey 是执行侧的维度（状态/历史按它分） */
   id = null,
   accountKey = '',
+  /** 引用的站点账号；界面要显示「账号：xxx」，null 表示还没选 */
+  credentialId = null,
   label = '',
   /** 我对这个任务设的启停 / 调度 / 超时。由调用方从任务行取好传进来 */
   config = null,
@@ -84,6 +86,7 @@ export function summarizeTask({
     name: task.name,
     displayName: task.displayName,
     accountKey,
+    credentialId,
     /** 任务名：用户给这个任务起的名字，没起就用模板名 */
     label: label || task.displayName,
     description: task.description,
@@ -140,7 +143,7 @@ export function summarizeAll({
   store,
   nowMs = Date.now(),
   random = Math.random,
-  /** (taskName, accountKey) => string[]，用于标出「还没填凭据」的任务 */
+  /** (taskName, credentialId) => string[]，用于标出「还没选账号 / 账号缺字段」的任务 */
   missingCredentials = null,
 }) {
   const items = [];
@@ -156,9 +159,12 @@ export function summarizeAll({
         random,
         id: t.id,
         accountKey: t.accountKey,
+        credentialId: t.credentialId,
         label: t.label,
         config: { enabled: t.enabled, schedule: t.schedule, timeoutMs: t.timeoutMs },
-        missingCredentials: missingCredentials ? missingCredentials(t.taskName, t.accountKey) : [],
+        missingCredentials: missingCredentials
+          ? missingCredentials(t.taskName, t.credentialId)
+          : [],
       }),
     );
   }

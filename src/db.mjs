@@ -329,6 +329,48 @@ export const MIGRATIONS = [
       db.exec(`ALTER TABLE users ADD COLUMN note TEXT NOT NULL DEFAULT '';`);
     },
   },
+  {
+    version: 7,
+    description: '账号凭据实体化：一个站点账号可被多个任务引用',
+    up(db) {
+      /*
+       * 以前「账号」只以 account_key（随机串）的形式挂在任务行上，跨模板共享只能靠
+       * 「去同组兄弟模板里取任意一份值」——多账号时取到谁全看行顺序。
+       * 现在账号是独立实体：一行 = 一个站点账号，任务通过 credential_id 引用它。
+       *
+       * group_name 来自模板的 credentialGroup（workbuddy / v2free…），不是模板名：
+       * 同一个 WorkBuddy 账号同时被签到与活跃引用，指针只有一份，换 key 只改一处。
+       *
+       * 不加 UNIQUE(group_name, label)：同名在应用层自动加序号，加约束会让改名与
+       * 迁移都要先处理冲突，而这里没有「同名必须报错」的业务需求。
+       *
+       * 旧的 user_secrets 表保留不删：它是本次迁移的唯一数据来源，也是回退依据。
+       * 字段密文格式与它完全一致（iv 12B || tag 16B || ciphertext）。
+       */
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS credentials (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          group_name TEXT    NOT NULL,
+          label      TEXT    NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_credentials_user ON credentials(user_id, group_name);
+
+        CREATE TABLE IF NOT EXISTS credential_fields (
+          credential_id INTEGER NOT NULL REFERENCES credentials(id) ON DELETE CASCADE,
+          field         TEXT    NOT NULL,
+          value_enc     BLOB    NOT NULL,
+          updated_at    INTEGER NOT NULL,
+          PRIMARY KEY (credential_id, field)
+        );
+
+        /* NULL = 还没选账号。无凭据模板永远为 NULL */
+        ALTER TABLE subscriptions ADD COLUMN credential_id INTEGER REFERENCES credentials(id);
+      `);
+    },
+  },
 ];
 
 /** 用 meta 表记录 schema 版本（用户表之外的第一张表，永远存在） */

@@ -1,15 +1,21 @@
 /**
- * 每用户凭据 —— 加密后存进 SQLite
+ * 每用户账号凭据 —— 独立实体，加密后存进 SQLite
  *
- * 【为什么不用 age 了】（详见 docs/requirements/weauto-multi-tenant.md §4.3）
- *   单租户时代凭据是「全站一份」，用 age 解密一个文件即可，每次执行 fork 一个进程无所谓。
- *   多租户后凭据是「每人每模板每账号一份」，调度器每 30 秒要为所有到期订阅解密，
- *   fork 进程的次数会随用户数线性增长，所以改为进程内 AES-256-GCM。
+ * 【为什么是「账号」而不是「任务凭据」】（详见 docs/requirements/weauto-accounts.md）
+ *   以前凭据按 (task_name, account_key) 存，一个任务一份。跨模板共享同一把 token
+ *   （WorkBuddy 签到 + 活跃）只能靠「去兄弟模板里取任意一份」，多账号时取到谁全看
+ *   行顺序，界面上还看不出来 —— 失败现象是「鉴权失败」或「记到错账号」。
+ *   现在账号是一等实体：一行 = 一个站点账号（按 credentialGroup 归属），任务通过
+ *   credential_id 引用它。换 key 只改一处，所有引用它的任务同时生效。
+ *
+ * 【为什么按 group 而不是按模板归属】
+ *   group 是「同一个站点的同一把钥匙」。workbuddy-checkin 与 workbuddy-active 同组，
+ *   所以一个 WorkBuddy 账号只有一份 WB_ACCESS_TOKEN。按模板归属会让「同一把钥匙存
+ *   两份」原样保留 —— 那正是这次要消灭的问题。
  *
  * 【威胁模型（不要夸大）】
  *   主密钥就在这台机器上。本方案防的是「数据库文件 / 备份泄露」，
  *   **不防主机被入侵**，也不构成端到端加密——admin 在技术上能解密所有用户的凭据。
- *   这一点必须对最终用户明说（需求文档 §6）。
  *
  * 【存储格式】
  *   value_enc = iv(12B) || authTag(16B) || ciphertext
@@ -22,6 +28,9 @@ const ALGO = 'aes-256-gcm';
 const IV_LEN = 12;
 const TAG_LEN = 16;
 export const KEY_LEN = 32;
+
+/** 账号名长度上限：与任务名保持一致，界面上两种名字并排出现 */
+export const MAX_LABEL = 32;
 
 export class UserSecretsError extends Error {
   constructor(message) {
@@ -69,43 +78,25 @@ export function decryptValue(blob, key) {
 }
 
 /**
- * @param {import('better-sqlite3').Database} db 已迁移到 v3 的库
- * @param {Buffer} masterKey 32 字节
- */
-/**
- * 执行器要的凭据加载器（需求文档 §4.5 的注入接缝）。
+ * 执行器要的凭据加载器（需求文档 §4.3 的注入接缝）。
  *
  * 只把任务声明过的字段交出去，缺字段抛 `SecretsError`——执行器会把它转成
  * CONFIG 状态显示在页面上，比「执行到一半才发现没密码」好排查得多。
  *
- * 【凭据组】`peersOf(taskName)` 给出同组其它模板名。自己的字段优先，缺的才去
- * 兄弟模板里按**同名字段**找。这样「WorkBuddy 签到填过一次 token」就能让同组
- * 的活跃任务直接跑起来，不必让用户再抓一遍——同一把钥匙存两份，换 key 时
- * 必然会漏改一处。
- *
- * 兜底范围必须是显式的：只跨 `credentialGroup` 相同、且字段名完全一致的字段，
- * 绝不按「都叫 TOKEN 就大概是同一个」去猜。
+ * 这里**没有任何跨模板兜底**：任务引用哪个账号就用哪个账号，缺就是缺。
+ * 兜底会让「多账号时用了错的 token」变成静默事故，而显式绑定能立刻看出问题。
  */
-export function secretsLoaderFor(userSecrets, peersOf = () => []) {
-  return function loadUserSecrets({ userId, taskName, accountKey = '', requires = [] } = {}) {
+export function secretsLoaderFor(userSecrets) {
+  return function loadUserSecrets({ userId, credentialId = null, requires = [] } = {}) {
     if (!requires.length) return {};
-    const found = userSecrets.get(userId, taskName, accountKey);
-    let missing = requires.filter((k) => !found[k]);
-    if (missing.length) {
-      for (const peer of peersOf(taskName)) {
-        // 跨账号取：每个任务实例的 accountKey 是各自生成的，按它对齐等于永远找不到
-        const theirs = userSecrets.fieldsOfTask(userId, peer);
-        for (const k of missing) {
-          if (theirs[k]) found[k] = theirs[k];
-        }
-        missing = requires.filter((k) => !found[k]);
-        if (!missing.length) break;
-      }
+    if (!credentialId) {
+      throw new SecretsError('还没有选择账号（在任务页的「账号」里选一个，或新建一个）');
     }
+    const found = userSecrets.get(userId, credentialId);
+    const missing = requires.filter((k) => !found[k]);
     if (missing.length) {
-      throw new SecretsError(
-        `缺少凭据字段：${missing.join('、')}（账号「${accountKey || '默认'}」）`,
-      );
+      const label = userSecrets.labelOf(userId, credentialId) || `#${credentialId}`;
+      throw new SecretsError(`账号「${label}」缺少凭据字段：${missing.join('、')}`);
     }
     return Object.fromEntries(requires.map((k) => [k, found[k]]));
   };
@@ -115,37 +106,64 @@ export function createUserSecrets(db, masterKey) {
   assertKey(masterKey);
 
   const st = {
-    fieldsOf: db.prepare(
-      `SELECT field, value_enc FROM user_secrets
-       WHERE user_id = ? AND task_name = ? AND account_key = ?`,
+    listOfUser: db.prepare(
+      'SELECT * FROM credentials WHERE user_id = ? ORDER BY group_name, id',
     ),
-    allOfUser: db.prepare(
-      'SELECT task_name, account_key, field FROM user_secrets WHERE user_id = ?',
+    byId: db.prepare('SELECT * FROM credentials WHERE id = ? AND user_id = ?'),
+    countOfGroup: db.prepare(
+      'SELECT COUNT(*) AS n FROM credentials WHERE user_id = ? AND group_name = ?',
     ),
-    upsert: db.prepare(
-      `INSERT INTO user_secrets (user_id, task_name, account_key, field, value_enc, updated_at)
-       VALUES (@user_id, @task_name, @account_key, @field, @value_enc, @updated_at)
-       ON CONFLICT(user_id, task_name, account_key, field) DO UPDATE SET
+    insertCredential: db.prepare(
+      `INSERT INTO credentials (user_id, group_name, label, created_at, updated_at)
+       VALUES (@user_id, @group_name, @label, @created_at, @updated_at)`,
+    ),
+    updateLabel: db.prepare(
+      'UPDATE credentials SET label = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+    ),
+    touch: db.prepare('UPDATE credentials SET updated_at = ? WHERE id = ? AND user_id = ?'),
+    deleteCredential: db.prepare('DELETE FROM credentials WHERE id = ? AND user_id = ?'),
+    deleteFieldsOfCredential: db.prepare('DELETE FROM credential_fields WHERE credential_id = ?'),
+    deleteAllOfUser: db.prepare('DELETE FROM credentials WHERE user_id = ?'),
+    allOfUser: db.prepare('SELECT * FROM credentials WHERE user_id = ?'),
+    fieldsOf: db.prepare('SELECT field, value_enc FROM credential_fields WHERE credential_id = ?'),
+    upsertField: db.prepare(
+      `INSERT INTO credential_fields (credential_id, field, value_enc, updated_at)
+       VALUES (@credential_id, @field, @value_enc, @updated_at)
+       ON CONFLICT(credential_id, field) DO UPDATE SET
          value_enc = excluded.value_enc, updated_at = excluded.updated_at`,
     ),
-    deleteField: db.prepare(
-      `DELETE FROM user_secrets WHERE user_id = ? AND task_name = ? AND account_key = ? AND field = ?`,
-    ),
-    deleteAccount: db.prepare(
-      'DELETE FROM user_secrets WHERE user_id = ? AND task_name = ? AND account_key = ?',
-    ),
-    deleteUser: db.prepare('DELETE FROM user_secrets WHERE user_id = ?'),
+    deleteField: db.prepare('DELETE FROM credential_fields WHERE credential_id = ? AND field = ?'),
   };
+
+  function rowToCredential(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      groupName: row.group_name,
+      label: row.label ?? '',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  /** 这个账号属于这个用户吗。所有读写都先过它，越权在结构上不可能 */
+  function ownRow(userId, credentialId) {
+    const id = Number(credentialId);
+    if (!Number.isInteger(id) || id <= 0) return null;
+    return st.byId.get(id, userId);
+  }
 
   /**
    * 取出一组凭据的明文。**只应在服务端内部使用，绝不进日志与 API 响应。**
    * @returns {Record<string,string>} 缺字段不出现在结果里
    */
-  function get(userId, taskName, accountKey = '') {
+  function get(userId, credentialId) {
+    const row = ownRow(userId, credentialId);
+    if (!row) return {};
     const out = {};
-    for (const row of st.fieldsOf.all(userId, taskName, accountKey)) {
+    for (const r of st.fieldsOf.all(row.id)) {
       try {
-        out[row.field] = decryptValue(row.value_enc, masterKey);
+        out[r.field] = decryptValue(r.value_enc, masterKey);
       } catch {
         /* 单个字段解不开就当它不存在，不让一处损坏拖垮整个任务 */
       }
@@ -154,122 +172,160 @@ export function createUserSecrets(db, masterKey) {
   }
 
   /** 只给界面用：字段名清单（不含值） */
-  function fieldNames(userId, taskName, accountKey = '') {
-    return st.fieldsOf.all(userId, taskName, accountKey).map((r) => r.field);
+  function fieldNames(userId, credentialId) {
+    const row = ownRow(userId, credentialId);
+    if (!row) return [];
+    return st.fieldsOf.all(row.id).map((r) => r.field);
   }
 
-  /** 只给界面用：必需字段里哪些已设置 */
-  function fieldStatus(userId, taskName, accountKey, required = []) {
-    const present = new Set(fieldNames(userId, taskName, accountKey));
-    return Object.fromEntries(required.map((k) => [k, present.has(k)]));
-  }
-
-  /** 缺哪些必需字段（执行前校验用） */
-  function missing(userId, taskName, accountKey, required = []) {
-    const present = new Set(fieldNames(userId, taskName, accountKey));
+  /** 缺哪些必需字段（执行前校验与界面标记共用） */
+  function missing(userId, credentialId, required = []) {
+    const present = new Set(fieldNames(userId, credentialId));
     return required.filter((k) => !present.has(k));
   }
 
-  /**
-   * 这个用户在这个模板下配过的**全部**字段，不看账号维度。
-   *
-   * 为什么必须忽略 accountKey：每个任务实例建出来时都拿到一个独立随机 key
-   * （`a-xxxxxxxx`），所以「签到任务」和「活跃任务」的同一个 WorkBuddy 账号
-   * 在库里是两个不同的 accountKey。按 accountKey 对齐会让凭据组彻底失效——
-   * 实测就是这么踩到的（签到存了 a-aec5e101，活跃是 a-458e8015）。
-   *
-   * 代价：模板声明 `accounts: true` 且有多个账号时，兜底会取到「任意一个」。
-   * 这个代价是可接受的：能跑起来比对着空凭据报错好，而且只有显式声明了
-   * 同一个 credentialGroup 才会走到这里。
-   */
-  function fieldsOfTask(userId, taskName) {
-    const out = {};
-    for (const acc of accountsOf(userId)) {
-      if (acc.taskName !== taskName) continue;
-      const found = get(userId, taskName, acc.accountKey);
-      for (const [k, v] of Object.entries(found)) if (out[k] === undefined) out[k] = v;
-    }
-    return out;
+  /** 账号名（错误信息与界面用）。取不到返回空串 */
+  function labelOf(userId, credentialId) {
+    return ownRow(userId, credentialId)?.label ?? '';
   }
 
-  /** 同 fieldsOfTask，但只回字段名（不解密，界面标记用） */
-  function fieldNamesOfTask(userId, taskName) {
-    const out = new Set();
-    for (const acc of accountsOf(userId)) {
-      if (acc.taskName !== taskName) continue;
-      for (const f of fieldNames(userId, taskName, acc.accountKey)) out.add(f);
-    }
-    return [...out];
+  function getCredential(userId, credentialId) {
+    return rowToCredential(ownRow(userId, credentialId));
+  }
+
+  /** 该用户全部账号（不含值，含字段名与更新时间） */
+  function list(userId) {
+    return st.listOfUser.all(userId).map((row) => {
+      const fields = st.fieldsOf.all(row.id).map((r) => r.field);
+      return { ...rowToCredential(row), fields };
+    });
   }
 
   /**
-   * 缺哪些必需字段 —— 把凭据组的兄弟算进去。
-   *
-   * 判据必须和 `secretsLoaderFor` 的兜底范围一致（都是跨账号），否则会出现
-   * 「界面标着待填凭据、任务其实每天正常跑」这种自相矛盾的状态。
+   * 新建账号。label 同组重名时自动加序号，不报错——
+   * 用户刚点「新建」就想填字段，被一个命名冲突打断没有意义。
    */
-  function missingWithPeers(userId, taskName, accountKey, required = [], peers = []) {
-    const rest = missing(userId, taskName, accountKey, required);
-    if (!rest.length) return [];
-    const covered = new Set();
-    for (const peer of peers) {
-      for (const field of fieldNamesOfTask(userId, peer)) covered.add(field);
-    }
-    return rest.filter((k) => !covered.has(k));
-  }
-
-  /** 写入（局部更新：只动 patch 里出现的字段）。空字符串视为「删除该字段」 */
-  function set(userId, taskName, accountKey = '', patch = {}) {
+  function create(userId, { groupName, label = '', fields = {} } = {}) {
+    const group = String(groupName ?? '').trim();
+    if (!group) throw new UserSecretsError('缺少账号所属的站点（group）');
     const now = Date.now();
+    const want = String(label ?? '').trim().slice(0, MAX_LABEL) || '账号';
+
     const tx = db.transaction(() => {
-      for (const [field, value] of Object.entries(patch)) {
-        if (value === '' || value == null) {
-          st.deleteField.run(userId, taskName, accountKey, field);
-          continue;
-        }
-        st.upsert.run({
-          user_id: userId,
-          task_name: taskName,
-          account_key: accountKey,
+      const taken = new Set(st.listOfUser.all(userId).filter((r) => r.group_name === group).map((r) => r.label));
+      let name = want;
+      for (let n = 2; taken.has(name); n += 1) name = `${want} ${n}`;
+
+      const info = st.insertCredential.run({
+        user_id: userId,
+        group_name: group,
+        label: name,
+        created_at: now,
+        updated_at: now,
+      });
+      const id = Number(info.lastInsertRowid);
+      for (const [field, value] of Object.entries(fields)) {
+        if (value === '' || value == null) continue;
+        st.upsertField.run({
+          credential_id: id,
           field,
           value_enc: encryptValue(value, masterKey),
           updated_at: now,
         });
       }
+      return id;
+    });
+
+    return getCredential(userId, tx());
+  }
+
+  /** 改名。同组重名时自动加序号（与新建同一口径） */
+  function rename(userId, credentialId, label) {
+    const row = ownRow(userId, credentialId);
+    if (!row) return null;
+    const want = String(label ?? '').trim().slice(0, MAX_LABEL);
+    if (!want) throw new UserSecretsError('账号名不能为空');
+    const taken = new Set(
+      st.listOfUser
+        .all(userId)
+        .filter((r) => r.group_name === row.group_name && r.id !== row.id)
+        .map((r) => r.label),
+    );
+    let name = want;
+    for (let n = 2; taken.has(name); n += 1) name = `${want} ${n}`;
+    st.updateLabel.run(name, Date.now(), row.id, userId);
+    return getCredential(userId, row.id);
+  }
+
+  /** 写入（局部更新：只动 patch 里出现的字段）。空字符串视为「删除该字段」 */
+  function set(userId, credentialId, patch = {}) {
+    const row = ownRow(userId, credentialId);
+    if (!row) throw new UserSecretsError('没有这个账号');
+    const now = Date.now();
+    const tx = db.transaction(() => {
+      for (const [field, value] of Object.entries(patch)) {
+        if (value === '' || value == null) {
+          st.deleteField.run(row.id, field);
+          continue;
+        }
+        st.upsertField.run({
+          credential_id: row.id,
+          field,
+          value_enc: encryptValue(value, masterKey),
+          updated_at: now,
+        });
+      }
+      st.touch.run(now, row.id, userId);
     });
     tx();
-    return fieldNames(userId, taskName, accountKey);
+    return fieldNames(userId, row.id);
   }
 
-  function removeAccount(userId, taskName, accountKey) {
-    return st.deleteAccount.run(userId, taskName, accountKey).changes > 0;
+  function remove(userId, credentialId) {
+    const row = ownRow(userId, credentialId);
+    if (!row) return false;
+    const tx = db.transaction(() => {
+      // 外键的 ON DELETE CASCADE 在本项目没有开启（PRAGMA foreign_keys 默认 off），
+      // 所以子表必须手动清 —— 依赖 CASCADE 会留下一批孤儿字段行
+      st.deleteFieldsOfCredential.run(row.id);
+      st.deleteCredential.run(row.id, userId);
+    });
+    tx();
+    return true;
   }
 
+  /**
+   * 删号清理。旧表 user_secrets 也一起清：它虽然已不再读写，
+   * 但留着别人的密文没有任何意义，反而是备份泄露时的额外风险面。
+   */
   function removeUser(userId) {
-    return st.deleteUser.run(userId).changes;
+    const ids = st.allOfUser.all(userId).map((r) => r.id);
+    const tx = db.transaction(() => {
+      for (const id of ids) st.deleteFieldsOfCredential.run(id);
+      st.deleteAllOfUser.run(userId);
+      db.prepare('DELETE FROM user_secrets WHERE user_id = ?').run(userId);
+    });
+    tx();
+    return ids.length;
   }
 
-  /** 该用户配置过凭据的 (task, account) 组合，供迁移与删除用户时清点 */
-  function accountsOf(userId) {
-    const seen = new Map();
-    for (const row of st.allOfUser.all(userId)) {
-      const key = `${row.task_name}\u0000${row.account_key}`;
-      if (!seen.has(key)) seen.set(key, { taskName: row.task_name, accountKey: row.account_key });
-    }
-    return [...seen.values()];
+  /** 这个用户在某个组里已经建了几个账号（界面提示 / 上限判断用） */
+  function countOfGroup(userId, groupName) {
+    return st.countOfGroup.get(userId, groupName).n;
   }
 
   return {
+    list,
     get,
+    getCredential,
     fieldNames,
-    fieldsOfTask,
-    fieldNamesOfTask,
-    fieldStatus,
     missing,
-    missingWithPeers,
+    labelOf,
+    create,
+    rename,
     set,
-    removeAccount,
+    remove,
     removeUser,
-    accountsOf,
+    countOfGroup,
   };
 }

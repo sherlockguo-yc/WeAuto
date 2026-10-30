@@ -20,15 +20,15 @@ import {
 const NOW = Date.parse('2026-10-20T17:00:00+08:00');
 
 describe('配对码', () => {
-  it('发出来能兑换，返回原来的 userId / taskId', () => {
+  it('发出来能兑换，返回原来的 userId / credentialId', () => {
     const p = createPairing({ now: () => NOW });
-    const { code } = p.issue({ userId: 7, taskId: 42 });
-    assert.deepEqual(p.redeem(code), { userId: 7, taskId: 42 });
+    const { code } = p.issue({ userId: 7, credentialId: 42 });
+    assert.deepEqual(p.redeem(code), { userId: 7, credentialId: 42 });
   });
 
   it('一次性：兑换过就再也兑换不了', () => {
     const p = createPairing({ now: () => NOW });
-    const { code } = p.issue({ userId: 1, taskId: 1 });
+    const { code } = p.issue({ userId: 1, credentialId: 1 });
     assert.ok(p.redeem(code));
     assert.equal(p.redeem(code), null);
   });
@@ -36,20 +36,20 @@ describe('配对码', () => {
   it('过期后兑换失败', () => {
     let t = NOW;
     const p = createPairing({ now: () => t, ttlMs: 1000 });
-    const { code } = p.issue({ userId: 1, taskId: 1 });
+    const { code } = p.issue({ userId: 1, credentialId: 1 });
     t = NOW + 1001;
     assert.equal(p.redeem(code), null);
   });
 
   it('大小写与首尾空格都能容忍（用户会照着手抄）', () => {
     const p = createPairing({ now: () => NOW });
-    const { code } = p.issue({ userId: 1, taskId: 1 });
+    const { code } = p.issue({ userId: 1, credentialId: 1 });
     assert.ok(p.redeem(`  ${code.toLowerCase()}  `));
   });
 
   it('乱填的码返回 null，且不影响已发出的码', () => {
     const p = createPairing({ now: () => NOW });
-    const { code } = p.issue({ userId: 1, taskId: 1 });
+    const { code } = p.issue({ userId: 1, credentialId: 1 });
     assert.equal(p.redeem('AAAA-AAAA'), null);
     assert.equal(p.redeem(''), null);
     assert.equal(p.redeem(null), null);
@@ -59,7 +59,7 @@ describe('配对码', () => {
   it('码里不含容易看错的 0/O/1/I', () => {
     const p = createPairing({ now: () => NOW });
     for (let i = 0; i < 20; i++) {
-      const { code } = p.issue({ userId: 1, taskId: 1 });
+      const { code } = p.issue({ userId: 1, credentialId: 1 });
       assert.match(code, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
     }
   });
@@ -67,7 +67,7 @@ describe('配对码', () => {
   it('过期的码会被清理，不会越攒越多', () => {
     let t = NOW;
     const p = createPairing({ now: () => t, ttlMs: 1000 });
-    for (let i = 0; i < 5; i++) p.issue({ userId: 1, taskId: 1 });
+    for (let i = 0; i < 5; i++) p.issue({ userId: 1, credentialId: 1 });
     assert.equal(p.pending, 5);
     t = NOW + 2000;
     assert.equal(p.pending, 0);
@@ -75,20 +75,29 @@ describe('配对码', () => {
 });
 
 describe('pushToken', () => {
-  it('生成后能解析出 userId / taskId', () => {
-    const token = makePushToken({ userId: 12, taskId: 34 });
-    assert.deepEqual(parsePushToken(token), { userId: 12, taskId: 34 });
+  it('生成后能解析出 userId / credentialId', () => {
+    const token = makePushToken({ userId: 12, credentialId: 34 });
+    assert.deepEqual(parsePushToken(token), { userId: 12, credentialId: 34, taskId: null });
+  });
+
+  /*
+   * 升级前发出去的令牌里只有 taskId。用户机器上那份脚本还会每月自动跑，
+   * 不能因为一次升级就全部失效——解析出来交给调用方去查任务现在引用的账号。
+   */
+  it('兼容旧的 wt1 令牌（只有 taskId）', () => {
+    const parsed = parsePushToken('wt1_12_34_abcdefghijklmnop');
+    assert.deepEqual(parsed, { userId: 12, credentialId: null, taskId: 34 });
   });
 
   it('格式不对的令牌一律拒绝', () => {
-    for (const bad of ['', 'wt1_1_2', 'wt1_1_2_short', 'xx_1_2_abcdefghijklmnop', null, undefined]) {
+    for (const bad of ['', 'wt2_1_2', 'wt2_1_2_short', 'xx_1_2_abcdefghijklmnop', null, undefined]) {
       assert.equal(parsePushToken(bad), null, `${JSON.stringify(bad)} 不该被接受`);
     }
   });
 
   it('两次生成的结果不同（不带可预测的序列）', () => {
-    const a = makePushToken({ userId: 1, taskId: 1 });
-    const b = makePushToken({ userId: 1, taskId: 1 });
+    const a = makePushToken({ userId: 1, credentialId: 1 });
+    const b = makePushToken({ userId: 1, credentialId: 1 });
     assert.notEqual(a, b);
   });
 });

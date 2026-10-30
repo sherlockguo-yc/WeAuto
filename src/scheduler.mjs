@@ -209,8 +209,13 @@ export function createScheduler({
 
     const mine = store.forUser(cfg.userId);
     const promise = (async () => {
-      try {
-        const record = await execute(task, { trigger, userId: cfg.userId, accountKey });
+    try {
+      const record = await execute(task, {
+        trigger,
+        userId: cfg.userId,
+        accountKey,
+        credentialId: cfg.credentialId ?? null,
+      });
         if (record?.id) mine.saveState(cfg.taskName, accountKey, { last_run_id: record.id });
         return record;
       } catch (err) {

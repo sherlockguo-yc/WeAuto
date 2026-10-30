@@ -1,11 +1,12 @@
 /**
- * 每用户凭据的加密与存储
+ * 账号凭据的加密与存储
  *
- * 重点验证四件安全相关的事：
+ * 重点验证五件安全相关的事：
  *   · 明文不出现在库里（BLOB 是密文）
  *   · 同一个值存两次密文不同（iv 随机，不能靠比较密文判断是否改过）
  *   · 密文被篡改 / 主密钥不匹配 → 校验失败而不是解出垃圾
- *   · 用户之间拿不到对方的凭据
+ *   · 用户之间拿不到对方的账号（越权在结构上不可能：每条 SQL 都带 user_id）
+ *   · 加载器只交出任务声明过的字段，缺什么说清楚
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { openDb } from '../src/db.mjs';
+import { SecretsError } from '../src/secrets.mjs';
 import {
   KEY_LEN,
   UserSecretsError,
@@ -20,6 +22,7 @@ import {
   decryptValue,
   encryptValue,
   generateMasterKey,
+  secretsLoaderFor,
 } from '../src/user-secrets.mjs';
 
 let dir;
@@ -81,64 +84,133 @@ describe('加解密', () => {
   });
 });
 
-describe('存库', () => {
-  it('写入后能读回明文', () => {
+describe('账号存储', () => {
+  it('创建账号后能读回明文', () => {
     const { us } = fresh();
-    us.set(1, 'v2free-checkin', '', { USERNAME: 'u1', PASSWORD: 'p1' });
-    assert.deepEqual(us.get(1, 'v2free-checkin', ''), { USERNAME: 'u1', PASSWORD: 'p1' });
+    const acc = us.create(1, { groupName: 'v2free', label: '主号', fields: { USERNAME: 'u1', PASSWORD: 'p1' } });
+    assert.equal(acc.groupName, 'v2free');
+    assert.equal(acc.label, '主号');
+    assert.deepEqual(us.get(1, acc.id), { USERNAME: 'u1', PASSWORD: 'p1' });
   });
 
   it('库里存的是密文，明文不出现在文件中', () => {
     const { db, us } = fresh();
-    us.set(1, 't', '', { TOKEN: 'super-secret-value' });
-    const row = db.prepare('SELECT value_enc FROM user_secrets WHERE user_id = 1').get();
+    us.create(1, { groupName: 'workbuddy', label: 'A', fields: { TOKEN: 'super-secret-value' } });
+    const row = db.prepare('SELECT value_enc FROM credential_fields').get();
     assert.ok(Buffer.isBuffer(row.value_enc));
     assert.equal(row.value_enc.includes('super-secret-value'), false);
   });
 
   it('字段状态只给「有没有」，不给值', () => {
     const { us } = fresh();
-    us.set(1, 't', '', { A: '1' });
-    assert.deepEqual(us.fieldStatus(1, 't', '', ['A', 'B']), { A: true, B: false });
-    assert.deepEqual(us.missing(1, 't', '', ['A', 'B']), ['B']);
+    const acc = us.create(1, { groupName: 'g', label: 'A', fields: { A: '1' } });
+    assert.deepEqual(us.missing(1, acc.id, ['A', 'B']), ['B']);
+    assert.deepEqual(us.fieldNames(1, acc.id), ['A']);
   });
 
   it('留空表示删除这个字段，而不是写入空串', () => {
     const { us } = fresh();
-    us.set(1, 't', '', { A: '1', B: '2' });
-    us.set(1, 't', '', { A: '' });
-    assert.deepEqual(us.get(1, 't', ''), { B: '2' });
+    const acc = us.create(1, { groupName: 'g', label: 'A', fields: { A: '1', B: '2' } });
+    us.set(1, acc.id, { A: '' });
+    assert.deepEqual(us.get(1, acc.id), { B: '2' });
   });
 
-  it('两个用户的凭据互不可见', () => {
+  it('两个用户各自一份，互相看不到也改不到', () => {
     const { us } = fresh();
-    us.set(1, 't', '', { TOKEN: 'a-token' });
-    us.set(2, 't', '', { TOKEN: 'b-token' });
-    assert.deepEqual(us.get(1, 't', ''), { TOKEN: 'a-token' });
-    assert.deepEqual(us.get(2, 't', ''), { TOKEN: 'b-token' });
+    const a = us.create(1, { groupName: 'g', label: 'A', fields: { TOKEN: 'a-token' } });
+    const b = us.create(2, { groupName: 'g', label: 'B', fields: { TOKEN: 'b-token' } });
+    assert.deepEqual(us.get(1, a.id), { TOKEN: 'a-token' });
+    assert.deepEqual(us.get(2, b.id), { TOKEN: 'b-token' });
+    // 越过 user_id 直接读别人的 id：只能拿到空，不能拿到值
+    assert.deepEqual(us.get(1, b.id), {});
+    assert.equal(us.getCredential(1, b.id), null);
+    assert.equal(us.labelOf(1, b.id), '');
+    assert.equal(us.remove(1, b.id), false);
   });
 
-  it('同一用户的两个账号各自一份凭据', () => {
+  it('同一用户的两个账号各存各的值（不再有「取任意一个」）', () => {
     const { us } = fresh();
-    us.set(1, 't', 'a-1', { TOKEN: 'one' });
-    us.set(1, 't', 'a-2', { TOKEN: 'two' });
-    assert.equal(us.get(1, 't', 'a-1').TOKEN, 'one');
-    assert.equal(us.get(1, 't', 'a-2').TOKEN, 'two');
+    const one = us.create(1, { groupName: 'workbuddy', label: '小号A', fields: { TOKEN: 'one' } });
+    const two = us.create(1, { groupName: 'workbuddy', label: '小号B', fields: { TOKEN: 'two' } });
+    assert.equal(us.get(1, one.id).TOKEN, 'one');
+    assert.equal(us.get(1, two.id).TOKEN, 'two');
+  });
+
+  it('同组重名自动加序号，不打断用户', () => {
+    const { us } = fresh();
+    const a = us.create(1, { groupName: 'g', label: '小号' });
+    const b = us.create(1, { groupName: 'g', label: '小号' });
+    assert.equal(a.label, '小号');
+    assert.equal(b.label, '小号 2');
+    // 跨组同名互不影响
+    const c = us.create(1, { groupName: 'other', label: '小号' });
+    assert.equal(c.label, '小号');
+  });
+
+  it('改名会避开同组已有名字', () => {
+    const { us } = fresh();
+    us.create(1, { groupName: 'g', label: 'A' });
+    const b = us.create(1, { groupName: 'g', label: 'B' });
+    assert.equal(us.rename(1, b.id, 'A').label, 'A 2');
   });
 
   it('删账号只删那一个，删用户清掉全部', () => {
-    const { us } = fresh();
-    us.set(1, 't', 'a-1', { TOKEN: 'one' });
-    us.set(1, 't', 'a-2', { TOKEN: 'two' });
-    us.set(2, 't', '', { TOKEN: 'other' });
+    const { db, us } = fresh();
+    const one = us.create(1, { groupName: 'g', label: 'A', fields: { TOKEN: 'one' } });
+    const two = us.create(1, { groupName: 'g', label: 'B', fields: { TOKEN: 'two' } });
+    us.create(2, { groupName: 'g', label: 'C', fields: { TOKEN: 'other' } });
 
-    assert.equal(us.removeAccount(1, 't', 'a-1'), true);
-    assert.deepEqual(us.get(1, 't', 'a-1'), {});
-    assert.equal(us.get(1, 't', 'a-2').TOKEN, 'two');
+    assert.equal(us.remove(1, one.id), true);
+    assert.deepEqual(us.get(1, one.id), {});
+    assert.equal(us.get(1, two.id).TOKEN, 'two');
+    // 字段行也要一起清（外键 CASCADE 在本项目没开启，靠模块自己删）
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM credential_fields WHERE credential_id = ?').get(one.id).n, 0);
 
     us.removeUser(1);
-    assert.deepEqual(us.accountsOf(1), []);
-    assert.equal(us.get(2, 't', '').TOKEN, 'other');
+    assert.deepEqual(us.list(1), []);
+    assert.equal(us.list(2).length, 1);
+  });
+
+  it('list 只回字段名与元信息，不含值', () => {
+    const { us } = fresh();
+    us.create(1, { groupName: 'workbuddy', label: 'A', fields: { TOKEN: 'secret' } });
+    const [acc] = us.list(1);
+    assert.deepEqual(acc.fields, ['TOKEN']);
+    assert.equal(JSON.stringify(acc).includes('secret'), false);
+  });
+});
+
+describe('secretsLoaderFor', () => {
+  it('只交出任务声明过的字段，不多给', () => {
+    const { us } = fresh();
+    const acc = us.create(1, { groupName: 'g', label: 'A', fields: { TOKEN: 't', EXTRA: 'e' } });
+    const load = secretsLoaderFor(us);
+    assert.deepEqual(load({ userId: 1, credentialId: acc.id, requires: ['TOKEN'] }), { TOKEN: 't' });
+  });
+
+  it('没选账号时抛 SecretsError，提示去选账号', () => {
+    const { us } = fresh();
+    const load = secretsLoaderFor(us);
+    assert.throws(
+      () => load({ userId: 1, credentialId: null, requires: ['TOKEN'] }),
+      (err) => err instanceof SecretsError && /选择账号/.test(err.message),
+    );
+  });
+
+  it('账号缺字段时错误消息里点名账号与缺哪个字段', () => {
+    const { us } = fresh();
+    const acc = us.create(1, { groupName: 'g', label: '小号A', fields: { A: '1' } });
+    const load = secretsLoaderFor(us);
+    assert.throws(
+      () => load({ userId: 1, credentialId: acc.id, requires: ['A', 'B'] }),
+      (err) => err instanceof SecretsError && /小号A/.test(err.message) && /B/.test(err.message),
+    );
+  });
+
+  it('无凭据模板直接返回空对象，不要求账号', () => {
+    const { us } = fresh();
+    const load = secretsLoaderFor(us);
+    assert.deepEqual(load({ userId: 1, credentialId: null, requires: [] }), {});
   });
 });
 

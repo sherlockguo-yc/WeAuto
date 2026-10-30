@@ -70,7 +70,15 @@ function rowToRun(row) {
   };
 }
 
-/** 一行订阅 = 一个任务（一个账号）。account_key 保留：凭据、调度状态、历史都按它分 */
+/**
+ * 一行订阅 = 一个任务。
+ *
+ * 两个身份字段，语义不同，别混：
+ *   · `accountKey`（随机 a-xxxxxxxx）是**任务实例**的稳定标识，写进 runs 与
+ *     task_state，同模板的两个任务靠它分开历史与调度目标；
+ *   · `credentialId` 是**引用**，指向 credentials 表里的一个站点账号。同一账号
+ *     可以被多个任务引用（签到 + 活跃），换 token 只改一处。
+ */
 function rowToTask(row) {
   if (!row) return null;
   let schedule = null;
@@ -85,8 +93,10 @@ function rowToTask(row) {
     id: row.id,
     userId: row.user_id,
     taskName: row.task_name,
-    /** 凭据 / 调度状态 / 执行历史的维度——执行侧仍然需要它 */
+    /** 任务实例标识：调度状态 / 执行历史按它分（不是账号 id） */
     accountKey: row.account_key ?? '',
+    /** 引用的站点账号；null = 还没选（无凭据模板永远为 null） */
+    credentialId: row.credential_id ?? null,
     label: row.label ?? '',
     enabled: !!row.enabled,
     schedule,
@@ -140,13 +150,13 @@ export function createStore(db, { limits = {} } = {}) {
        ORDER BY s.user_id, s.task_name`,
     ),
     insertTask: db.prepare(
-      `INSERT INTO subscriptions (user_id, task_name, account_key, label, enabled, schedule_json, timeout_ms, created_at, updated_at)
-       VALUES (@user_id, @task_name, @account_key, @label, @enabled, @schedule_json, @timeout_ms, @created_at, @updated_at)`,
+      `INSERT INTO subscriptions (user_id, task_name, account_key, credential_id, label, enabled, schedule_json, timeout_ms, created_at, updated_at)
+       VALUES (@user_id, @task_name, @account_key, @credential_id, @label, @enabled, @schedule_json, @timeout_ms, @created_at, @updated_at)`,
     ),
     updateTask: db.prepare(
       `UPDATE subscriptions SET
          enabled = @enabled, schedule_json = @schedule_json, timeout_ms = @timeout_ms,
-         label = @label, updated_at = @updated_at
+         label = @label, credential_id = @credential_id, updated_at = @updated_at
        WHERE id = @id AND user_id = @user_id`,
     ),
     deleteTask: db.prepare('DELETE FROM subscriptions WHERE id = ? AND user_id = ?'),
@@ -305,17 +315,20 @@ export function createStore(db, { limits = {} } = {}) {
     /**
      * 从一个模板建一个任务。
      *
-     * 一个任务 = 一个账号，所以每个任务自带一个新的 account_key：
-     * 凭据、调度状态、执行历史都按 (user, task_name, account_key) 分开存，
-     * 两个任务之间不会互相覆盖。
+     * `accountKey` 是任务实例的随机标识（历史与调度按它分），创建后不变；
+     * `credentialId` 是引用的站点账号，可空，之后随时可以换绑。
      */
-    function createTask(taskName, { label = '', enabled = true, schedule = null, timeoutMs = null, accountKey = null } = {}) {
+    function createTask(
+      taskName,
+      { label = '', enabled = true, schedule = null, timeoutMs = null, accountKey = null, credentialId = null } = {},
+    ) {
       assertTaskAllowed(userId);
       assertScheduleAllowed(schedule);
       const info = s.insertTask.run({
         user_id: userId,
         task_name: taskName,
         account_key: accountKey ?? newAccountKey(),
+        credential_id: credentialId,
         label: String(label || '').slice(0, 32),
         enabled: enabled ? 1 : 0,
         schedule_json: schedule ? JSON.stringify(schedule) : null,
@@ -326,8 +339,8 @@ export function createStore(db, { limits = {} } = {}) {
       return getTask(info.lastInsertRowid);
     }
 
-    /** 改任务的启停 / 调度 / 超时 / 名字；只写传进来的字段 */
-    function updateTask(id, { enabled, schedule, timeoutMs, label } = {}) {
+    /** 改任务的启停 / 调度 / 超时 / 名字 / 引用的账号；只写传进来的字段 */
+    function updateTask(id, { enabled, schedule, timeoutMs, label, credentialId } = {}) {
       const prev = s.taskById.get(Number(id), userId);
       if (!prev) return null;
       assertScheduleAllowed(schedule);
@@ -343,6 +356,8 @@ export function createStore(db, { limits = {} } = {}) {
             : null,
         timeout_ms: timeoutMs === undefined ? prev.timeout_ms : timeoutMs,
         label: label === undefined ? prev.label ?? '' : String(label || '').slice(0, 32),
+        // undefined = 不改（区别于 null = 解绑）
+        credential_id: credentialId === undefined ? (prev.credential_id ?? null) : credentialId,
         updated_at: Date.now(),
       });
       return getTask(id);
@@ -371,6 +386,7 @@ export function createStore(db, { limits = {} } = {}) {
         id: row.id,
         taskName: row.task_name,
         accountKey: row.account_key ?? '',
+        credentialId: row.credential_id ?? null,
         enabled: !!row.enabled,
         schedule: rowToTask(row).schedule,
         timeoutMs: row.timeout_ms ?? null,

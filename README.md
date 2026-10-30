@@ -14,9 +14,11 @@
 
 - **模板只能由平台提供**：`tasks/` 里放一个 `.mjs` 就是一个模板，用户只能创建模板的**实例**（任务），
   不能创建模板。这是安全边界，不是「暂时没做」。
-- **一个任务跑一个账号**：想跑第二个账号就再建一个任务。
+- **账号是独立实体，任务引用它**：「账号」页（`/credentials`）按站点管理账号，一个账号可被多个任务共用
+  （WorkBuddy 的签到与活跃共用同一个 token，换一次两处都生效）。想跑第二个账号就再建一个账号 + 一个任务。
 - **看与建是两步**：`/tasks` 顶部是模板轨道，点一张卡只是进模板页看说明，再点「创建任务」才会真的建。
-- **凭据没有独立页面**：在任务页（`/tasks/:id`）的账号区填，就近填写，列表会给「待填凭据」打标。
+- **任务页只负责「选哪个账号」**：下拉选已有账号，或选「＋ 新建账号」当场填完自动创建并绑定。
+  没选账号的任务在列表里标「待填凭据」。
 - **注册走邀请码**：默认只接受邀请链接（管理员在 `/admin/users` 生成，默认单次使用、7 天过期、可撤销），
   首个管理员走 `/setup`。
 
@@ -73,7 +75,8 @@ export default {
   name: 'my-task',
   displayName: '我的任务',
   requires: ['MY_TOKEN'],                        // 解密后校验这些字段存在
-  accounts: false,                               // true = 允许为这个模板建多个任务
+  credentialGroup: 'my-site',                    // 账号归属的站点组：同组模板共用同一个账号（省略 = 模板名自成一组）
+  accounts: false,                               // 预留：多账号由「多账号 + 多任务」表达，当前不做门禁
   visibility: 'public',                          // 'internal' = 只有 admin 可见（对其它人返回 404）
   schedule: { window: { start: '09:00', end: '09:50' } },   // 北京时间，可省略
 
@@ -91,11 +94,12 @@ export default {
 
 ## 凭据安全
 
-每个用户的凭据用 **AES-256-GCM** 加密后落在 `user_secrets` 表，主密钥在 `data/master-key`（权限 600）。
-页面上只显示字段名与「已设置 / 未设置」，**值永不出现在页面上与 API 响应里**。
+每个用户的账号凭据用 **AES-256-GCM** 加密后落在 `credentials` / `credential_fields` 表，
+主密钥在 `data/master-key`（权限 600）。页面上只显示字段名与「已配置 / 缺 X」，
+**值永不出现在页面上与 API 响应里**。
 
 **威胁模型（不要夸大）**：防的是数据库文件或备份泄露，**不防主机被入侵**——
-主密钥就在服务器上，**管理员技术上可以解密所有人的凭据**，注册页与凭据页都写明了这一点。
+主密钥就在服务器上，**管理员技术上可以解密所有人的凭据**，注册页与账号页都写明了这一点。
 
 因为任务要无人值守地自动执行，解密密钥**必须**存在于运行机器上。加密保护的是
 「凭据在传输与存储链路上不被顺走」，不是「机器沦陷后仍安全」。
@@ -182,9 +186,9 @@ bin/weauto-serve.mjs      常驻服务入口（组件装配都在这里）
 bin/weauto.mjs            CLI 入口（历史路径，仅手工调试）
 src/
   config.mjs              运行期配置：端口、JWT secret、主密钥、TENANT_LIMITS
-  db.mjs                  SQLite 连接与迁移（v1–v4，只追加不改）
+  db.mjs                  SQLite 连接与迁移（v1–v7，只追加不改）
   store.mjs               数据访问层（只提供绑定用户的视图 forUser）
-  user-secrets.mjs        每用户凭据加密（AES-256-GCM）
+  user-secrets.mjs        账号凭据的加密存储（AES-256-GCM，credentials / credential_fields）
   invites.mjs             邀请码的生成、校验、消耗
   scheduler.mjs           调度器（管时间）
   executor.mjs            执行器（管安全：幂等、配额、凭据、超时、记录）
@@ -199,7 +203,7 @@ src/
 tasks/                     模板：v2free-checkin.mjs、workbuddy-checkin.mjs、workbuddy-active.mjs
 scripts/                   probe.mjs、import-runs.mjs 等一次性脚本
 public/                    app.js（前端交互）、style.css
-tests/                     node:test，22 个文件（fixtures/ 放真实页面快照）
+tests/                     node:test，27 个文件（fixtures/ 放真实页面快照）
 data/                      weauto.db、jwt-secret、master-key、.env（已 gitignore）
 ```
 

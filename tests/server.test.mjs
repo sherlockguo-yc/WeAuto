@@ -252,6 +252,13 @@ describe('凭据一键更新（脚本直接推送）', () => {
     const ctx = await startServer({ extraTasks: [HELPER_TASK] });
     const cookie = await login(ctx.base);
     const row = ctx.store.forUser(USER_ID).createTask('helper-task', { label: '带引导' });
+    // v7：抓到的值写在「任务引用的账号」上，所以先建账号再绑上去
+    const account = ctx.userSecrets.create(USER_ID, {
+      // 模板对象未规范化时没有 credentialGroup，默认值就是模板名
+      groupName: HELPER_TASK.credentialGroup ?? HELPER_TASK.name,
+      label: '演示账号',
+    });
+    ctx.store.forUser(USER_ID).updateTask(row.id, { credentialId: account.id });
     const pairCode = async () =>
       (
         await fetch(`${ctx.base}/api/tasks/${row.id}/pair-code`, {
@@ -269,7 +276,7 @@ describe('凭据一键更新（脚本直接推送）', () => {
       (await fetch(`${ctx.base}/api/tasks/${row.id}`, { headers: { Cookie: cookie } })).json();
     const pairStatus = async () =>
       (await fetch(`${ctx.base}/api/tasks/${row.id}/pair-status`, { headers: { Cookie: cookie } })).json();
-    return { ...ctx, cookie, row, pairCode, push, taskJson, pairStatus };
+    return { ...ctx, cookie, row, account, pairCode, push, taskJson, pairStatus };
   }
 
   it('未登录不能申请配对码', async () => {
@@ -300,14 +307,15 @@ describe('凭据一键更新（脚本直接推送）', () => {
   });
 
   it('带码推送后：凭据就位 + 可查到已推送 + 回发长期令牌', async () => {
-    const { push, pairCode, taskJson, pairStatus, row } = await setup();
+    const { push, pairCode, taskJson, pairStatus, account } = await setup();
     const { code } = await pairCode();
 
     const res = await push({ code, token: JWT });
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.ok, true);
-    assert.equal(body.taskId, row.id);
+    // 码绑的是账号：同一个账号被多个任务引用时只抓一次
+    assert.equal(body.credentialId, account.id);
     assert.ok(body.pushToken, '首次配对应回发长期令牌，否则每月还要回页面点一次');
     assert.equal(body.expiresAt, 1893456000 * 1000);
 
@@ -356,7 +364,7 @@ describe('凭据一键更新（脚本直接推送）', () => {
   });
 
   it('个性化脚本：配对信息已注入，拿它就能推送（不用再生成命令）', async () => {
-    const { base, cookie, row, push } = await setup();
+    const { base, cookie, row, account, push } = await setup();
     const res = await fetch(`${base}/api/tasks/${row.id}/grabber.mjs`, { headers: { Cookie: cookie } });
     assert.equal(res.status, 200);
     // no-store：这份文件里带着令牌，不能被缓存后发给别人
@@ -368,7 +376,8 @@ describe('凭据一键更新（脚本直接推送）', () => {
 
     const embedded = JSON.parse(m[1]);
     assert.equal(embedded.taskId, row.id);
-    assert.ok(embedded.pushToken.startsWith('wt1_'));
+    assert.equal(embedded.credentialId, account.id, '注入的配对信息要带账号 id');
+    assert.ok(embedded.pushToken.startsWith('wt2_'));
     assert.match(embedded.server, /^http:\/\/127\.0\.0\.1:\d+$/);
 
     // 真正的验收：用文件里那个令牌直接推送，链路必须通
@@ -407,7 +416,7 @@ describe('凭据一键更新（脚本直接推送）', () => {
     const text = await res.text();
     assert.match(text, /^@echo off\r\n/, '必须是 CRLF 的批处理');
     assert.ok(text.includes(`set "SERVER=${base}"`), '必须把服务器地址写死进去');
-    assert.match(text, /set "PUSH_TOKEN=wt1_\d+_\d+_[A-Za-z0-9_-]+"/);
+    assert.match(text, /set "PUSH_TOKEN=wt2_\d+_\d+_[A-Za-z0-9_-]+"/);
     assert.match(text, /--push "%SERVER%" --push-token "%PUSH_TOKEN%"/);
     // 脚本本体不塞进批处理，运行时从公开端点取
     assert.ok(text.includes('/api/tools/grab-workbuddy-token.mjs'));
@@ -577,33 +586,28 @@ describe('接口行为', () => {
   });
 
   /*
-   * 凭据组复用后，用户根本没在这个任务下填过东西，输入框却写着「已设置」会很怪。
-   * 要让他知道值是从哪个兄弟模板来的——否则第一反应是「我什么时候填的？是不是串了？」
+   * 共享的机制变了：以前是「读的时候去兄弟模板借值」，现在是「两个任务引用同一个账号」。
+   * 用户看到的效果应该一致——填一次，两边都算已设置，而且不用知道值从哪来。
    */
-  it('同组模板配过的字段显示「复用自」，而不是「未设置」或光秃秃的「已设置」', async () => {
-    const sibling = {
-      ...DEMO_TASK,
-      name: 'sibling-task',
-      displayName: '兄弟模板',
-      credentialGroup: 'demo-group',
-    };
-    const grouped = {
-      ...DEMO_TASK,
-      name: 'grouped-task',
-      displayName: '同组模板',
-      credentialGroup: 'demo-group',
-    };
-    const { base, store, userSecrets } = await startServer({ extraTasks: [sibling, grouped] });
-
-    // accountKey 刻意与兄弟模板不同：线上就是这个形状
-    const created = store.forUser(USER_ID).createTask('grouped-task', { accountKey: 'a-mine' });
-    userSecrets.set(USER_ID, 'sibling-task', 'a-peer', { DEMO_TOKEN: 'peer-secret-value' });
+  it('两个任务引用同一个账号：填一次，两边都显示「已设置」', async () => {
+    const { base, store, userSecrets } = await startServer();
+    const mine = store.forUser(USER_ID);
+    const [a] = mine.tasksOfTemplate('demo-task');
+    const b = mine.createTask('demo-task', { label: '第二个' });
+    const acc = userSecrets.create(USER_ID, {
+      groupName: 'demo-task',
+      label: '小号A',
+      fields: { DEMO_TOKEN: 'shared-value' },
+    });
+    mine.updateTask(a.id, { credentialId: acc.id });
+    mine.updateTask(b.id, { credentialId: acc.id });
 
     const cookie = await login(base);
-    const html = await (await fetch(`${base}/tasks/${created.id}`, { headers: { cookie } })).text();
-    assert.match(html, /复用自「兄弟模板」/);
-    assert.doesNotMatch(html, /已设置，留空表示不修改/);
-    assert.doesNotMatch(html, /peer-secret-value/);
+    for (const id of [a.id, b.id]) {
+      const html = await (await fetch(`${base}/tasks/${id}`, { headers: { cookie } })).text();
+      assert.match(html, /已设置，留空表示不修改/, `任务 ${id} 应该显示已设置`);
+      assert.doesNotMatch(html, /shared-value/, '页面绝不能出现凭据值');
+    }
   });
 });
 
@@ -950,51 +954,72 @@ describe('凭据就近配置', () => {
     assert.equal((await fetch(`${base}/tasks/1`, { headers: { cookie } })).status, 404);
   });
 
-  it('填过之后配置页显示「已设置」', async () => {
-    const { base } = await startServer();
+  it('建账号并绑到任务后，配置页显示「已设置」', async () => {
+    const { base, store, userSecrets } = await startServer();
     const cookie = await login(base);
-
-    await fetch(`${base}/api/credentials`, {
-      method: 'POST',
-      headers: { cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskId: 1, fields: { DEMO_TOKEN: 'x' } }),
+    const [row] = store.forUser(USER_ID).tasksOfTemplate('demo-task');
+    const acc = userSecrets.create(USER_ID, {
+      groupName: 'demo-task',
+      label: '演示账号',
+      fields: { DEMO_TOKEN: 'x' },
     });
-    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    store.forUser(USER_ID).updateTask(row.id, { credentialId: acc.id });
+
+    const html = await (await fetch(`${base}/tasks/${row.id}`, { headers: { cookie } })).text();
     assert.match(html, /已设置，留空表示不修改/);
   });
 });
 
-describe('凭据页已取消', () => {
-  it('/credentials 重定向到任务页，旧链接不失效', async () => {
+describe('账号页', () => {
+  it('/credentials 是账号管理页，不再是重定向', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
     const res = await fetch(`${base}/credentials`, { headers: { cookie }, redirect: 'manual' });
-    assert.equal(res.status, 302);
-    assert.equal(res.headers.get('location'), '/tasks');
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /新建账号/);
   });
 
-  it('导航里不再有凭据入口', async () => {
+  it('导航里有账号入口', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
     const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
-    assert.equal(html.includes('href="/credentials"'), false);
+    assert.match(html, /href="\/credentials"/);
   });
 
-  it('没填凭据的实例在列表里标出来', async () => {
-    const { base, store } = await startServer();
+  it('没选账号的实例在列表里标出来，绑上填好的账号后消失', async () => {
+    const { base, store, userSecrets } = await startServer();
     const cookie = await login(base);
 
     const before = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
     assert.match(before, /待填凭据/);
 
-    await fetch(`${base}/api/credentials`, {
-      method: 'POST',
-      headers: { cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskId: 1, fields: { DEMO_TOKEN: 'x' } }),
+    const [row] = store.forUser(USER_ID).tasksOfTemplate('demo-task');
+    const acc = userSecrets.create(USER_ID, {
+      groupName: 'demo-task',
+      label: '演示账号',
+      fields: { DEMO_TOKEN: 'x' },
     });
+    store.forUser(USER_ID).updateTask(row.id, { credentialId: acc.id });
+
     const after = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
-    assert.equal(after.includes('待填凭据'), false, '填过之后标记应消失');
+    assert.equal(after.includes('待填凭据'), false, '绑好账号之后标记应消失');
+  });
+
+  it('账号页显示字段是否已填，且不出现凭据值', async () => {
+    const { base, userSecrets } = await startServer();
+    const cookie = await login(base);
+    userSecrets.create(USER_ID, {
+      groupName: 'demo-task',
+      label: '小号A',
+      fields: { DEMO_TOKEN: 'top-secret' },
+    });
+
+    const html = await (await fetch(`${base}/credentials`, { headers: { cookie } })).text();
+    assert.match(html, /小号A/);
+    assert.match(html, /已配置/);
+    assert.equal(html.includes('top-secret'), false);
   });
 });
 
@@ -1755,7 +1780,7 @@ describe('交互细节', () => {
   });
 });
 
-describe('凭据接口（每人一份）', () => {
+describe('账号接口（每人一份）', () => {
   const post = (base, cookie, body) =>
     fetch(`${base}/api/credentials`, {
       method: 'POST',
@@ -1763,28 +1788,31 @@ describe('凭据接口（每人一份）', () => {
       body: JSON.stringify(body),
     });
 
-  it('普通用户也能写自己的凭据', async () => {
+  it('普通用户也能建自己的账号', async () => {
     const { base } = await startServer({ seedRole: 'user' });
     const cookie = await login(base);
 
     const res = await post(base, cookie, {
-      taskId: 1,
+      group: 'demo-task',
+      label: '小号A',
       fields: { DEMO_TOKEN: 'abc' },
     });
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { ok: true, keys: ['DEMO_TOKEN'] });
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.account.label, '小号A');
+    assert.deepEqual(body.account.fields, ['DEMO_TOKEN']);
+    // 只回字段名，绝不回值
+    assert.equal(JSON.stringify(body).includes('abc'), false);
   });
 
-  it('只能写模板声明过的字段（白名单）', async () => {
+  it('只能写这个站点声明过的字段（白名单）', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
 
-    const res = await post(base, cookie, {
-      taskId: 1,
-      fields: { WHATEVER: 'x' },
-    });
+    const res = await post(base, cookie, { group: 'demo-task', fields: { WHATEVER: 'x' } });
     assert.equal(res.status, 400);
-    assert.match((await res.json()).error, /不属于这个模板/);
+    assert.match((await res.json()).error, /不属于这个站点/);
   });
 
   it('字段值必须是字符串（对象/数组说明客户端写错了）', async () => {
@@ -1792,41 +1820,112 @@ describe('凭据接口（每人一份）', () => {
     const cookie = await login(base);
 
     const res = await post(base, cookie, {
-      taskId: 1,
+      group: 'demo-task',
       fields: { DEMO_TOKEN: { nested: 1 } },
     });
     assert.equal(res.status, 400);
     assert.match((await res.json()).error, /必须是字符串/);
   });
 
-  it('没有的模板 / 没有启用的模板都写不进去', async () => {
+  it('未知站点建不了账号', async () => {
     const { base } = await startServer();
     const cookie = await login(base);
-
-    // 没有这个任务 = 404；模板名不再是写凭据的入口
-    assert.equal((await post(base, cookie, { taskId: 999, fields: {} })).status, 404);
-    assert.equal((await post(base, cookie, { taskName: 'demo-task', fields: {} })).status, 400);
+    const res = await post(base, cookie, { group: 'nope', fields: { X: '1' } });
+    assert.equal(res.status, 404);
+    assert.match((await res.json()).error, /没有这个站点/);
   });
 
-  it('拿不到别人的任务就写不进别人的凭据', async () => {
-    const { base } = await startServer();
+  it('改 / 删别人的账号只能拿到 404', async () => {
+    const { base, userSecrets, db } = await startServer();
     const cookie = await login(base);
-
-    // 别人的任务 id 在我的视图里根本取不到 —— 只能拿到 404，写不进去
-    const res = await post(base, cookie, {
-      taskId: 999,
+    // 另一个真实存在的用户（credentials.user_id 有外键，必须有这行）
+    const otherId = Number(
+      db
+        .prepare(
+          'INSERT INTO users (username, password_hash, role, status, created_at) VALUES (?,?,?,?,?)',
+        )
+        .run('other', 'x', 'user', 'active', 1).lastInsertRowid,
+    );
+    userSecrets.create(otherId, {
+      groupName: 'demo-task',
+      label: '别人的',
       fields: { DEMO_TOKEN: 'x' },
     });
-    assert.equal(res.status, 404);
-    assert.match((await res.json()).error, /没有这个任务/);
+    const [foreign] = userSecrets.list(otherId);
+
+    const patched = await fetch(`${base}/api/credentials/${foreign.id}`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: '改名' }),
+    });
+    assert.equal(patched.status, 404);
+    const deleted = await fetch(`${base}/api/credentials/${foreign.id}`, {
+      method: 'DELETE',
+      headers: { cookie },
+    });
+    assert.equal(deleted.status, 404);
+    assert.equal(userSecrets.get(otherId, foreign.id).DEMO_TOKEN, 'x', '别人的凭据不该被动到');
+  });
+
+  it('仍被任务引用的账号不能删，返回 409 并列出引用它的任务', async () => {
+    const { base, store, userSecrets } = await startServer();
+    const cookie = await login(base);
+    const [row] = store.forUser(USER_ID).tasksOfTemplate('demo-task');
+    const acc = userSecrets.create(USER_ID, {
+      groupName: 'demo-task',
+      label: '在用',
+      fields: { DEMO_TOKEN: 'x' },
+    });
+    store.forUser(USER_ID).updateTask(row.id, { credentialId: acc.id });
+
+    const res = await fetch(`${base}/api/credentials/${acc.id}`, {
+      method: 'DELETE',
+      headers: { cookie },
+    });
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.match(body.error, /还有 1 个任务/);
+    assert.equal(body.tasks[0].id, row.id);
+
+    // 改绑之后就能删了
+    store.forUser(USER_ID).updateTask(row.id, { credentialId: null });
+    assert.equal(
+      (await fetch(`${base}/api/credentials/${acc.id}`, { method: 'DELETE', headers: { cookie } })).status,
+      200,
+    );
+  });
+
+  it('不能把别的组的账号绑到这个任务上', async () => {
+    const { base, store, userSecrets } = await startServer();
+    const cookie = await login(base);
+    const [row] = store.forUser(USER_ID).tasksOfTemplate('demo-task');
+    const acc = userSecrets.create(USER_ID, {
+      groupName: 'other-site',
+      label: '别处的账号',
+      fields: { DEMO_TOKEN: 'x' },
+    });
+
+    const res = await fetch(`${base}/api/tasks/${row.id}`, {
+      method: 'PATCH',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credentialId: acc.id }),
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /不能用在/);
   });
 
   it('凭据值不出现在页面里', async () => {
-    const { base } = await startServer();
+    const { base, store, userSecrets } = await startServer();
     const cookie = await login(base);
-    await post(base, cookie, { taskId: 1, fields: { DEMO_TOKEN: 'top-secret' } });
+    const [row] = store.forUser(USER_ID).tasksOfTemplate('demo-task');
+    const acc = userSecrets.create(USER_ID, {
+      groupName: 'demo-task',
+      label: '小号A',
+      fields: { DEMO_TOKEN: 'top-secret' },
+    });
+    store.forUser(USER_ID).updateTask(row.id, { credentialId: acc.id });
 
-    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    const html = await (await fetch(`${base}/tasks/${row.id}`, { headers: { cookie } })).text();
     assert.match(html, /DEMO_TOKEN/);
     assert.equal(html.includes('top-secret'), false);
     assert.match(html, /已设置/);

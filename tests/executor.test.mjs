@@ -134,7 +134,7 @@ describe('配额', () => {
 });
 
 describe('凭据', () => {
-  it('缺字段时转成 CONFIG 状态，页面能提示去填凭据', async () => {
+  it('没选账号时转成 CONFIG 状态，页面能提示去选账号', async () => {
     const { store, userSecrets } = fresh();
     const needy = { ...task, requires: ['TOKEN'] };
     const ex = createExecutor({
@@ -145,12 +145,16 @@ describe('凭据', () => {
 
     const rec = await ex(needy, { trigger: 'manual', userId: USER_ID });
     assert.equal(rec.status, 'config-error');
-    assert.match(rec.message, /缺少凭据字段/);
+    assert.match(rec.message, /选择账号/);
   });
 
-  it('填了之后就能拿到，且只给任务声明过的字段', async () => {
+  it('选了账号就能拿到，且只给任务声明过的字段', async () => {
     const { store, userSecrets } = fresh();
-    userSecrets.set(USER_ID, 't', '', { TOKEN: 'secret', OTHER: 'not-given' });
+    const acc = userSecrets.create(USER_ID, {
+      groupName: 't',
+      label: 'A',
+      fields: { TOKEN: 'secret', OTHER: 'not-given' },
+    });
 
     const seen = {};
     const needy = {
@@ -162,16 +166,15 @@ describe('凭据', () => {
       },
     };
     const ex = createExecutor({ store, secretsLoader: secretsLoaderFor(userSecrets), now: () => NOW });
-    await ex(needy, { trigger: 'manual', userId: USER_ID });
+    await ex(needy, { trigger: 'manual', userId: USER_ID, credentialId: acc.id });
 
     assert.deepEqual(seen, { TOKEN: 'secret' });
   });
 
   it('账号各自的凭据不会串', async () => {
     const { store, userSecrets } = fresh();
-    const b = store.forUser(USER_ID).createTask('t', { label: '小号' }).accountKey;
-    userSecrets.set(USER_ID, 't', '', { TOKEN: 'main' });
-    userSecrets.set(USER_ID, 't', b, { TOKEN: 'second' });
+    const a = userSecrets.create(USER_ID, { groupName: 't', label: 'A', fields: { TOKEN: 'main' } });
+    const b = userSecrets.create(USER_ID, { groupName: 't', label: 'B', fields: { TOKEN: 'second' } });
 
     const seen = [];
     const needy = {
@@ -183,8 +186,8 @@ describe('凭据', () => {
       },
     };
     const ex = createExecutor({ store, secretsLoader: secretsLoaderFor(userSecrets), now: () => NOW });
-    await ex(needy, { trigger: 'manual', userId: USER_ID, accountKey: '' });
-    await ex(needy, { trigger: 'manual', userId: USER_ID, accountKey: b });
+    await ex(needy, { trigger: 'manual', userId: USER_ID, credentialId: a.id });
+    await ex(needy, { trigger: 'manual', userId: USER_ID, credentialId: b.id });
 
     assert.deepEqual(seen, ['main', 'second']);
   });

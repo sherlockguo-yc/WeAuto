@@ -1,13 +1,12 @@
 /**
- * 凭据组 —— 同一站点的一族模板共用一把钥匙
+ * 凭据组 —— 一个站点的一族模板共用一个「账号对象」
  *
- * 起因很具体：WorkBuddy 的「签到」和「活跃」都需要同一个 WB_ACCESS_TOKEN，
- * 让用户抓两遍没有意义，而存两份又会导致换 key 时漏改一处。
+ * 这一版把共享从「读取时兜底」换成了「引用同一个账号」：
+ *   · 组只用来决定账号归属与字段并集，不再跨模板借值
+ *   · 同一账号被签到与活跃同时引用 → 只存一份 token，换 key 只改一处
+ *   · 不同账号各存各的 → 不会出现「取到任意一个」这种静默事故
  *
- * 这里守住三件事：
- *   1. 默认自成一组（不写 credentialGroup 的模板行为与改造前完全一致）
- *   2. 只跨「声明了同一组」的模板兜底，绝不按字段名猜
- *   3. 自己配的值优先，兄弟模板只是补位
+ * 第一段仍然守着契约：组名默认自成一组、非法组名在加载期报错。
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { openDb } from '../src/db.mjs';
-import { credentialPeers } from '../src/registry.mjs';
+import { credentialGroups } from '../src/registry.mjs';
 import { SecretsError } from '../src/secrets.mjs';
 import { normalizeTask } from '../src/task-contract.mjs';
 import { createUserSecrets, generateMasterKey, secretsLoaderFor } from '../src/user-secrets.mjs';
@@ -50,12 +49,15 @@ function freshUserSecrets() {
   return createUserSecrets(db, generateMasterKey());
 }
 
-/** 只关心 name / credentialGroup，run 用不到但契约要求存在 */
+/** 只关心 name / displayName / requires / credentialGroup，run 用不到但契约要求存在 */
 const mkTask = (name, extra = {}) =>
-  normalizeTask({ name, displayName: name, requires: ['TOKEN'], run: async () => ({}) ,...extra }, `${name}.mjs`);
+  normalizeTask(
+    { name, displayName: name, requires: ['TOKEN'], run: async () => ({}), ...extra },
+    `${name}.mjs`,
+  );
 
 describe('credentialGroup 契约', () => {
-  it('不声明时自成一组，等于「不去找别人」', () => {
+  it('不声明时自成一组，等于「不与别人共享账号」', () => {
     assert.equal(mkTask('lonely').credentialGroup, 'lonely');
   });
 
@@ -70,120 +72,81 @@ describe('credentialGroup 契约', () => {
   });
 });
 
-describe('credentialPeers', () => {
+describe('credentialGroups（账号归属的唯一来源）', () => {
   const tasks = new Map(
     [
       mkTask('wb-checkin', { credentialGroup: 'workbuddy' }),
-      mkTask('wb-active', { credentialGroup: 'workbuddy' }),
-      mkTask('wb-other', { credentialGroup: 'workbuddy' }),
-      mkTask('v2free'),
+      mkTask('wb-active', { credentialGroup: 'workbuddy', requires: ['TOKEN', 'DEVICE_ID'] }),
+      mkTask('v2free-checkin', { credentialGroup: 'v2free', requires: ['EMAIL', 'PASSWORD'] }),
+      mkTask('plain', { requires: [] }),
     ].map((t) => [t.name, t]),
   );
 
-  it('返回同组的其它模板，不含自己', () => {
-    assert.deepEqual(credentialPeers(tasks, 'wb-checkin').sort(), ['wb-active', 'wb-other']);
+  it('同组模板合并成一个组，字段取并集', () => {
+    const wb = credentialGroups(tasks).find((g) => g.group === 'workbuddy');
+    assert.deepEqual(wb.taskNames.sort(), ['wb-active', 'wb-checkin']);
+    assert.deepEqual(wb.fields.sort(), ['DEVICE_ID', 'TOKEN']);
+    // 组名要能被人读懂：用组内模板名拼
+    assert.match(wb.label, /wb-checkin/);
   });
 
-  it('单独成组的模板没有兄弟', () => {
-    assert.deepEqual(credentialPeers(tasks, 'v2free'), []);
+  it('每组只出现一次', () => {
+    const groups = credentialGroups(tasks);
+    assert.deepEqual(groups.map((g) => g.group).sort(), ['v2free', 'workbuddy']);
   });
 
-  it('未知模板返回空数组而不是抛错', () => {
-    assert.deepEqual(credentialPeers(tasks, 'nope'), []);
+  it('不需要凭据的模板不构成组（给它建账号是无意义的空表单）', () => {
+    assert.equal(credentialGroups(tasks).some((g) => g.group === 'plain'), false);
   });
 });
 
-describe('secretsLoaderFor 跨组兜底', () => {
-  it('自己没填时用兄弟模板的字段', () => {
+describe('账号共享（替代原来的跨模板兜底）', () => {
+  it('两个任务引用同一个账号：只存一份，两边取到同样的值', () => {
     const us = freshUserSecrets();
-    us.set(USER_ID, 'wb-checkin', '', { TOKEN: 'from-checkin' });
-
-    const load = secretsLoaderFor(us, () => ['wb-checkin']);
-    assert.equal(load({ userId: USER_ID, taskName: 'wb-active', requires: ['TOKEN'] }).TOKEN, 'from-checkin');
-  });
-
-  it('自己填了就用自己那份，不被兄弟覆盖', () => {
-    const us = freshUserSecrets();
-    us.set(USER_ID, 'wb-checkin', '', { TOKEN: 'from-checkin' });
-    us.set(USER_ID, 'wb-active', '', { TOKEN: 'from-active' });
-
-    const load = secretsLoaderFor(us, () => ['wb-checkin']);
-    assert.equal(load({ userId: USER_ID, taskName: 'wb-active', requires: ['TOKEN'] }).TOKEN, 'from-active');
-  });
-
-  it('只补缺的字段，不从兄弟那里多拿没用到的字段', () => {
-    const us = freshUserSecrets();
-    us.set(USER_ID, 'wb-checkin', '', { TOKEN: 'a', EXTRA: 'b' });
-    us.set(USER_ID, 'wb-active', '', { USERNAME: 'me' });
-
-    const load = secretsLoaderFor(us, () => ['wb-checkin']);
-    const got = load({ userId: USER_ID, taskName: 'wb-active', requires: ['USERNAME', 'TOKEN'] });
-    assert.deepEqual(got, { USERNAME: 'me', TOKEN: 'a' });
-  });
-
-  it('谁都没填时仍然抛 SecretsError（错误消息里点名缺哪个字段）', () => {
-    const us = freshUserSecrets();
-    const load = secretsLoaderFor(us, () => ['wb-checkin']);
-    assert.throws(
-      () => load({ userId: USER_ID, taskName: 'wb-active', requires: ['TOKEN'] }),
-      (err) => err instanceof SecretsError && /TOKEN/.test(err.message),
-    );
-  });
-
-  /*
-   * 线上真实形状：每个任务实例建出来时各自分配一个随机 accountKey，
-   * 所以「签到」和「活跃」的同一个 WorkBuddy 账号在库里是两个 key。
-   * 按 accountKey 对齐会让整个机制静默失效——这条用例就是那次踩坑的记录。
-   */
-  it('两个任务的 accountKey 不同时也能兜底', () => {
-    const us = freshUserSecrets();
-    us.set(USER_ID, 'wb-checkin', 'a-1111', { TOKEN: 'from-checkin' });
-
-    const load = secretsLoaderFor(us, () => ['wb-checkin']);
-    assert.equal(
-      load({ userId: USER_ID, taskName: 'wb-active', accountKey: 'a-2222', requires: ['TOKEN'] }).TOKEN,
-      'from-checkin',
-    );
-  });
-
-  it('没传 peersOf 时行为与改造前一致：不跨任务找', () => {
-    const us = freshUserSecrets();
-    us.set(USER_ID, 'wb-checkin', '', { TOKEN: 'from-checkin' });
+    const acc = us.create(USER_ID, {
+      groupName: 'workbuddy',
+      label: '小号A',
+      fields: { TOKEN: 'shared-token' },
+    });
     const load = secretsLoaderFor(us);
-    assert.throws(() => load({ userId: USER_ID, taskName: 'wb-active', requires: ['TOKEN'] }), SecretsError);
-  });
-});
 
-/**
- * 界面上的「待填凭据」标记走的是另一条路径（不解密、只看字段名）。
- * 两处判据必须一致，否则会出现「标着待填凭据，却每天正常跑」的矛盾状态。
- */
-describe('missingWithPeers（界面标记用）', () => {
-  it('兄弟模板配过同名字段时不再标「缺」', () => {
-    const us = freshUserSecrets();
-    us.set(USER_ID, 'wb-checkin', '', { TOKEN: 'x' });
-    assert.deepEqual(us.missingWithPeers(USER_ID, 'wb-active', '', ['TOKEN'], ['wb-checkin']), []);
-    assert.deepEqual(us.missingWithPeers(USER_ID, 'wb-active', '', ['TOKEN'], []), ['TOKEN']);
+    // 同一个 credentialId，两个任务名不同——结果必须一致
+    assert.equal(
+      load({ userId: USER_ID, taskName: 'wb-checkin', credentialId: acc.id, requires: ['TOKEN'] }).TOKEN,
+      'shared-token',
+    );
+    assert.equal(
+      load({ userId: USER_ID, taskName: 'wb-active', credentialId: acc.id, requires: ['TOKEN'] }).TOKEN,
+      'shared-token',
+    );
   });
 
-  it('跨 accountKey 也能识别（线上真实形状）', () => {
+  it('改一次就全生效：账号里的值更新后，两个任务都拿到新值', () => {
     const us = freshUserSecrets();
-    us.set(USER_ID, 'wb-checkin', 'a-1111', { TOKEN: 'x' });
-    assert.deepEqual(us.missingWithPeers(USER_ID, 'wb-active', 'a-2222', ['TOKEN'], ['wb-checkin']), []);
+    const acc = us.create(USER_ID, { groupName: 'workbuddy', label: 'A', fields: { TOKEN: 'old' } });
+    const load = secretsLoaderFor(us);
+    us.set(USER_ID, acc.id, { TOKEN: 'new' });
+    for (const taskName of ['wb-checkin', 'wb-active']) {
+      assert.equal(load({ userId: USER_ID, taskName, credentialId: acc.id, requires: ['TOKEN'] }).TOKEN, 'new');
+    }
   });
 
-  it('兄弟的字段名不同时仍算缺', () => {
+  it('两个账号各有各的 token，互不串（不再有「取任意一个」）', () => {
     const us = freshUserSecrets();
-    us.set(USER_ID, 'wb-checkin', '', { OTHER: 'x' });
-    assert.deepEqual(us.missingWithPeers(USER_ID, 'wb-active', '', ['TOKEN'], ['wb-checkin']), ['TOKEN']);
+    const a = us.create(USER_ID, { groupName: 'workbuddy', label: 'A', fields: { TOKEN: 'token-a' } });
+    const b = us.create(USER_ID, { groupName: 'workbuddy', label: 'B', fields: { TOKEN: 'token-b' } });
+    const load = secretsLoaderFor(us);
+    assert.equal(load({ userId: USER_ID, credentialId: a.id, requires: ['TOKEN'] }).TOKEN, 'token-a');
+    assert.equal(load({ userId: USER_ID, credentialId: b.id, requires: ['TOKEN'] }).TOKEN, 'token-b');
   });
 
-  it('多个兄弟中任意一个满足即可', () => {
+  it('没引用账号就是缺凭据，不会去别处借', () => {
     const us = freshUserSecrets();
-    us.set(USER_ID, 'third', '', { TOKEN: 'x' });
-    assert.deepEqual(
-      us.missingWithPeers(USER_ID, 'wb-active', '', ['TOKEN'], ['wb-checkin', 'third']),
-      [],
+    us.create(USER_ID, { groupName: 'workbuddy', label: 'A', fields: { TOKEN: 'somebody-else' } });
+    const load = secretsLoaderFor(us);
+    assert.throws(
+      () => load({ userId: USER_ID, taskName: 'wb-active', credentialId: null, requires: ['TOKEN'] }),
+      SecretsError,
     );
   });
 });

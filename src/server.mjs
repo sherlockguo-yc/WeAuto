@@ -16,7 +16,7 @@ import { renderView } from './format.mjs';
 import * as render from './render.mjs';
 import { describeSchedule, summarizeAll, summarizeTask } from './status.mjs';
 import { normalizeSchedule } from './task-contract.mjs';
-import { credentialPeers } from './registry.mjs';
+import { credentialGroups } from './registry.mjs';
 import {
   createPairing,
   looksLikeJwt,
@@ -190,22 +190,20 @@ export function createServer({
   };
 
   /**
-   * 这个账号还缺哪些凭据字段。
+   * 这个任务还缺哪些凭据字段。
    *
-   * 「缺」要算上凭据组：同组兄弟模板配过同名字段就算有。否则用户明明只填过
-   * 一次 token，另一个任务却一直挂着「待填凭据」，而它其实跑得好好的。
+   * 只看**它引用的那个账号**：没选账号 = 全缺，选了就看账号里没填的。
+   * 不再有「同组兄弟模板有就算有」——账号是独立实体后，同组共享靠的是
+   * 两个任务引用同一个账号，而不是读取时去别人那里借值。
    */
-  const missingCredentialsOf = (userId, taskName, accountKey) => {
+  const missingCredentialsOf = (userId, taskName, credentialId) => {
     if (!userSecrets) return [];
     const task = tasks.get(taskName);
     if (!task) return [];
-    return userSecrets.missingWithPeers(
-      userId,
-      taskName,
-      accountKey,
-      task.requires,
-      credentialPeers(tasks, taskName),
-    );
+    const requires = task.requires ?? [];
+    if (!requires.length) return [];
+    if (!credentialId) return [...requires];
+    return userSecrets.missing(userId, credentialId, requires);
   };
 
   /**
@@ -214,15 +212,28 @@ export function createServer({
    * 凭据缺失在这里就算出来，是为了让列表能给「待填凭据」打标——
    * 取消凭据页之后，这是唯一能一眼看到哪些任务还没配好的地方。
    */
-  const summarizeFor = (req) =>
-    summarizeAll({
+  /**
+   * 账号 id → 名字。列表与详情都要显示「账号：小号A」，
+   * 没有它就是一行看不出区别的「WorkBuddy 每日签到」。
+   */
+  const accountLabelsOf = (userId) =>
+    new Map((userSecrets ? userSecrets.list(userId) : []).map((a) => [a.id, a.label]));
+
+  const summarizeFor = (req) => {
+    const data = summarizeAll({
       tasks: visibleTasks(req),
       store: mine(req),
       nowMs: now(),
       missingCredentials: userSecrets
-        ? (taskName, accountKey) => missingCredentialsOf(req.user.id, taskName, accountKey)
+        ? (taskName, credentialId) => missingCredentialsOf(req.user.id, taskName, credentialId)
         : null,
     });
+    const labels = accountLabelsOf(req.user.id);
+    for (const it of data.items) {
+      it.accountLabel = it.credentialId ? labels.get(it.credentialId) ?? '' : '';
+    }
+    return data;
+  };
 
   /* ───────── 登录 / 首次初始化 ───────── */
   app.get('/login', (req, res) => {
@@ -526,10 +537,13 @@ export function createServer({
       nowMs: now(),
       id: t.id,
       accountKey: t.accountKey,
+      credentialId: t.credentialId,
       label: t.label,
       config: { enabled: t.enabled, schedule: t.schedule, timeoutMs: t.timeoutMs },
-      missingCredentials: missingCredentialsOf(userId, t.taskName, t.accountKey),
+      missingCredentials: missingCredentialsOf(userId, t.taskName, t.credentialId),
     });
+    // 列表由 summarizeFor 统一补，详情页单独调 summarizeTask，这里也要补上
+    summary.accountLabel = t.credentialId && userSecrets ? userSecrets.labelOf(userId, t.credentialId) : '';
     const historyAccountKey = t.accountKey;
     // 窗口 = 最近 50 条（含 skipped），用来算「其中被隐藏了几条 skipped」
     const window = mine.runsOfTask(t.taskName, {
@@ -559,44 +573,36 @@ export function createServer({
   }
 
   /**
-   * 配置区要用的数据：这个任务需要哪些凭据字段、已经填了哪些。
+   * 配置区要用的数据：任务引用的是哪个账号、同组还有哪些账号可选、字段填没填。
    *
    * 单独抽出来而不是塞进 detailOf()，是因为 detailOf() 也被 /api/tasks/:id 用，
    * 那里只要状态和历史，没必要为每个接口调用多查一遍凭据。
-   */
-  /**
-   * 字段 → 「这个值是从哪个兄弟模板借来的」。
    *
-   * 自己配过的字段不进来（自己那份优先），只记录需要跨模板兜底的。
-   * 界面靠它把「未设置」改成「复用自 X 任务」——否则用户明明没填过，
-   * 却看到输入框写着「已设置」，比写着「未设置」还让人困惑。
+   * 只返回字段名与是否已设置，**绝不返回值**——页面不需要明文，也就没有泄露面。
    */
-  function sharedFieldSources(userId, taskName, accountKey = '') {
-    const out = new Map();
-    if (!userSecrets) return out;
-    const own = new Set(userSecrets.fieldNames(userId, taskName, accountKey));
-    for (const peer of credentialPeers(tasks, taskName)) {
-      const label = tasks.get(peer)?.displayName ?? peer;
-      for (const field of userSecrets.fieldNamesOfTask(userId, peer)) {
-        if (own.has(field) || out.has(field)) continue;
-        out.set(field, label);
-      }
-    }
-    return out;
-  }
-
-  function credentialOf({ userId, taskName, accountKey = '' }) {
-    const task = tasks.get(taskName);
-    const shared = sharedFieldSources(userId, taskName, accountKey);
-    const own = userSecrets ? new Set(userSecrets.fieldNames(userId, taskName, accountKey)) : new Set();
+  function credentialOf({ req, taskName, credentialId = null }) {
+    const userId = req.user.id;
+    const visible = visibleTasks(req);
+    const task = visible.get(taskName);
+    const requires = task?.requires ?? [];
+    // 不写 credentialGroup = 自成一组（契约默认值）
+    const group = task ? task.credentialGroup ?? task.name : '';
+    const groups = credentialGroups(visible);
+    const accounts = userSecrets && group
+      ? userSecrets.list(userId).filter((c) => c.groupName === group)
+      : [];
+    // 引用的账号不属于这个组（或已被删）时按「没选」显示，而不是显示一个错的
+    const current = credentialId ? accounts.find((a) => a.id === credentialId) ?? null : null;
+    const present = new Set(current?.fields ?? []);
     return {
       credential: {
-        subscribed: true,
-        accountKey,
-        fields: (task?.requires ?? []).map((key) => {
-          const from = own.has(key) ? null : (shared.get(key) ?? null);
-          return { key, set: own.has(key) || !!from, from };
-        }),
+        group,
+        groupLabel: groups.find((g) => g.group === group)?.label ?? group,
+        credentialId: current?.id ?? null,
+        accountLabel: current?.label ?? '',
+        fields: requires.map((key) => ({ key, set: present.has(key) })),
+        accounts: accounts.map((a) => ({ id: a.id, label: a.label, fields: a.fields })),
+        groups,
       },
     };
   }
@@ -615,9 +621,9 @@ export function createServer({
     // 任务被删了、或者是别人的任务
     if (!d) return notFoundPage(req, res, '没有这个任务——它可能已经被删除了。');
     const { credential } = credentialOf({
-      userId: req.user.id,
+      req,
       taskName: d.task.name,
-      accountKey: d.summary.accountKey,
+      credentialId: d.summary.credentialId,
     });
     // 首屏只渲染一屏历史。d.runs 是「最多 50 条」，全部铺出来就是几屏「昨天成功」，
     // 真正要看的「最近一次结果」被挤到上面去了。剩下的由「加载更多」按需取。
@@ -653,12 +659,28 @@ export function createServer({
   });
 
   /**
-   * 凭据页已取消：凭据在任务页里填（`/tasks/:name`）。
+   * 账号页：凭据是独立实体，可以在这里建、改名、改字段、删。
    *
-   * 这里保留一条重定向，是为了让旧书签和旧链接不至于 404。
+   * 为什么不放在任务页里：同一个 WorkBuddy 账号会被签到与活跃两个任务引用，
+   * 挂在某一个任务下就变成「改一处另一处还是旧 token」。任务页只负责「选哪个账号」。
    */
   app.get('/credentials', requireLogin, (req, res) => {
-    res.redirect('/tasks');
+    const groups = credentialGroups(visibleTasks(req));
+    const accounts = userSecrets ? userSecrets.list(req.user.id) : [];
+    // 引用关系从任务列表算：一个账号可能被多个任务引用，删除前要能告诉用户是谁
+    const refs = new Map();
+    for (const it of summarizeFor(req).items) {
+      if (!it.credentialId) continue;
+      if (!refs.has(it.credentialId)) refs.set(it.credentialId, []);
+      refs.get(it.credentialId).push({ id: it.id, label: it.label, missing: it.missingCredentials });
+    }
+    res.type('html').send(
+      shell(req, {
+        title: '账号',
+        active: 'credentials',
+        body: render.pageCredentials({ groups, accounts, refs }),
+      }),
+    );
   });
 
   /** 管理首页（admin）：跨用户的只读统计 + 各管理功能的入口 */
@@ -774,6 +796,9 @@ export function createServer({
     const task = tasks.get(t.taskName);
     const helper = task?.credentialHelper;
     if (!helper?.download) return res.status(400).json({ error: '这个任务不支持一键更新凭据' });
+    if (!t.credentialId) {
+      return res.status(400).json({ error: '这个任务还没选账号，先在「任务名与账号」里选一个再抓取' });
+    }
     if ((task.requires ?? []).length !== 1) {
       // 一个码对应一个字段。多字段任务该由模板明确「推哪个」，而不是在这里靠猜
       return res.status(400).json({ error: '一键更新只支持只有一个凭据字段的任务' });
@@ -781,7 +806,11 @@ export function createServer({
 
     // 发码时刻要一起返回：前端拿它和 pushedAt 比较，避免上一次推送的旧时间戳让页面误刷新
     const issuedAt = now();
-    const { code, expiresAt } = pairing.issue({ userId: req.user.id, taskId: t.id });
+    // 码绑账号而不是任务：同一账号被签到/活跃同时引用时，抓一次两边都生效
+    const { code, expiresAt } = pairing.issue({
+      userId: req.user.id,
+      credentialId: t.credentialId,
+    });
     // 用请求自身的 origin：部署在哪个域名、走没走反代，都由客户端那一侧决定
     const origin = `${req.protocol}://${req.get('host')}`;
     const command = `${helper.command ?? `node ${helper.download}`} --push ${origin} --code ${code}`;
@@ -792,7 +821,7 @@ export function createServer({
   app.get('/api/tasks/:id(\\d+)/pair-status', requireLogin, (req, res) => {
     const t = mine(req).getTask(Number(req.params.id));
     if (!t) return res.status(404).json({ error: '没有这个任务' });
-    res.json({ pushedAt: pairing.pushedAt(t.id) });
+    res.json({ pushedAt: t.credentialId ? pairing.pushedAt(t.credentialId) : null });
   });
 
   /**
@@ -833,25 +862,36 @@ export function createServer({
       res.status(400).json({ error: '一键更新只支持只有一个凭据字段的任务' });
       return null;
     }
-
-    // 同一个任务复用同一个 pushToken：重复下载不会让之前那份文件失效
-    let pushToken = userSecrets.get(req.user.id, t.taskName, t.accountKey)?.WEAUTO_PUSH_TOKEN;
-    if (!pushToken) {
-      pushToken = makePushToken({ userId: req.user.id, taskId: t.id });
-      userSecrets.set(req.user.id, t.taskName, t.accountKey, { WEAUTO_PUSH_TOKEN: pushToken });
+    if (!t.credentialId) {
+      res.status(400).json({ error: '这个任务还没选账号，先在「任务名与账号」里选一个再抓取' });
+      return null;
     }
-    return { t, helper, pushToken, server: `${req.protocol}://${req.get('host')}` };
+
+    // 同一个账号复用同一个 pushToken：重复下载不会让之前那份文件失效，
+    // 且引用这个账号的其它任务也自动拿到同一个推送入口
+    let pushToken = userSecrets.get(req.user.id, t.credentialId)?.WEAUTO_PUSH_TOKEN;
+    if (!pushToken) {
+      pushToken = makePushToken({ userId: req.user.id, credentialId: t.credentialId });
+      userSecrets.set(req.user.id, t.credentialId, { WEAUTO_PUSH_TOKEN: pushToken });
+    }
+    return {
+      t,
+      helper,
+      pushToken,
+      credentialId: t.credentialId,
+      server: `${req.protocol}://${req.get('host')}`,
+    };
   }
 
   app.get('/api/tasks/:id(\\d+)/grabber.mjs', requireLogin, (req, res) => {
     const target = grabberTarget(req, res);
     if (!target) return;
-    const { t, helper, pushToken, server } = target;
+    const { t, helper, pushToken, credentialId, server } = target;
 
     const source = fs.readFileSync(path.join(ROOT, 'scripts', helper.download), 'utf8');
     const injected = source.replace(
       'const EMBEDDED_PAIRING = null;',
-      `const EMBEDDED_PAIRING = ${JSON.stringify({ server, taskId: t.id, pushToken })};`,
+      `const EMBEDDED_PAIRING = ${JSON.stringify({ server, taskId: t.id, credentialId, pushToken })};`,
     );
     /*
      * 注入失败必须报错，不能把未注入的文件发出去——那份文件跑起来会退化成
@@ -947,52 +987,72 @@ export function createServer({
     }
     if (!userSecrets) return res.status(503).json({ error: '凭据存储未就绪' });
 
-    let entry = null;
+    let userId = null;
+    let credentialId = null;
+    /** 兼容 wt1 令牌：里面只有 taskId，回给脚本让 bind.json 照旧能写 */
+    let legacyTaskId = null;
     let issuedToken = null;
 
     if (code) {
-      entry = pairing.redeem(code);
+      const entry = pairing.redeem(code);
       if (!entry) {
         return res.status(400).json({ error: '配对码无效或已过期，回页面重新点一次「一键更新」' });
       }
+      userId = entry.userId;
+      credentialId = entry.credentialId;
     } else if (pushToken) {
       const parsed = parsePushToken(pushToken);
       if (!parsed) return res.status(401).json({ error: 'pushToken 格式不对' });
-      entry = parsed;
+      userId = parsed.userId;
+      if (parsed.credentialId) {
+        credentialId = parsed.credentialId;
+      } else {
+        // 升级前发出去的令牌（wt1_...）里只有 taskId：顺着任务找到它现在引用的账号
+        const t = store.forUser(userId).getTask(parsed.taskId);
+        if (!t) return res.status(404).json({ error: '任务不存在（可能已被删除）' });
+        if (!t.credentialId) {
+          return res.status(401).json({ error: '这个任务还没有绑定账号，请回页面重新配对' });
+        }
+        credentialId = t.credentialId;
+        legacyTaskId = t.id;
+      }
     } else {
       return res.status(400).json({ error: '需要 code 或 pushToken' });
     }
 
-    const t = store.forUser(entry.userId).getTask(entry.taskId);
-    if (!t) return res.status(404).json({ error: '任务不存在（可能已被删除）' });
-    const task = tasks.get(t.taskName);
-    if (!task) return res.status(404).json({ error: '模板不存在' });
+    const cred = userSecrets.getCredential(userId, credentialId);
+    if (!cred) return res.status(404).json({ error: '账号不存在（可能已被删除）' });
 
-    const key = (task.requires ?? [])[0];
-    if (!key) return res.status(400).json({ error: '这个任务没有声明凭据字段' });
+    const spec = credentialGroups(tasks).find((g) => g.group === cred.groupName);
+    const key = spec?.fields?.[0];
+    if (!key) return res.status(400).json({ error: '这个站点没有声明凭据字段' });
+    if (spec.fields.length !== 1) {
+      // 推送通道一次只写一个字段，多字段站点该由模板明确说明推哪个，不在这里猜
+      return res.status(400).json({ error: '一键更新只支持只有一个凭据字段的站点' });
+    }
 
     if (code) {
       // 首次配对：顺手发一个长期令牌，脚本存本地，以后不用再打开页面
-      issuedToken = makePushToken({ userId: entry.userId, taskId: entry.taskId });
+      issuedToken = makePushToken({ userId, credentialId });
     } else {
       // 长期令牌必须和服务器存的那份一致——它和凭据一样是密文存储
-      const stored = userSecrets.get(entry.userId, t.taskName, t.accountKey)?.WEAUTO_PUSH_TOKEN;
+      const stored = userSecrets.get(userId, credentialId)?.WEAUTO_PUSH_TOKEN;
       if (!stored || !sameSecret(stored, pushToken)) {
         return res.status(401).json({ error: 'pushToken 已失效，请回页面重新配对' });
       }
     }
 
     userSecrets.set(
-      entry.userId,
-      t.taskName,
-      t.accountKey,
+      userId,
+      credentialId,
       issuedToken ? { [key]: value, WEAUTO_PUSH_TOKEN: issuedToken } : { [key]: value },
     );
-    pairing.markPushed(entry.taskId);
+    pairing.markPushed(credentialId);
 
     res.json({
       ok: true,
-      taskId: entry.taskId,
+      credentialId,
+      taskId: legacyTaskId,
       pushToken: issuedToken,
       expiresAt: tokenExpiryMs(value),
     });
@@ -1015,18 +1075,40 @@ export function createServer({
    * 校验顺序很关键：**不在 registry 里、或 internal 且非 admin，都返回 404**——
    * 返回 403 会证实「这个名字存在但你不配用」，等于把 internal 模板的清单泄露出去。
    */
+  /**
+   * 这个账号能不能被这个任务引用：必须是自己的，且属于同一个凭据组。
+   *
+   * 组校验是必要的：把 v2free 的账号绑到 WorkBuddy 任务上，执行时必然缺字段，
+   * 而错误会变成「账号缺少凭据字段」——离真正的原因（绑错了）差得很远。
+   */
+  function credentialUsableFor(req, task, credentialId) {
+    if (credentialId == null || credentialId === '') return { ok: true, id: null };
+    const id = Number(credentialId);
+    if (!Number.isInteger(id) || id <= 0) return { error: '账号 id 无效' };
+    const cur = userSecrets ? userSecrets.getCredential(req.user.id, id) : null;
+    if (!cur) return { error: '没有这个账号' };
+    // 不写 credentialGroup = 自成一组（契约默认值）
+    const group = task.credentialGroup ?? task.name;
+    if (cur.groupName !== group) {
+      return { error: `这个账号属于「${cur.groupName}」，不能用在「${group}」的任务上` };
+    }
+    return { ok: true, id };
+  }
+
   app.post('/api/tasks', requireLogin, (req, res) => {
     const template = String(req.body?.template ?? '');
     const task = tasks.get(template);
     if (!task || (task.visibility === 'internal' && req.user.role !== 'admin')) {
       return res.status(404).json({ error: '没有这个模板' });
     }
+    const cred = credentialUsableFor(req, task, req.body?.credentialId);
+    if (cred.error) return res.status(400).json({ error: cred.error });
     try {
       const existing = mine(req).tasksOfTemplate(task.name);
       // 名字默认取模板名，第二个往后自动加序号——用户可以在任务页改
       const label = String(req.body?.label ?? '').trim().slice(0, 32)
         || (existing.length ? `${task.displayName} ${existing.length + 1}` : task.displayName);
-      const t = mine(req).createTask(task.name, { label });
+      const t = mine(req).createTask(task.name, { label, credentialId: cred.id });
       res.json({ ok: true, id: t.id, task: t });
     } catch (err) {
       res.status(400).json({ error: err.message });
@@ -1116,6 +1198,14 @@ export function createServer({
     const patch = {};
     if (typeof req.body.enabled === 'boolean') patch.enabled = req.body.enabled;
     if (typeof req.body.label === 'string') patch.label = req.body.label.trim().slice(0, 32);
+    // 换绑账号：null = 解绑（仅用于无凭据模板或临时撤销，执行时会记 config-error）
+    if (req.body.credentialId !== undefined) {
+      const tpl = tasks.get(t.taskName);
+      if (!tpl) return res.status(400).json({ error: '这个任务的模板已经不可用' });
+      const cred = credentialUsableFor(req, tpl, req.body.credentialId);
+      if (cred.error) return res.status(400).json({ error: cred.error });
+      patch.credentialId = cred.id;
+    }
     if (req.body.timeoutMs !== undefined) {
       const n = Number(req.body.timeoutMs);
       if (!Number.isInteger(n) || n <= 0) return res.status(400).json({ error: 'timeoutMs 必须是正整数' });
@@ -1150,50 +1240,130 @@ export function createServer({
     }
   });
 
-  /** 删掉这个任务（历史记录保留，那是发生过的事实） */
+  /**
+   * 删掉这个任务（历史记录保留，那是发生过的事实）。
+   *
+   * **不删账号**：账号是独立实体，可能还被别的任务引用（签到删了，活跃还在用同一把
+   * token）。删任务时顺手清凭据，就是那个「改一处另一处失效」的老问题的另一面。
+   */
   app.delete('/api/tasks/:id(\\d+)', requireLogin, (req, res) => {
     const t = mine(req).getTask(Number(req.params.id));
     if (!t) return res.status(404).json({ error: '没有这个任务' });
-    if (userSecrets) userSecrets.removeAccount(req.user.id, t.taskName, t.accountKey);
     res.json({ ok: true, deleted: mine(req).deleteTask(t.id) });
   });
 
+  /* ───────── 账号凭据（独立实体，任务引用它） ───────── */
+
+  /** 组定义来自模板：字段白名单与可读名的唯一来源 */
+  function groupSpecOf(req, group) {
+    return credentialGroups(visibleTasks(req)).find((g) => g.group === group) ?? null;
+  }
+
   /**
-   * 写入**我自己**某个任务的凭据。
-   *
-   * 三条硬约束：
-   *   · 只能写这个模板声明过的字段（白名单）——否则凭据库会变成任意数据的垃圾桶
-   *   · 任务必须是我自己的——传 id 而不是名字，避免拿别人的 accountKey 覆盖别人的凭据
-   *   · 留空表示不修改：界面上不会因为一个空输入框就把已有凭据清掉
+   * 校验字段：必须是对象、值是字符串、键在组的字段并集内。
+   * 白名单挡的是「凭据库变成任意数据的垃圾桶」，也挡住把别的站点字段写进来。
    */
+  function fieldErrorOf(spec, fields) {
+    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return '缺少 fields 对象';
+    const allowed = new Set(spec.fields);
+    const keys = Object.keys(fields);
+    const notAllowed = keys.find((k) => !allowed.has(k));
+    if (notAllowed) return `字段 ${notAllowed} 不属于这个站点`;
+    const notString = keys.find((k) => typeof fields[k] !== 'string');
+    if (notString) return `字段 ${notString} 的值必须是字符串`;
+    return null;
+  }
+
+  app.get('/api/credentials', requireLogin, (req, res) => {
+    res.json({
+      groups: credentialGroups(visibleTasks(req)),
+      accounts: userSecrets ? userSecrets.list(req.user.id) : [],
+    });
+  });
+
+  /** 新建账号。只回字段名，绝不回值 */
   app.post('/api/credentials', requireLogin, (req, res) => {
     if (!userSecrets) return res.status(503).json({ error: '凭据存储未就绪' });
+    const group = String(req.body?.group ?? '').trim();
+    // 组不存在 = 模板已下线或用户看不到：两种都按「没有这个站点」处理，不区分
+    const spec = groupSpecOf(req, group);
+    if (!spec) return res.status(404).json({ error: '没有这个站点' });
 
-    const id = Number(req.body?.taskId);
-    if (!Number.isInteger(id)) return res.status(400).json({ error: '缺少 taskId' });
-    const t = mine(req).getTask(id);
-    if (!t) return res.status(404).json({ error: '没有这个任务' });
-    const task = tasks.get(t.taskName);
-    if (!task) return res.status(404).json({ error: '没有这个模板' });
-
-    const fields = req.body?.fields;
-    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
-      return res.status(400).json({ error: '缺少 fields 对象' });
-    }
-
-    const allowed = new Set(task.requires);
-    const notAllowed = Object.keys(fields).find((k) => !allowed.has(k));
-    if (notAllowed) return res.status(400).json({ error: `字段 ${notAllowed} 不属于这个模板` });
-    const notString = Object.keys(fields).find((k) => typeof fields[k] !== 'string');
-    if (notString) return res.status(400).json({ error: `字段 ${notString} 的值必须是字符串` });
-    if (!Object.keys(fields).length) return res.status(400).json({ error: '没有要修改的字段' });
+    const fields = req.body?.fields ?? {};
+    const bad = fieldErrorOf(spec, fields);
+    if (bad) return res.status(400).json({ error: bad });
 
     try {
-      // 只回字段名，绝不回值
-      res.json({ ok: true, keys: userSecrets.set(req.user.id, t.taskName, t.accountKey, fields) });
+      const account = userSecrets.create(req.user.id, {
+        groupName: group,
+        label: req.body?.label,
+        fields,
+      });
+      // 与 PATCH 一致：只回字段名，绝不回值
+      res.json({
+        ok: true,
+        account: { ...account, fields: userSecrets.fieldNames(req.user.id, account.id) },
+      });
     } catch (err) {
-      res.status(500).json({ error: '写入凭据失败' });
+      res.status(400).json({ error: err.message });
     }
+  });
+
+  /** 改账号名或字段值。空字符串 = 删除该字段（与旧行为一致：留空不修改） */
+  app.patch('/api/credentials/:id(\\d+)', requireLogin, (req, res) => {
+    if (!userSecrets) return res.status(503).json({ error: '凭据存储未就绪' });
+    const id = Number(req.params.id);
+    const cur = userSecrets.getCredential(req.user.id, id);
+    if (!cur) return res.status(404).json({ error: '没有这个账号' });
+
+    const spec = groupSpecOf(req, cur.groupName);
+    if (!spec) return res.status(400).json({ error: '这个账号所属的站点已经不可用' });
+
+    const patch = {};
+    if (req.body?.label !== undefined) {
+      if (typeof req.body.label !== 'string') return res.status(400).json({ error: '账号名必须是文本' });
+      patch.rename = req.body.label;
+    }
+    if (req.body?.fields !== undefined) {
+      const bad = fieldErrorOf(spec, req.body.fields);
+      if (bad) return res.status(400).json({ error: bad });
+      if (!Object.keys(req.body.fields).length) {
+        return res.status(400).json({ error: '没有要修改的字段' });
+      }
+      patch.fields = req.body.fields;
+    }
+    if (!Object.keys(patch).length) return res.status(400).json({ error: '没有可更新的字段' });
+
+    try {
+      if (patch.fields) userSecrets.set(req.user.id, id, patch.fields);
+      const account = patch.rename !== undefined
+        ? userSecrets.rename(req.user.id, id, patch.rename)
+        : userSecrets.getCredential(req.user.id, id);
+      // 只回字段名，绝不回值
+      res.json({ ok: true, account: { ...account, fields: userSecrets.fieldNames(req.user.id, id) } });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  /**
+   * 删账号。仍被任务引用时拒绝，并把引用它的任务列出来——
+   * 静默级联（删账号 → 任务变成「缺凭据」）比报错更难排查。
+   */
+  app.delete('/api/credentials/:id(\\d+)', requireLogin, (req, res) => {
+    if (!userSecrets) return res.status(503).json({ error: '凭据存储未就绪' });
+    const id = Number(req.params.id);
+    if (!userSecrets.getCredential(req.user.id, id)) {
+      return res.status(404).json({ error: '没有这个账号' });
+    }
+    const used = mine(req).listTasks().filter((t) => t.credentialId === id);
+    if (used.length) {
+      return res.status(409).json({
+        error: `还有 ${used.length} 个任务在用它，先把那些任务改绑到别的账号（或删掉）再删`,
+        tasks: used.map((t) => ({ id: t.id, label: t.label || t.taskName })),
+      });
+    }
+    res.json({ ok: true, deleted: userSecrets.remove(req.user.id, id) });
   });
 
   app.get('/api/runs', requireLogin, (req, res) => {

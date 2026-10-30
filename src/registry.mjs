@@ -49,28 +49,48 @@ export async function loadTasks() {
 }
 
 /**
- * 同一个凭据组里的**其它**模板名。
+ * 凭据组清单：一个组 = 同一个站点、同一把钥匙的一组模板。
  *
- * 用途：用户只在一处填过 token 时，让同组的另一个任务也能跑起来
- * （WorkBuddy 的签到与活跃就是同一把 WB_ACCESS_TOKEN）。
+ * 账号按组归属（不是按模板）：WorkBuddy 的签到与活跃同属 `workbuddy`，
+ * 所以「一个 WorkBuddy 账号」只存一份 WB_ACCESS_TOKEN，两个任务引用它即可。
  *
- * 只返回「组名相同」的兄弟，不按字段名猜——两个不相干站点都用 `TOKEN`
- * 这种字段名很常见，跨组兜底会拿到错的值，而且失败现象是「鉴权失败」，
- * 排查时根本想不到是凭据串了。
+ * 组的字段集合 = 组内所有模板 `requires` 的并集。账号表单要一次把整组字段填完，
+ * 否则用户在签到页建的账号拿到活跃任务上会缺字段。
+ *
+ * 只聚合同组、不按字段名猜——两个不相干站点都用 `TOKEN` 这种字段名很常见，
+ * 合到一起会写错值，而失败现象是「鉴权失败」，排查时根本想不到是凭据串了。
  *
  * @param {Map<string, object>} tasks 已规范化任务
- * @param {string} taskName
- * @returns {string[]}
+ * @returns {{group: string, label: string, fields: string[], taskNames: string[]}[]}
  */
-export function credentialPeers(tasks, taskName) {
-  const self = tasks.get(taskName);
-  if (!self) return [];
-  const out = [];
+export function credentialGroups(tasks) {
+  const map = new Map();
   for (const [name, task] of tasks) {
-    if (name === taskName) continue;
-    if (task.credentialGroup === self.credentialGroup) out.push(name);
+    const requires = task.requires ?? [];
+    // 不需要凭据的模板不构成组：给它建账号是无意义的空表单
+    if (!requires.length) continue;
+    // 不写 credentialGroup = 自成一组（契约默认值，与 normalizeTask 一致）
+    const group = task.credentialGroup ?? task.name;
+    let g = map.get(group);
+    if (!g) {
+      g = { group, label: '', names: [], fields: [], taskNames: [] };
+      map.set(group, g);
+    }
+    g.taskNames.push(name);
+    if (!g.names.includes(task.displayName)) g.names.push(task.displayName);
+    for (const f of requires) if (!g.fields.includes(f)) g.fields.push(f);
   }
-  return out;
+  const out = [];
+  for (const g of map.values()) {
+    out.push({
+      group: g.group,
+      // 组的可读名用组内模板名，用户认得出「这是 WorkBuddy」
+      label: g.names.join(' / '),
+      fields: g.fields,
+      taskNames: g.taskNames,
+    });
+  }
+  return out.sort((a, b) => a.group.localeCompare(b.group));
 }
 
 /** 按名称取任务，不存在时报出可用列表 */

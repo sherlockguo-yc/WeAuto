@@ -80,30 +80,36 @@ data/                     weauto.db、jwt-secret、master-key、.env（已 gitig
 
 ---
 
-## 3. 数据模型（schema 版本 5）
+## 3. 数据模型（schema 版本 7）
 
 ```
-users ──┬── subscriptions（一行 = 一个任务）
-        ├── user_secrets（每用户加密凭据）
+users ──┬── subscriptions（一行 = 一个任务）── credential_id ──┐
+        ├── credentials（一行 = 一个站点账号）←───────────────┘
+        │      └── credential_fields（加密字段值）
+        ├── user_secrets（v7 前的旧表，只读保留作回退依据）
         ├── invites（created_by / used_by）
         └── runs ── run_logs
 
-task_state（按 用户 × 模板 × 账号）
+task_state（按 用户 × 模板 × 任务实例）
 run_stats_daily（按 用户 × 模板 × 日期）
 ```
 
 | 表 | 关键约束 | 说明 |
 |---|---|---|
 | `users` | `session_epoch` | 会话版本号，注销/改密 +1 |
-| `subscriptions` | `UNIQUE(user_id, task_name, account_key)` | **一行就是一个任务**：谁的任务、哪个模板、跑哪个账号、启停、调度、超时。表名沿用建表时的叫法，产品语言里叫「任务」 |
-| `subscription_accounts` | 已废弃（v5 清空不再写入） | 账号维度已并进 `subscriptions.account_key`——一个任务只跑一个账号 |
-| `user_secrets` | `PK(user_id, task_name, account_key, field)` | 密文 `value_enc = iv ‖ tag ‖ ciphertext` |
-| `runs` | `user_id DEFAULT 1`、`account_key` | 幂等按「用户 × 模板 × 账号 × 日期」 |
+| `subscriptions` | `UNIQUE(user_id, task_name, account_key)` | **一行就是一个任务**：谁的任务、哪个模板、引用哪个账号（`credential_id`）、启停、调度、超时。`account_key` 保留为**任务实例标识**（历史与调度状态按它分），不再承载账号语义 |
+| `credentials` | 索引 `(user_id, group_name)` | **一行 = 一个站点账号**：属于哪个用户、哪个凭据组（`workbuddy` / `v2free`）、显示名。同一账号可被多个任务引用 |
+| `credential_fields` | `PK(credential_id, field)` | 密文 `value_enc = iv ‖ tag ‖ ciphertext`，与旧 `user_secrets` 同一套 AES-256-GCM |
+| `user_secrets` | 旧表，v7 后不再读写 | 迁移来源与回退依据。新数据一律写 `credentials` / `credential_fields` |
+| `subscription_accounts` | 已废弃（v5 清空不再写入） | 账号维度曾并进 `subscriptions.account_key`，v7 起改为独立实体 |
+| `runs` | `user_id DEFAULT 1`、`account_key` | 幂等按「用户 × 模板 × 任务实例 × 日期」 |
 | `task_state` | `PK(user_id, task_name, account_key)` | 今日目标时刻，重启后不变 |
 
 迁移约定：**只追加，不改已发布的迁移**。v3 把历史数据归入 `user_id=1`，v4 加会话版本号，
 v5 把「订阅 + 账号」两层拍平成「一行一个任务」（SQLite 改不了 UNIQUE，
-所以是建新表 → 搬数据 → 删旧表 → 改名，第 2 个及以后的账号各自变成一条任务）。
+所以是建新表 → 搬数据 → 删旧表 → 改名，第 2 个及以后的账号各自变成一条任务），
+v7 把凭据从任务上拆出来变成独立账号实体（表结构在 `db.mjs`，数据搬运在
+`bootstrap.mjs` 的 `migrateCredentials`，因为要查模板定义才知道账号归哪个组）。
 
 ### 3.1 隔离是怎么保证的
 
@@ -128,7 +134,7 @@ v5 把「订阅 + 账号」两层拍平成「一行一个任务」（SQLite 改�
   只读信息（系统）与退出登录，不再放「管理」入口——管理员导航里已有「管理」页（`/admin`），
   两处入口重复，且这是个人弹层，不该掺平台级操作。账号管理是平台级操作，和个人设置混在一起时，
   「为什么我能在这里停用自己的账号」这类问题会一直出现。
-- **设置不是一个页面**：底部导航只有「概览 / 任务」（+ 管理员的「管理」），
+- **设置不是一个页面**：底部导航只有「概览 / 任务 / 账号」（+ 管理员的「管理」），
   设置从右上角头像 + 用户名展开——它内容不多，占一个底部 tab 会让用户以为里面还有别的东西。
   代价：打开依赖 JS（按钮没有 href 可去），主题切换本来就依赖 JS，所以不是能力退化。
 - **系统信息只留三项**：版本、运行时长、任务模板。它们回答同一个问题——
@@ -157,20 +163,29 @@ v5 把「订阅 + 账号」两层拍平成「一行一个任务」（SQLite 改�
 
 ---
 
-## 5. 凭据
+## 5. 账号凭据
+
+**账号是独立实体，任务只引用它。** 同一个账号（比如一个 WorkBuddy 账号）可以被「签到」
+与「活跃」两个任务同时引用，换 token 只改一处，两个任务同时生效。
 
 | 项 | 现状 |
 |---|---|
-| 存储 | `user_secrets` 表，AES-256-GCM，主密钥在 `data/master-key`（600，首次生成） |
-| 粒度 | 用户 × 模板 × 账号 × 字段 |
-| 写入 | 只能写模板 `requires` 声明过的字段（白名单） |
-| 界面 | 只显示字段名与「已设置 / 未设置」，值永不出现在页面上与 API 响应里 |
+| 存储 | `credentials`（账号）+ `credential_fields`（加密字段值），AES-256-GCM，主密钥在 `data/master-key`（600，首次生成） |
+| 粒度 | 用户 × 凭据组（`credentialGroup`）× 字段。组是「同一站点的同一把钥匙」，`workbuddy-checkin` 与 `workbuddy-active` 同组 |
+| 归属 | 任务通过 `subscriptions.credential_id` 引用；引用关系可随时改绑 |
+| 写入 | 只能写该组所有模板 `requires` 的并集（白名单） |
+| 删除 | 仍被任务引用的账号拒绝删除（409 并列出任务）；删任务不删账号 |
+| 界面 | `/credentials` 账号页：按组列出、新建、改名、改字段、删除。只显示字段名与「已配置 / 缺 X」，值永不出现在页面上与 API 响应里 |
+
+**执行时取哪个账号**：`subscriptions.credential_id` 指向的那一个。没有「同组兄弟模板兜底」——
+缺账号就是缺账号，记 `config-error` 并在页面标「待填凭据」。
 
 **威胁模型（不要夸大）**：防的是数据库文件或备份泄露，**不防主机被入侵**。
-主密钥就在服务器上，**管理员技术上可以解密所有人的凭据**——注册页与凭据页都写明了这一点。
+主密钥就在服务器上，**管理员技术上可以解密所有人的凭据**——注册页与账号页都写明了这一点。
 
-迁移自旧的 `secrets.age`（age 加密、全站一份）：启动时由 `bootstrap.mjs` 读入并加密到
-`user_id=1` 名下，只做一次（用 `meta.tenant_bootstrap_v3` 标记），原文件保留作回滚依据。
+迁移路径：`secrets.age`（age，全站一份）→ `user_secrets`（每任务一份，v3）→
+`credentials`（每站点账号一份，v7）。v7 的搬运由 `bootstrap.mjs` 的 `migrateCredentials`
+完成，用 `meta.credentials_migrated_v7` 标记幂等，旧表保留作回滚依据。
 
 ### 5.1 凭据获取引导（credentialHelper）
 
@@ -232,7 +247,8 @@ export default {
   name: 'my-task',
   displayName: '我的任务',
   requires: ['MY_TOKEN'],     // 解密后校验这些字段存在
-  accounts: false,            // true = 允许为这个模板建多个任务（一个任务一个账号）
+  credentialGroup: 'my-site', // 账号归属的站点组：同组模板共用同一个账号（不写 = 模板名自成一组）
+  accounts: false,            // 预留：多账号由「建多个账号 + 多个任务」表达，当前不做门禁
   visibility: 'public',       // 'internal' = 只有 admin 可见可启用
   schedule: { window: { start: '09:00', end: '09:50' } },
   // 可选：凭据只能在用户本机抓时，声明怎么抓（渲染在凭据输入框上方，见 §5.1）

@@ -35,9 +35,14 @@ function randomCode() {
 export const DEFAULT_PAIR_TTL_MS = 10 * 60_000;
 
 export function createPairing({ ttlMs = DEFAULT_PAIR_TTL_MS, now = Date.now } = {}) {
-  /** code → { userId, taskId, expiresAt } */
+  /**
+   * code → { userId, credentialId, expiresAt }
+   *
+   * 码绑定的是**账号**，不是任务：一个 WorkBuddy 账号被签到和活跃两个任务引用时，
+   * 抓一次 token 就该同时生效，而不是每个任务各抓一遍。
+   */
   const codes = new Map();
-  /** taskId → 最近一次推送完成的时间戳（页面靠它判断"脚本跑完了"） */
+  /** credentialId → 最近一次推送完成的时间戳（页面靠它判断"脚本跑完了"） */
   const pushed = new Map();
 
   function prune() {
@@ -48,12 +53,12 @@ export function createPairing({ ttlMs = DEFAULT_PAIR_TTL_MS, now = Date.now } = 
   }
 
   return {
-    /** 发一个新码。同一任务可以同时有多个未使用的码（多点几次不会互相作废） */
-    issue({ userId, taskId }) {
+    /** 发一个新码。同一账号可以同时有多个未使用的码（多点几次不会互相作废） */
+    issue({ userId, credentialId }) {
       prune();
       const code = randomCode();
       const expiresAt = now() + ttlMs;
-      codes.set(code, { userId, taskId, expiresAt });
+      codes.set(code, { userId, credentialId: Number(credentialId), expiresAt });
       return { code, expiresAt };
     },
 
@@ -69,15 +74,15 @@ export function createPairing({ ttlMs = DEFAULT_PAIR_TTL_MS, now = Date.now } = 
       const entry = codes.get(key);
       if (!entry) return null;
       codes.delete(key);
-      return { userId: entry.userId, taskId: entry.taskId };
+      return { userId: entry.userId, credentialId: entry.credentialId };
     },
 
-    markPushed(taskId) {
-      pushed.set(Number(taskId), now());
+    markPushed(credentialId) {
+      pushed.set(Number(credentialId), now());
     },
 
-    pushedAt(taskId) {
-      return pushed.get(Number(taskId)) ?? null;
+    pushedAt(credentialId) {
+      return pushed.get(Number(credentialId)) ?? null;
     },
 
     /** 仅测试用：看还有多少个未兑换的码 */
@@ -89,20 +94,32 @@ export function createPairing({ ttlMs = DEFAULT_PAIR_TTL_MS, now = Date.now } = 
 }
 
 /**
- * 长期上传令牌：`wt1_<userId>_<taskId>_<secret>`
+ * 长期上传令牌：`wt2_<userId>_<credentialId>_<secret>`
  *
- * 把 userId / taskId 编进令牌是为了**一次查库就能定位任务**——否则得遍历所有用户
- * 比对密文。它们不是秘密（任务 id 在 URL 里就有），真正的凭据是最后那段随机串，
- * 而它在服务器侧只以密文形式存在（当成一个普通凭据字段存）。
+ * 把 userId / credentialId 编进令牌是为了**一次查库就能定位账号**——否则得遍历
+ * 所有用户比对密文。它们不是秘密（账号 id 在 URL 里就有），真正的凭据是最后那段
+ * 随机串，而它在服务器侧只以密文形式存在（当成一个普通字段存）。
  */
-export function makePushToken({ userId, taskId }) {
-  return `wt1_${userId}_${taskId}_${randomBytes(18).toString('base64url')}`;
+export function makePushToken({ userId, credentialId }) {
+  return `wt2_${userId}_${credentialId}_${randomBytes(18).toString('base64url')}`;
 }
 
+/**
+ * 解析上传令牌。
+ *
+ * 兼容 `wt1_<userId>_<taskId>_...`：那是「凭据还挂在任务上」时代发给脚本的令牌，
+ * 已经下载到用户机器上的脚本不该因为一次升级就全部失效（它们还会每月自动跑）。
+ * 调用方拿到 `taskId` 时自己去任务行取 credentialId。
+ *
+ * @returns {{userId:number, credentialId:number|null, taskId:number|null}|null}
+ */
 export function parsePushToken(token) {
-  const m = /^wt1_(\d{1,12})_(\d{1,12})_([A-Za-z0-9_-]{16,})$/.exec(String(token ?? ''));
-  if (!m) return null;
-  return { userId: Number(m[1]), taskId: Number(m[2]) };
+  const s = String(token ?? '');
+  const v2 = /^wt2_(\d{1,12})_(\d{1,12})_([A-Za-z0-9_-]{16,})$/.exec(s);
+  if (v2) return { userId: Number(v2[1]), credentialId: Number(v2[2]), taskId: null };
+  const v1 = /^wt1_(\d{1,12})_(\d{1,12})_([A-Za-z0-9_-]{16,})$/.exec(s);
+  if (v1) return { userId: Number(v1[1]), credentialId: null, taskId: Number(v1[2]) };
+  return null;
 }
 
 /** 定长比较，避免按字节短路泄漏位置信息 */

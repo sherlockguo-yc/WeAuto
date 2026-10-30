@@ -46,8 +46,8 @@ function userStore(store, userId) {
 /**
  * @param {object} deps
  * @param {object} deps.store 根 store（或已绑定的用户视图）
- * @param {(args: {userId: number|null, taskName: string, accountKey: string, requires: string[]}) => Record<string,string>} [deps.secretsLoader]
- *        默认取全站凭据（单租户遗留路径）；多租户下应注入每用户凭据，见需求文档 §4.5
+ * @param {(args: {userId: number|null, taskName: string, credentialId: number|null, requires: string[]}) => Record<string,string>} [deps.secretsLoader]
+ *        默认取全站凭据（单租户遗留路径）；多租户下应注入每用户凭据，见需求文档 §4.3
  * @param {() => number} [deps.now]
  * @param {(msg: string) => void} [deps.log]
  */
@@ -60,10 +60,13 @@ export function createExecutor({
 }) {
   /**
    * @param {object} task 已规范化任务
-   * @param {{trigger?: 'schedule'|'manual', userId?: number, accountKey?: string}} [opts]
+   * @param {{trigger?: 'schedule'|'manual', userId?: number, accountKey?: string, credentialId?: number|null}} [opts]
    * @returns {Promise<object|null>} null 表示「这次不需要执行」
    */
-  return async function execute(task, { trigger = 'schedule', userId = null, accountKey = '' } = {}) {
+  return async function execute(
+    task,
+    { trigger = 'schedule', userId = null, accountKey = '', credentialId = null } = {},
+  ) {
     const mine = userStore(store, userId);
     const startedAt = now();
     const date = dateInTZ(new Date(startedAt));
@@ -101,8 +104,11 @@ export function createExecutor({
 
     const ctx = {
       secrets: {},
-      /** 多账号：契约里预留的 account 现在有了真实取值（单账号模板仍为 null） */
-      account: accountKey ? { key: accountKey } : null,
+      /**
+       * 这次执行用的是哪个站点账号。账号已经是独立实体，所以给的是它的 id——
+       * `accountKey` 是任务实例标识（历史/调度按它分），不该冒充"账号"给任务看。
+       */
+      account: credentialId ? { id: credentialId } : null,
       /*
        * 绑定到「这个账号」的 request：UA 按账号固定，不同账号不同。
        * 传 task.name 兜底，保证单账号模板也有一个稳定的 UA，而不是随机漂移。
@@ -117,7 +123,7 @@ export function createExecutor({
     let result;
     try {
       ctx.secrets = task.requires.length
-        ? secretsLoader({ userId, taskName: task.name, accountKey, requires: task.requires })
+        ? secretsLoader({ userId, taskName: task.name, credentialId, requires: task.requires })
         : {};
       record(`开始执行 ${task.displayName}（${trigger === 'manual' ? '手动' : '调度'}）`);
       result = await withTimeout(task.run(ctx), task.timeoutMs, task.name);

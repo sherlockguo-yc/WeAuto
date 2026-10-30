@@ -16,6 +16,12 @@
  */
 import { readSecrets } from './credentials.mjs';
 
+/** 账号名长度上限，与 user-secrets.MAX_LABEL 一致 */
+const MAX_LABEL = 32;
+
+/** 这个字段是「往服务器推送凭据」用的令牌，不是站点凭据本身 */
+const PUSH_TOKEN_FIELD = 'WEAUTO_PUSH_TOKEN';
+
 export function pickOwnerId(db) {
   const row = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
   return row ? row.id : null;
@@ -81,8 +87,15 @@ export function bootstrapTenancy({ db, store, userSecrets, tasks, ownerId, log =
           if (secrets[key]) fields[key] = secrets[key];
         }
         if (!Object.keys(fields).length) continue;
-        // 模板声明 accounts 时用默认账号（''），与订阅自动建的那个账号一致
-        userSecrets.set(ownerId, task.name, '', fields);
+        // 直接建成 v7 的账号实体（旧 user_secrets 表已不再写入），并绑给同模板的任务
+        const account = userSecrets.create(ownerId, {
+          groupName: task.credentialGroup,
+          label: task.displayName,
+          fields,
+        });
+        for (const t of mine.tasksOfTemplate(task.name)) {
+          if (!t.credentialId) mine.updateTask(t.id, { credentialId: account.id });
+        }
         result.secretFields += Object.keys(fields).length;
       }
     } else {
@@ -100,5 +113,128 @@ export function bootstrapTenancy({ db, store, userSecrets, tasks, ownerId, log =
   if (result.subscriptions || result.secretFields) {
     log(`[bootstrap] 历史数据已归入账号 ${ownerId}：订阅 ${result.subscriptions} 个，凭据 ${result.secretFields} 个字段`);
   }
+  return result;
+}
+
+/**
+ * v7 数据迁移：把「任务下的凭据」搬成「可被任务引用的账号」。
+ *
+ * 【为什么不在 db.mjs 的迁移里做】
+ *   账号归属哪个组必须查模板定义（`credentialGroup`），而 db.mjs 不依赖任务注册表；
+ *   而且判定「哪些旧记录值得变成一个账号」需要业务语义（见下）。
+ *
+ * 【保守 1:1，只做三件保守的事】
+ *   1. 只有含**业务字段**的旧记录才变成账号。只有 WEAUTO_PUSH_TOKEN 的记录不是可用凭据
+ *      （旧设计里它是「往服务器推 token 的钥匙」，任务本身没配任何东西），若也建成账号，
+ *      页面会出现一堆空账号。
+ *   2. 任务优先绑自己那份账号；自己没有则绑「同组唯一账号」——这条正是旧「凭据组兜底」
+ *      的显式化：以前签到填过 token、活跃靠兜底跑，迁移后活跃显式引用同一个账号。
+ *      同组有多个账号时不猜，留空让用户选。
+ *   3. 字段密文原样复制，不解密再加密：主密钥版本、解密失败、迁移中途留下明文，都是
+ *      不必要的风险。
+ *
+ * 【幂等】meta.credentials_migrated_v7。旧表 user_secrets 一条不删，回退有据。
+ */
+export function migrateCredentials({ db, tasks, log = () => {} }) {
+  const marker = 'credentials_migrated_v7';
+  const already = db.prepare('SELECT value FROM meta WHERE key = ?').get(marker);
+  if (already) return { skipped: '已迁移' };
+
+  const result = { accounts: 0, bound: 0, notes: [] };
+
+  const tx = db.transaction(() => {
+    const rows = db
+      .prepare('SELECT * FROM user_secrets ORDER BY user_id, task_name, account_key, field')
+      .all();
+
+    /* 1. 按 (用户, 模板, 任务实例) 聚合旧行 */
+    const groups = new Map();
+    for (const r of rows) {
+      const key = `${r.user_id}\u0000${r.task_name}\u0000${r.account_key}`;
+      let g = groups.get(key);
+      if (!g) {
+        g = { userId: r.user_id, taskName: r.task_name, accountKey: r.account_key, fields: new Map() };
+        groups.set(key, g);
+      }
+      g.fields.set(r.field, { enc: r.value_enc, updatedAt: r.updated_at });
+    }
+
+    const insertCredential = db.prepare(
+      `INSERT INTO credentials (user_id, group_name, label, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    const insertField = db.prepare(
+      `INSERT INTO credential_fields (credential_id, field, value_enc, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    );
+    const labelsOfGroup = db.prepare(
+      'SELECT id, label FROM credentials WHERE user_id = ? AND group_name = ?',
+    );
+    const subLabel = db.prepare(
+      'SELECT label FROM subscriptions WHERE user_id = ? AND task_name = ? AND account_key = ?',
+    );
+
+    /** 旧 (user, task, account) → 新 credential id */
+    const made = new Map();
+
+    for (const [key, g] of groups) {
+      const business = [...g.fields.keys()].filter((f) => f !== PUSH_TOKEN_FIELD);
+      if (!business.length) continue;
+
+      const task = tasks.get(g.taskName);
+      const groupName = task?.credentialGroup ?? g.taskName;
+      const own = subLabel.get(g.userId, g.taskName, g.accountKey);
+      const want = String(own?.label || task?.displayName || g.taskName).trim().slice(0, MAX_LABEL) || '账号';
+
+      const taken = new Set(labelsOfGroup.all(g.userId, groupName).map((r) => r.label));
+      let label = want;
+      for (let n = 2; taken.has(label); n += 1) label = `${want} ${n}`;
+
+      const now = Date.now();
+      const info = insertCredential.run(g.userId, groupName, label, now, now);
+      const id = Number(info.lastInsertRowid);
+      for (const [field, v] of g.fields) insertField.run(id, field, v.enc, v.updatedAt);
+      made.set(key, id);
+      result.accounts += 1;
+    }
+
+    /* 2. 任务绑定账号 */
+    const subs = db.prepare('SELECT * FROM subscriptions ORDER BY id').all();
+    const setCredential = db.prepare('UPDATE subscriptions SET credential_id = ? WHERE id = ?');
+    const sameGroup = db.prepare(
+      'SELECT id FROM credentials WHERE user_id = ? AND group_name = ? ORDER BY id',
+    );
+
+    for (const sub of subs) {
+      const task = tasks.get(sub.task_name);
+      // 无凭据模板不绑；模板已下线（文件删了）也不绑——没有定义就不知道组
+      if (!task || !(task.requires ?? []).length) continue;
+
+      let cid = made.get(`${sub.user_id}\u0000${sub.task_name}\u0000${sub.account_key}`);
+      if (!cid) {
+        const peers = sameGroup.all(sub.user_id, task.credentialGroup);
+        // 同组恰好一个账号才自动绑：两个账号时无从判断谁是谁，不能猜
+        if (peers.length === 1) cid = peers[0].id;
+      }
+      if (cid) {
+        setCredential.run(cid, sub.id);
+        result.bound += 1;
+      } else {
+        result.notes.push(`任务 #${sub.id}（${sub.task_name}）还没有账号，需要手动选一个`);
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(marker, String(Date.now()));
+  });
+
+  tx();
+
+  if (result.accounts) {
+    log(`[bootstrap] 账号迁移完成：新建 ${result.accounts} 个账号，绑定 ${result.bound} 个任务`);
+  }
+  for (const n of result.notes) log(`[bootstrap] ${n}`);
   return result;
 }

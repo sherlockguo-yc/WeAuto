@@ -101,8 +101,8 @@ export default {
 
 ```js
 ctx = {
-  secrets,    // 只含本任务 requires 声明的字段，已解密
-  account,    // 预留：accounts=true 时当前执行的账号（见 §6）
+  secrets,    // 只含本任务 requires 声明的字段，已解密（来自任务引用的那个账号）
+  account,    // { id } 或 null：这次执行用的是哪个站点账号（见 §3.5）
   request,    // fetch 封装：超时、重定向、可选 CookieJar
   CookieJar,
   log,        // 写入本次运行的日志，可在页面按运行查看
@@ -141,35 +141,34 @@ schedule: { once:   { at: '2026-11-01 09:00' } }         // 只在指定时刻�
 
 ---
 
-### 3.5 凭据组（同一把钥匙的兄弟模板）
+### 3.5 凭据组与账号（同一把钥匙的兄弟模板）
 
 同一个站点常常需要好几个模板：WorkBuddy 既要「签到领积分」又要「发起对话点亮活跃」，
 两者用的是**同一个** `WB_ACCESS_TOKEN`。让用户抓两遍毫无意义，而存两份又保证不了
 换 key 时同步修改。
 
+v7 起凭据是**独立账号实体**，任务只引用它（决策与迁移见
+`docs/requirements/weauto-accounts.md`）：
+
 ```js
 credentialGroup: 'workbuddy'   // 可选；不写 = 自成一组（与旧行为一致）
 ```
 
-规则：
-
 | 情况 | 行为 |
 |---|---|
-| 自己配过该字段 | 用自己的，兄弟模板不参与 |
-| 自己缺某字段 | 依次到**同组**其它模板找**同名字段**，找到即用 |
-| 同组也没有 | 与以前一样报「缺少凭据」 |
-| 字段名不同 | 不兜底。**只认完全相同的字段名** |
-| 账号维度 | 兜底**不按 accountKey 对齐**。每个任务实例建出来时各自分配一个随机 key（`a-xxxxxxxx`），按它对齐等于永远找不到——这条是实测踩出来的（签到存在 `a-aec5e101`，活跃是 `a-458e8015`） |
+| 账号归属 | 按 `credentialGroup`（站点），**不是按模板**。一个 WorkBuddy 账号只有一份 token |
+| 任务与账号 | 一个任务引用一个账号（`subscriptions.credential_id`），可随时换绑 |
+| 多个账号 | 建多个账号 + 多个任务各自绑定。**没有**「取同组任意一个」的兜底 |
+| 字段集合 | 组的字段 = 组内所有模板 `requires` 的并集；账号表单按并集渲染 |
+| 缺账号 / 缺字段 | 执行记 `config-error`，界面标「待填凭据」。不会去别处借值 |
 
-代价要写明白：模板声明 `accounts: true` 且有多个账号时，兜底会取到「任意一个」。
-只影响显式声明了同一组的模板，且「能跑起来」比「对着空凭据报错」更符合用户预期。
+**旧机制已删除**：v7 之前是「读取时去同组兄弟模板找同名字段」，多账号时会取到
+「任意一个」——失败现象是「鉴权失败」或「积分记到错账号」，排查时根本想不到是凭据串了。
+现在共享靠「两个任务引用同一个账号」，指针只有一份。
 
 为什么必须显式声明组，而不是「同名字段就通用」：两个不相干的站点都用 `TOKEN`
-是很常见的，跨组兜底会拿到错的值，而失败现象是「鉴权失败」——排查时根本想不到
-是凭据串了。宁可让模板作者多写一行，也不要一个会静默取错值的机制。
-
-**副作用**：界面的「待填凭据」标记会随同组配置而消失。这是对的——它问的是
-「这个任务能不能跑」，不是「这张表单填过没有」。
+是很常见的，跨组合并会写错账号，而失败现象同样是「鉴权失败」。
+宁可让模板作者多写一行，也不要一个会静默取错值的机制。
 
 ---
 
@@ -178,11 +177,14 @@ credentialGroup: 'workbuddy'   // 可选；不写 = 自成一组（与旧行为�
 | 表 | 作用 | 关键列 |
 |---|---|---|
 | `users` | 本机账号（与其它服务完全独立） | id, username, password_hash, role, status |
-| `tasks` | **UI 覆盖层**（代码文件是默认值） | task_name(PK), enabled, schedule_json, timeout_ms, updated_at |
-| `runs` | 每次执行一行 | id, task_name, account_key, date, ts, status, message, data_json, dur, trigger |
+| `subscriptions` | **一行 = 一个任务** | id, user_id, task_name, account_key, credential_id, label, enabled, schedule_json |
+| `credentials` | **一行 = 一个站点账号** | id, user_id, group_name, label |
+| `credential_fields` | 账号的加密字段 | credential_id, field, value_enc |
+| `runs` | 每次执行一行 | id, user_id, task_name, account_key, date, ts, status, message, data_json, dur, trigger |
 | `run_logs` | `ctx.log()` 输出，按运行归档 | run_id, task_name, ts, line |
-| `task_state` | 调度器当日状态 | task_name(PK), today_target_ts, last_run_id |
-| `meta` | schema 版本 | key, value |
+| `task_state` | 调度器当日状态 | (user_id, task_name, account_key) PK, today_target_ts, last_run_id |
+| `user_secrets` | v7 前的旧凭据表（只读保留） | 迁移来源与回退依据 |
+| `meta` | schema 版本与迁移标记 | key, value |
 
 **覆盖层语义（必须明确，否则会出现「改了代码不生效」的困惑）**：
 `tasks` 表里的行**只在用户通过 UI 显式改过该任务的某项配置时才存在**。代码文件始终是默认值来源；

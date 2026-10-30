@@ -686,13 +686,27 @@
       } else if (action === 'delete-task') {
         var agreed = await askConfirm({
           title: '删除任务「' + name + '」？',
-          body: '它的凭据会一起删掉，执行历史保留。',
+          // 凭据是独立账号，可能还被别的任务用着，不能跟着任务一起删
+          body: '执行历史保留，「账号」里的凭据不会被删（可能还有别的任务在用）。',
           confirmText: '删除',
           trigger: btn,
         });
         if (!agreed) return;
         await api('DELETE', '/api/tasks/' + encodeURIComponent(name));
         location.href = '/tasks';
+      } else if (action === 'delete-credential') {
+        var credId = btn.dataset.credential;
+        var credRow = btn.closest('.account-row');
+        var credName = credRow && credRow.querySelector('.row-main');
+        agreed = await askConfirm({
+          title: '删除账号「' + (credName ? credName.textContent.trim() : credId) + '」？',
+          body: '凭据会一起删掉，不可恢复。还有任务在引用它时不会被删。',
+          confirmText: '删除',
+          trigger: btn,
+        });
+        if (!agreed) return;
+        await api('DELETE', '/api/credentials/' + encodeURIComponent(credId));
+        location.reload();
       } else if (action === 'revoke-invite') {
         agreed = await askConfirm({
           title: '撤销这个邀请码？',
@@ -753,6 +767,44 @@
     }
   });
 
+  /*
+   * 账号下拉：选「＋ 新建账号」时展开账号名输入框。
+   * 账号名默认跟任务名一致——新建流程里为了一个名字再让用户想一次没有意义。
+   */
+  document.addEventListener('change', function (e) {
+    var sel = e.target.closest('[data-action="pick-account"]');
+    if (!sel) return;
+    var form = sel.closest('form');
+    if (!form) return;
+    var box = form.querySelector('.new-account');
+    if (box) box.hidden = sel.value !== '__new';
+    if (sel.value === '__new') {
+      var input = form.elements.accountLabel;
+      var labelInput = form.elements.label;
+      if (input && !input.value && labelInput) input.value = labelInput.value || '';
+    }
+  });
+
+  /*
+   * 站点下拉：只显示当前组的字段。
+   *
+   * 非当前那块的输入框必须 disabled，否则 FormData 会把几个组里同名字段
+   * （不同站点都叫 TOKEN 很常见）一起提交上来，服务端按白名单只会拒掉一半。
+   */
+  document.addEventListener('change', function (e) {
+    var sel = e.target.closest('[data-action="pick-group"]');
+    if (!sel) return;
+    var form = sel.closest('form');
+    if (!form) return;
+    var blocks = form.querySelectorAll('.group-fields');
+    for (var i = 0; i < blocks.length; i++) {
+      var on = blocks[i].getAttribute('data-for') === sel.value;
+      blocks[i].hidden = !on;
+      var inputs = blocks[i].querySelectorAll('input, select');
+      for (var j = 0; j < inputs.length; j++) inputs[j].disabled = !on;
+    }
+  });
+
   /* 调度表单：切换类型时只显示对应的输入框 */
   document.addEventListener('change', function (e) {
     var radio = e.target.closest('input[name="kind"]');
@@ -809,24 +861,46 @@
   });
 
   document.addEventListener('submit', async function (e) {
-    // 任务名 + 账号密码：一个「保存」按钮，两处都提交，哪处没改就跳过哪处。
-    // 凭据字段留空 = 不修改（否则一个空输入框就会把已存的密码清掉）。
+    /*
+     * 任务名 + 账号 + 字段：一个「保存」按钮，哪处没改就跳过哪处。
+     *
+     * 三种来源：
+     *   · 选了已有账号 → 换绑（credentialId），填了字段就同时更新那个账号
+     *   · 选「＋ 新建账号」→ 先建账号，再把这个任务绑上去（不留空账号）
+     *   · 选了「— 还没选 —」→ 解绑（PATCH credentialId: null）
+     * 字段留空 = 不修改，否则一个空输入框就会把已存的密码清掉。
+     */
     var taskForm = e.target.closest('[data-action="save-task"]');
     if (taskForm) {
       e.preventDefault();
       var taskId = taskForm.dataset.task;
       var newLabel = (taskForm.elements.label.value || '').trim();
+      var group = taskForm.dataset.group || '';
+      var credSelect = taskForm.elements.credentialId;
+      var picked = credSelect ? credSelect.value : '';
+      var originalCred = taskForm.dataset.originalCredential || '';
+      var accountLabel = taskForm.elements.accountLabel
+        ? (taskForm.elements.accountLabel.value || '').trim()
+        : '';
       var fields = {};
       new FormData(taskForm).forEach(function (v, k) {
-        if (k !== 'label' && typeof v === 'string' && v.length) fields[k] = v;
+        if (k === 'label' || k === 'credentialId' || k === 'accountLabel') return;
+        if (typeof v === 'string' && v.length) fields[k] = v;
       });
       var labelChanged = newLabel !== (taskForm.dataset.originalLabel || '');
       var credsFilled = Object.keys(fields).length > 0;
+      var wantsNew = picked === '__new';
+      var credChanged = !wantsNew && picked !== originalCred;
+
       if (labelChanged && !newLabel) {
         hint('给这个任务起个名字', 'error');
         return;
       }
-      if (!labelChanged && !credsFilled) {
+      if (wantsNew && !credsFilled) {
+        hint('新建账号要至少填一项凭据', 'error');
+        return;
+      }
+      if (!labelChanged && !credsFilled && !wantsNew && !credChanged) {
         hint('没有需要保存的修改', 'error');
         return;
       }
@@ -836,13 +910,96 @@
         if (labelChanged) {
           await api('PATCH', '/api/tasks/' + encodeURIComponent(taskId), { label: newLabel });
         }
-        if (credsFilled) {
-          await api('POST', '/api/credentials', { taskId: Number(taskId), fields: fields });
+        if (wantsNew) {
+          // 账号名没填就用任务名：新建流程里不该为了一个名字多一步
+          var made = await api('POST', '/api/credentials', {
+            group: group,
+            label: accountLabel || newLabel,
+            fields: fields,
+          });
+          await api('PATCH', '/api/tasks/' + encodeURIComponent(taskId), {
+            credentialId: made.account.id,
+          });
+        } else if (credChanged) {
+          await api('PATCH', '/api/tasks/' + encodeURIComponent(taskId), {
+            credentialId: picked ? Number(picked) : null,
+          });
+        }
+        // 字段写到当前选中的账号上（新建的账号刚创建，不需要再写一遍）
+        if (credsFilled && !wantsNew) {
+          if (!picked) {
+            hint('先选一个账号，再保存这些字段', 'error');
+            if (saveBtn) saveBtn.disabled = false;
+            return;
+          }
+          await api('PATCH', '/api/credentials/' + encodeURIComponent(picked), { fields: fields });
         }
         reloadWithFeedback('已保存');
       } catch (err) {
         hint(err.message, 'error');
         if (saveBtn) saveBtn.disabled = false;
+      }
+      return;
+    }
+
+    // 新建账号（账号页）
+    var createCredForm = e.target.closest('[data-action="create-credential"]');
+    if (createCredForm) {
+      e.preventDefault();
+      var newFields = {};
+      new FormData(createCredForm).forEach(function (v, k) {
+        if (k === 'group' || k === 'label') return;
+        if (typeof v === 'string' && v.length) newFields[k] = v;
+      });
+      if (!Object.keys(newFields).length) {
+        hint('至少填一项凭据', 'error');
+        return;
+      }
+      var createBtn = createCredForm.querySelector('button[type="submit"]');
+      if (createBtn) createBtn.disabled = true;
+      try {
+        await api('POST', '/api/credentials', {
+          group: createCredForm.elements.group.value,
+          label: (createCredForm.elements.label.value || '').trim(),
+          fields: newFields,
+        });
+        reloadWithFeedback('账号已创建');
+      } catch (err) {
+        hint(err.message, 'error');
+        if (createBtn) createBtn.disabled = false;
+      }
+      return;
+    }
+
+    // 改账号名 / 改字段（账号页）
+    var updateCredForm = e.target.closest('[data-action="update-credential"]');
+    if (updateCredForm) {
+      e.preventDefault();
+      var updFields = {};
+      new FormData(updateCredForm).forEach(function (v, k) {
+        if (k === 'label') return;
+        if (typeof v === 'string' && v.length) updFields[k] = v;
+      });
+      var updLabel = (updateCredForm.elements.label.value || '').trim();
+      var updBody = {};
+      if (updLabel) updBody.label = updLabel;
+      if (Object.keys(updFields).length) updBody.fields = updFields;
+      if (!Object.keys(updBody).length) {
+        hint('没有需要保存的修改', 'error');
+        return;
+      }
+      var updBtn = updateCredForm.querySelector('button[type="submit"]');
+      if (updBtn) updBtn.disabled = true;
+      try {
+        await api(
+          'PATCH',
+          '/api/credentials/' + encodeURIComponent(updateCredForm.dataset.credential),
+          updBody,
+        );
+        reloadWithFeedback('已保存');
+      } catch (err) {
+        hint(err.message, 'error');
+        if (updBtn) updBtn.disabled = false;
       }
       return;
     }

@@ -105,16 +105,22 @@ const ICON = {
     '<svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.7 6.4A9.7 9.7 0 0 1 12 6.2c6 0 9.8 5.8 9.8 5.8a17.6 17.6 0 0 1-3.2 3.8"/><path d="M6.5 8.3A16.6 16.6 0 0 0 2.2 12S6 17.8 12 17.8a9.8 9.8 0 0 0 3.6-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
   play:
     '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7.5 4.6a1 1 0 0 1 1.52-.86l9.1 6.4a1 1 0 0 1 0 1.72l-9.1 6.4a1 1 0 0 1-1.52-.86z"/></svg>',
+  key:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.2" cy="15.8" r="3.7"/><path d="M10.9 13.1L20 4"/><path d="M17.2 6.8l2.1 2.1"/><path d="M14.6 9.4l2.1 2.1"/></svg>',
 };
 
 /**
- * 底部导航只放「看数据的两个页面」。
+ * 底部导航只放「看数据的三类页面」。
  * 设置不是页面，是右上角头像展开的弹层——它只有两项内容（外观、系统信息），
  * 占一个底部 tab 太奢侈，而且让用户以为里面还有别的东西。
+ *
+ * 「账号」独立成页而不是塞进任务页：同一个 WorkBuddy 账号会被签到与活跃两个任务
+ * 引用，挂到某一个任务下就变成「改一处另一处还是旧 token」。
  */
 const NAV = [
   { href: '/', label: '概览', key: 'home', icon: ICON.home },
   { href: '/tasks', label: '任务', key: 'tasks', icon: ICON.tasks },
+  { href: '/credentials', label: '账号', key: 'credentials', icon: ICON.key },
   /** 只有管理员看得到：普通用户看平台全局没有意义，也是信息泄露 */
   { href: '/admin', label: '管理', key: 'admin', icon: ICON.admin, adminOnly: true },
 ];
@@ -426,7 +432,9 @@ function taskRow(t) {
   return `<div class="row task-row">
         <a class="row-main" href="${href}">${esc(title)}</a>
         <span class="badges">${statusBadge(t.todayStatus)}${credBadge}</span>
-        <span class="row-sub">${esc(t.displayName)} · ${esc(t.scheduleLabel)}${
+        <span class="row-sub">${esc(t.displayName)}${
+          t.accountLabel ? ` · 账号 ${esc(t.accountLabel)}` : ''
+        } · ${esc(t.scheduleLabel)}${
           t.todayTargetLabel ? ` · 今日 ${esc(t.todayTargetLabel)}` : ''
         }</span>
         <span class="row-actions">
@@ -705,16 +713,41 @@ function credentialField(f) {
     )}</code></span>
     <span class="field-control">
       <input type="password" name="${esc(f.key)}" autocomplete="new-password" placeholder="${
-        f.set
-          ? f.from
-            ? `复用自「${esc(f.from)}」，留空表示不修改`
-            : '已设置，留空表示不修改'
-          : '未设置'
-      }">
+        f.set ? '已设置，留空表示不修改' : '未设置'
+      }"${f.disabled ? ' disabled' : ''}>
       <button type="button" class="reveal" data-action="toggle-reveal" aria-label="显示密码" title="显示密码">
         ${ICON.eye}${ICON.eyeOff.replace('<svg', '<svg hidden')}
       </button>
     </span>
+  </label>`;
+}
+
+/**
+ * 账号选择器：下拉列出同组已有账号 + 「＋ 新建账号」。
+ *
+ * 「新建账号」的字段输入框就是下面那几个（同一个表单），这样从任务页建账号
+ * 不需要跳到另一个页面再回来——这正是需求里「新建任务时填完自动建账号」的路径。
+ * 选中「＋ 新建账号」时前端会显示「新账号名」那个输入框。
+ */
+function accountPicker(credential) {
+  const accounts = credential?.accounts ?? [];
+  const current = credential?.credentialId ?? null;
+  return `<label class="field">
+    <span class="field-label">账号<code class="field-key">${esc(credential?.group ?? '')}</code></span>
+    <select name="credentialId" data-action="pick-account">
+      <option value="">— 还没选 —</option>
+      ${accounts
+        .map(
+          (a) =>
+            `<option value="${esc(a.id)}"${a.id === current ? ' selected' : ''}>${esc(a.label)}</option>`,
+        )
+        .join('')}
+      <option value="__new">＋ 新建账号…</option>
+    </select>
+  </label>
+  <label class="field new-account" hidden>
+    <span class="field-label">新账号名</span>
+    <input name="accountLabel" maxlength="32" placeholder="例如：小号A">
   </label>`;
 }
 
@@ -893,29 +926,145 @@ function taskConfigBody({ task, credential = null, isWindows = false }) {
 
 <section class="card" id="credentials">
   <h2>任务名与账号</h2>
-  <!-- 名字和账号密码共用一个「保存」：它们都是「我这个任务长什么样」，
-       分成两个按钮只会让人点了名字再去找第二个按钮（2026-10-16）。 -->
+  <!-- 名字、账号、字段共用一个「保存」：它们都是「我这个任务长什么样」，
+       分成多个按钮只会让人点了一个再去找下一个（2026-10-16）。 -->
   <form class="inline-form task-form" data-action="save-task" data-task="${esc(
     task.id,
-  )}" data-original-label="${esc(task.label || '')}">
+  )}" data-original-label="${esc(task.label || '')}" data-original-credential="${esc(
+    credential?.credentialId ?? '',
+  )}" data-group="${esc(credential?.group ?? '')}">
     <label class="field">
       <span class="field-label">任务名</span>
       <input name="label" value="${esc(task.label || '')}" maxlength="32" placeholder="${esc(
         task.displayName,
       )}">
     </label>
-    ${credentialHelperBlock(task, isWindows)}
-    ${(credential?.fields ?? []).map(credentialField).join('')}
+    ${
+      task.requires.length
+        ? accountPicker(credential) +
+          credentialHelperBlock(task, isWindows) +
+          (credential?.fields ?? []).map(credentialField).join('')
+        : ''
+    }
     <button type="submit" class="primary">保存</button>
   </form>
   ${
     task.requires.length
-      ? `<p class="hint">一个任务只跑这一个账号——想跑第二个账号，
-           回任务页用同一个模板再建一个任务。这里填的账号密码<b>加密后存在本站</b>，
-           <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
+      ? `<p class="hint">账号在「<a href="/credentials">账号</a>」页统一管理：同一个账号可以被多个任务共用，
+         换 token 只改一处。这里填的凭据<b>加密后存在本站</b>，
+         <b>站点管理员在技术上可以解密</b>，请不要填写你在别处复用的重要密码。</p>`
       : '<p class="hint">这个模板不需要账号密码。</p>'
   }
 </section>`;
+}
+
+/* ─────────────────── 账号页（独立实体） ─────────────────── */
+
+/**
+ * 一个账号一行：名字、缺不缺字段、被谁引用，展开后改名与改字段。
+ *
+ * 「缺哪个字段」按**组的字段并集**算，不是按某一个模板的 requires：
+ * 账号是站点级的，签到与活跃的字段可能不同，缺哪个都要说清楚。
+ */
+function accountRow(a, group, refs) {
+  const fields = group?.fields ?? a.fields ?? [];
+  const missing = fields.filter((k) => !(a.fields ?? []).includes(k));
+  const used = refs.length
+    ? `被 ${refs.length} 个任务引用：${refs.map((r) => r.label).join('、')}`
+    : '还没有任务引用它';
+  return `<div class="row account-row">
+      <span class="row-main">${esc(a.label)}</span>
+      <span class="badges">${
+        missing.length
+          ? `<span class="badge badge-off">缺 ${esc(missing.join('、'))}</span>`
+          : '<span class="badge badge-ok">已配置</span>'
+      }</span>
+      <span class="row-sub">${esc(used)}</span>
+      <span class="row-actions account-actions">
+        <details class="account-edit">
+          <summary class="btn-link btn-sm">修改</summary>
+          <form class="inline-form" data-action="update-credential" data-credential="${esc(a.id)}">
+            <label class="field">
+              <span class="field-label">账号名</span>
+              <input name="label" value="${esc(a.label)}" maxlength="32">
+            </label>
+            ${fields.map((k) => credentialField({ key: k, set: (a.fields ?? []).includes(k) })).join('')}
+            <button type="submit" class="primary btn-sm">保存</button>
+          </form>
+        </details>
+        <button type="button" class="link-danger" data-action="delete-credential" data-credential="${esc(
+          a.id,
+        )}">删除</button>
+      </span>
+    </div>`;
+}
+
+/**
+ * 账号页：独立管理「站点账号」，任务只引用。
+ *
+ * 为什么不把这张表单塞进任务页：同一个 WorkBuddy 账号被签到与活跃同时引用，
+ * 挂在某一个任务下就变成「改一处另一处还是旧 token」——那正是要消灭的问题。
+ *
+ * 新建表单按站点切换字段块（服务端一次渲染全部，前端只切显示/禁用）：
+ * 切走的那块 input 会被 disabled，否则 FormData 会把几个组的同名字段一起提交上来。
+ */
+export function pageCredentials({ groups = [], accounts = [], refs = new Map() }) {
+  const groupOf = new Map(groups.map((g) => [g.group, g]));
+
+  const creator = groups.length
+    ? `<section class="card">
+  <h2>新建账号</h2>
+  <form class="inline-form credential-form" data-action="create-credential">
+    <label class="field">
+      <span class="field-label">站点</span>
+      <select name="group" data-action="pick-group">
+        ${groups
+          .map((g) => `<option value="${esc(g.group)}">${esc(g.label)}</option>`)
+          .join('')}
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">账号名</span>
+      <input name="label" maxlength="32" placeholder="例如：小号A">
+    </label>
+    ${groups
+      .map(
+        (g, i) => `<div class="group-fields" data-for="${esc(g.group)}"${i ? ' hidden' : ''}>
+      ${g.fields
+        .map((k) => credentialField({ key: k, set: false, disabled: i > 0 }))
+        .join('')}
+    </div>`,
+      )
+      .join('')}
+    <button type="submit" class="primary">新建账号</button>
+  </form>
+  <p class="hint">一个账号 = 一个站点的登录信息。同一个账号可以被多个任务共用，
+    换 token 只改这里一处。凭据<b>加密后存在本站</b>，<b>站点管理员在技术上可以解密</b>，
+    请不要填写你在别处复用的重要密码。</p>
+</section>`
+    : '<section class="card"><p class="empty">还没有需要账号的模板。</p></section>';
+
+  const byGroup = new Map();
+  for (const a of accounts) {
+    if (!byGroup.has(a.groupName)) byGroup.set(a.groupName, []);
+    byGroup.get(a.groupName).push(a);
+  }
+
+  const rows = byGroup.size
+    ? [...byGroup.entries()]
+        .map(
+          ([group, items]) => `<section class="card">
+  <h2>${esc(groupOf.get(group)?.label ?? group)} <span class="count">${items.length}</span></h2>
+  ${items.map((a) => accountRow(a, groupOf.get(group), refs.get(a.id) ?? [])).join('')}
+</section>`,
+        )
+        .join('')
+    : `<section class="card">
+  <h2>还没有账号 <span class="count">0</span></h2>
+  <p class="empty">在上面建一个，任务页就能选它。</p>
+</section>`;
+
+  return creator + rows;
 }
 
 /* ─────────────────── 管理（admin） ─────────────────── */

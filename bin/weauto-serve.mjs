@@ -11,10 +11,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { TENANT_LIMITS, loadConfig } from '../src/config.mjs';
 import { DB_FILE, openDb } from '../src/db.mjs';
-import { bootstrapTenancy, pickOwnerId } from '../src/bootstrap.mjs';
+import { bootstrapTenancy, migrateCredentials, pickOwnerId } from '../src/bootstrap.mjs';
 import { createExecutor } from '../src/executor.mjs';
 import { createInvites } from '../src/invites.mjs';
-import { credentialPeers, loadTasks } from '../src/registry.mjs';
+import { loadTasks } from '../src/registry.mjs';
 import { createScheduler } from '../src/scheduler.mjs';
 import { createServer } from '../src/server.mjs';
 import { createStore } from '../src/store.mjs';
@@ -90,14 +90,16 @@ async function main() {
     }
   }
 
+  // v7：任务下的凭据 → 可被多个任务引用的独立账号（保守 1:1，幂等）
+  migrateCredentials({ db, tasks, log: (m) => console.log(m) });
+
   const scheduler = createScheduler({
     store,
     tasks,
     execute: createExecutor({
       store,
-      // 每用户凭据：只给这个用户这个账号、且只给任务声明过的字段；
-      // 同组模板（同一把钥匙的兄弟任务）可互相兜底
-      secretsLoader: secretsLoaderFor(userSecrets, (taskName) => credentialPeers(tasks, taskName)),
+      // 每用户凭据：只给任务引用的那个账号、且只给任务声明过的字段
+      secretsLoader: secretsLoaderFor(userSecrets),
       quotaPerDay: TENANT_LIMITS.quotaPerDay,
       log: (m) => console.log(m),
     }),
