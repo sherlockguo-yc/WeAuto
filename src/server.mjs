@@ -494,6 +494,24 @@ export function createServer({
       .sort((a, b) => a.group.localeCompare(b.group, 'zh') || a.name.localeCompare(b.name));
   }
 
+  /**
+   * 历史翻页游标 = 「上一页最后一条」的 `ts_id`。
+   *
+   * 用 keyset 而不是页码：翻页期间任务又跑了一次，页码会整体错位（同一行出现两次、
+   * 或整段漏掉），游标只问「比这条更早的还有哪些」，新记录只会出现在最前面。
+   */
+  function runCursor(run) {
+    return run ? `${run.ts}_${run.id}` : '';
+  }
+
+  function parseRunCursor(raw) {
+    const m = /^(\d+)_(\d+)$/.exec(String(raw ?? ''));
+    if (!m) return null;
+    const ts = Number(m[1]);
+    const id = Number(m[2]);
+    return Number.isSafeInteger(ts) && Number.isSafeInteger(id) ? { ts, id } : null;
+  }
+
   function detailOf(taskId, { includeSkipped = false, userId, role } = {}) {
     const mine = store.forUser(userId);
     const t = mine.getTask(taskId);
@@ -519,10 +537,14 @@ export function createServer({
       limit: 50,
       includeSkipped: true,
     });
-    // 展示口径与首页一致：先排除 skipped 再取 50 条
-    const runs = includeSkipped
-      ? window
-      : mine.runsOfTask(t.taskName, { accountKey: historyAccountKey, limit: 50, includeSkipped: false });
+    // 展示口径与首页一致：先排除 skipped 再取 50 条。
+    // 走 runsOfTaskPage 而不是 runsOfTask：任务页、接口、翻页三处排序必须一致
+    // （ts DESC, id DESC），否则翻页游标会切在「同一毫秒里顺序不定」的位置上
+    const runs = mine.runsOfTaskPage(t.taskName, {
+      accountKey: historyAccountKey,
+      limit: 50,
+      includeSkipped,
+    });
     const lastCompleted = runs.find((r) => r.status !== 'skipped') ?? null;
     return {
       task,
@@ -597,6 +619,9 @@ export function createServer({
       taskName: d.task.name,
       accountKey: d.summary.accountKey,
     });
+    // 首屏只渲染一屏历史。d.runs 是「最多 50 条」，全部铺出来就是几屏「昨天成功」，
+    // 真正要看的「最近一次结果」被挤到上面去了。剩下的由「加载更多」按需取。
+    const pageRuns = d.runs.slice(0, render.HISTORY_PAGE_SIZE);
     res.type('html').send(
       shell(req, {
         title: d.summary.label,
@@ -608,7 +633,9 @@ export function createServer({
             templateScheduleLabel: describeSchedule(d.task.schedule),
           },
           view: d.view,
-          runs: d.runs,
+          runs: pageRuns,
+          hasMoreRuns: d.runs.length > pageRuns.length,
+          runsCursor: runCursor(pageRuns[pageRuns.length - 1]),
           hiddenSkipped: d.hiddenSkipped,
           includeSkipped: d.includeSkipped,
           canRun: !scheduler.isRunning(d.summary.id, req.user.id),
@@ -1019,6 +1046,43 @@ export function createServer({
       runs: d.runs,
       hiddenSkipped: d.hiddenSkipped,
       running: scheduler.isRunning(d.summary.id, req.user.id),
+    });
+  });
+
+  /**
+   * 任务页「执行历史」的下一页（首屏由页面直出，见 render.HISTORY_PAGE_SIZE）。
+   *
+   * 返回渲染好的行 HTML 而不是原始记录：行结构与徽章配色只在 render.mjs 里维护一份，
+   * 前端不必再抄一遍，也就不会出现「后端加了新状态、前端把它渲染成灰色原文」的漂移。
+   *
+   * `before` 是上一页最后一条的 `ts_id`（见 runCursor）；不传表示从最新开始。
+   */
+  app.get('/api/tasks/:id(\\d+)/runs', requireLogin, (req, res) => {
+    const t = mine(req).getTask(Number(req.params.id));
+    if (!t) return res.status(404).json({ error: '没有这个任务' });
+    const task = tasks.get(t.taskName);
+    // internal 模板对非 admin 视同不存在，与任务页同一口径
+    if (!task || (task.visibility === 'internal' && req.user.role !== 'admin')) {
+      return res.status(404).json({ error: '没有这个模板' });
+    }
+
+    const before = parseRunCursor(req.query.before);
+    if (req.query.before && !before) return res.status(400).json({ error: 'before 参数无效' });
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+    const includeSkipped = req.query.all === '1';
+
+    // 多取一条判断「还有没有下一页」：记录数恰好是 limit 的整数倍时，
+    // 只看「取到的条数是否等于 limit」会让最后一页多发一次什么都没拿到的请求
+    const rows = mine(req).runsOfTaskPage(t.taskName, {
+      accountKey: t.accountKey,
+      limit: limit + 1,
+      includeSkipped,
+      before,
+    });
+    const page = rows.slice(0, limit);
+    res.json({
+      rows: page.map(render.historyRow),
+      nextCursor: rows.length > limit ? runCursor(page[page.length - 1]) : null,
     });
   });
 

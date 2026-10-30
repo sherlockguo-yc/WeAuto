@@ -492,6 +492,92 @@
     btn._idleHtml = null;
   }
 
+  /* ── 执行历史：滚到底再加载 ─────────────────────────────
+     首屏只由服务端铺一屏（render.HISTORY_PAGE_SIZE），剩下的按需取：
+     任务跑上几个月后，50 条历史会把页面拉成几屏「昨天成功」，而进任务页
+     真正想看的是最近一次结果——它反而被挤到上面要滑回来。
+
+     三种触发方式都指向同一个 loadMoreHistory：点按钮、滚到按钮附近
+     （IntersectionObserver，手机上不用精确点到）、键盘聚焦后回车（原生按钮行为）。
+     按钮本身就是「还有下一页」的唯一标记：nextCursor 为空就把它撤掉。
+     ------------------------------------------------------ */
+  var historyBox = document.querySelector('[data-history]');
+  var historyMore = document.querySelector('[data-action="load-more-history"]');
+  var historyLoading = false;
+
+  var historyObserver =
+    historyMore && 'IntersectionObserver' in window
+      ? new IntersectionObserver(
+          function (entries) {
+            for (var i = 0; i < entries.length; i++) {
+              if (entries[i].isIntersecting) {
+                loadMoreHistory();
+                return;
+              }
+            }
+          },
+          // 提前 200px 取：等按钮真正进入视口才请求，用户会看到一段空白等待
+          { rootMargin: '200px 0px' },
+        )
+      : null;
+  if (historyObserver) historyObserver.observe(historyMore);
+
+  async function loadMoreHistory() {
+    if (historyLoading || !historyBox || !historyMore) return;
+    var cursor = historyBox.dataset.cursor;
+    // 服务端说没有下一页了：按钮本不该在，兜底撤掉，别留一个点了没反应的开关
+    if (!cursor) {
+      stopLoadingHistory();
+      return;
+    }
+
+    historyLoading = true;
+    historyMore.disabled = true;
+    historyMore.textContent = '加载中…';
+    try {
+      var d = await api(
+        'GET',
+        '/api/tasks/' +
+          encodeURIComponent(historyBox.dataset.task) +
+          '/runs?limit=20&all=' +
+          (historyBox.dataset.all === '1' ? '1' : '0') +
+          '&before=' +
+          encodeURIComponent(cursor),
+      );
+      // 行 HTML 由服务端渲染（结构只有一份），这里只负责拼进去
+      historyBox.insertAdjacentHTML('beforeend', (d.rows || []).join(''));
+      if (d.nextCursor) {
+        historyBox.dataset.cursor = d.nextCursor;
+        historyMore.disabled = false;
+        historyMore.textContent = '加载更多';
+        // 新内容可能不够高，按钮仍停在视口里 —— 观察者不会再给一次回调，
+        // 所以手动问一次它是否还看得见，看得见就继续取。
+        // 必须等这一轮结束（historyLoading 复位）再问，否则会被自己的并发锁挡回来
+        if (historyMore.getBoundingClientRect().top < window.innerHeight + 200) {
+          setTimeout(loadMoreHistory, 0);
+        }
+      } else {
+        stopLoadingHistory();
+      }
+    } catch (err) {
+      // 失败时按钮留着并说明原因：网络抖一下就永久失去翻页入口没必要
+      historyMore.disabled = false;
+      historyMore.textContent = '加载失败，点这里重试';
+      hint(err.message, 'error');
+    } finally {
+      historyLoading = false;
+    }
+  }
+
+  function stopLoadingHistory() {
+    historyBox.dataset.cursor = '';
+    if (historyObserver) historyObserver.disconnect();
+    if (historyMore) {
+      historyMore.remove();
+      historyMore = null;
+    }
+  }
+
   /* ── 凭据一键更新：下载个性化脚本 → 脚本推送 → 本页自动刷新 ── */
 
   /*
@@ -565,6 +651,14 @@
     if (action === 'edit-user-note') {
       e.preventDefault();
       startNoteEdit(btn);
+      return;
+    }
+
+    // 历史翻页：按钮自己管加载态与撤除（拿到最后一页就消失），
+    // 也不能被下面的「先置灰、finally 再恢复」接管——那会把刚撤掉的按钮复活
+    if (action === 'load-more-history') {
+      e.preventDefault();
+      loadMoreHistory();
       return;
     }
 

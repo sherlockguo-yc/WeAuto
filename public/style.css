@@ -517,6 +517,19 @@ a.row:hover .row-main { color: var(--accent); }
   line-height: 1.5;
 }
 .row-plain { grid-template-columns: 1fr auto; }
+/* 执行历史的「加载更多」：首屏只铺一屏，这个按钮是「后面还有」的唯一标记。
+   占满整行、描边而非填充——它是续读，不该比上面的记录更抢眼。
+   滚到附近会自动触发（IntersectionObserver），点它只是给键盘和「自动没生效」兜底 */
+.load-more {
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px 12px;
+  font-size: 13.5px;
+  color: var(--dim);
+  background: var(--surface-2);
+  border-style: dashed;
+}
+.load-more:hover:not(:disabled) { color: var(--text); }
 /* 行内操作：主按钮靠左、次要按钮靠右。任务列表每行都有，所以只占一行的高度。
    三个都是文字按钮，窄屏放不下时整组次要按钮换到下一行，不要挤成竖排文字 */
 .row-actions {

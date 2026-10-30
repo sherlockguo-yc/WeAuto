@@ -19,6 +19,7 @@ import { createAuth } from '../src/auth/index.mjs';
 import { createInvites } from '../src/invites.mjs';
 import { createScheduler } from '../src/scheduler.mjs';
 import { createServer } from '../src/server.mjs';
+import { HISTORY_PAGE_SIZE } from '../src/render.mjs';
 
 const NOW = Date.parse('2026-10-14T12:00:00+08:00');
 
@@ -785,6 +786,122 @@ describe('执行历史默认隐藏跳过记录', () => {
     const api = await (await fetch(`${base}/api/tasks/1`, { headers: { cookie } })).json();
     assert.equal(api.hiddenSkipped, 1);
     assert.deepEqual(api.runs.map((r) => r.status), ['success']);
+  });
+});
+
+/* ───────────────────────────────────────────────────────
+   历史按需加载：首屏只铺一屏，剩下的滚到底再取。
+   以前一次铺 50 条，任务跑上几个月后进任务页要先滑过几屏「昨天成功」。
+   ------------------------------------------------------ */
+describe('执行历史按需加载', () => {
+  it('首屏只渲染一屏，翻页取完不重不漏', async () => {
+    const { base, store } = await startServer();
+    const mine = store.forUser(USER_ID);
+    const t0 = Date.parse('2026-10-14T00:00:00+08:00');
+    // 30 条，每 5 条夹一条 skipped：翻页必须保持「先排除 skipped 再取数」的口径，
+    // 否则一页里的条数会被 skipped 吃掉，两页之间还会错位
+    for (let i = 0; i < 30; i++) {
+      mine.appendRun({
+        taskName: DEMO_TASK.name,
+        date: '2026-10-14',
+        ts: t0 + i * 60_000,
+        status: i % 5 === 0 ? 'skipped' : 'success',
+        message: 'msg' + i,
+      });
+    }
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    const rows = html.match(/class="row row-plain"/g) || [];
+    assert.equal(rows.length, HISTORY_PAGE_SIZE, '首屏不该把几十条历史一次铺满');
+    assert.match(html, /data-action="load-more-history"/);
+    assert.match(html, /msg29/, '首屏是最新的那几条');
+    assert.equal(html.includes('msg19'), false, '更早的留给「加载更多」');
+
+    // 从页面给的游标开始翻页，收齐所有记录
+    const cursor0 = /data-cursor="([^"]*)"/.exec(html)[1];
+    assert.ok(cursor0);
+
+    const collected = [];
+    let cursor = cursor0;
+    while (cursor) {
+      const page = await (
+        await fetch(
+          `${base}/api/tasks/1/runs?limit=5&before=${encodeURIComponent(cursor)}`,
+          { headers: { cookie } },
+        )
+      ).json();
+      collected.push(...page.rows);
+      cursor = page.nextCursor || '';
+    }
+
+    const full = (await (await fetch(`${base}/api/tasks/1`, { headers: { cookie } })).json()).runs;
+    const msgOf = (s) => Number(/msg(\d+)/.exec(s)[1]);
+    const tail = collected.map(msgOf);
+    assert.equal(new Set(tail).size, tail.length, '翻页不该重复给出同一行');
+    // 首屏 8 条 + 后续 16 条 = 24 条（30 条里 6 条 skipped 默认隐藏）
+    assert.equal(new Set([...full.slice(0, HISTORY_PAGE_SIZE).map((r) => msgOf(r.message)), ...tail]).size, full.length);
+    assert.equal(full.length, 24);
+    // 后续页正好是首屏之后的那一段，顺序和接口的完整列表一致
+    assert.deepEqual(tail, full.slice(HISTORY_PAGE_SIZE).map((r) => msgOf(r.message)));
+  });
+
+  it('同一毫秒的多条记录不会被游标切开', async () => {
+    const { base, store } = await startServer();
+    const mine = store.forUser(USER_ID);
+    const t0 = Date.parse('2026-10-14T00:00:00+08:00');
+    // 全部落在同一毫秒：光靠 ts 定不出先后，游标必须带上 id 兜底
+    for (let i = 0; i < 12; i++) {
+      mine.appendRun({ taskName: DEMO_TASK.name, date: '2026-10-14', ts: t0, status: 'success', message: 'same' + i });
+    }
+    const cookie = await login(base);
+
+    const collected = [];
+    let cursor = '';
+    do {
+      const qs = `limit=5${cursor ? `&before=${encodeURIComponent(cursor)}` : ''}`;
+      const page = await (
+        await fetch(`${base}/api/tasks/1/runs?${qs}`, { headers: { cookie } })
+      ).json();
+      collected.push(...page.rows);
+      cursor = page.nextCursor || '';
+    } while (cursor);
+
+    const all = collected.map((r) => /same(\d+)/.exec(r)[1]);
+    assert.equal(all.length, 12);
+    assert.equal(new Set(all).size, 12, '同一毫秒的记录也必须一条不漏、不重复');
+  });
+
+  it('?all=1 时翻页也带上被跳过的记录；游标无效直接 400', async () => {
+    const { base, store } = await startServer();
+    const mine = store.forUser(USER_ID);
+    const t0 = Date.parse('2026-10-14T00:00:00+08:00');
+    for (let i = 0; i < 12; i++) {
+      mine.appendRun({
+        taskName: DEMO_TASK.name,
+        date: '2026-10-14',
+        ts: t0 + i * 60_000,
+        status: i % 2 === 0 ? 'skipped' : 'success',
+        message: 'row' + i,
+      });
+    }
+    const cookie = await login(base);
+
+    const page1 = await (
+      await fetch(`${base}/api/tasks/1/runs?all=1&limit=5`, { headers: { cookie } })
+    ).json();
+    assert.equal(page1.rows.length, 5);
+    const page2 = await (
+      await fetch(`${base}/api/tasks/1/runs?all=1&limit=5&before=${encodeURIComponent(page1.nextCursor)}`, {
+        headers: { cookie },
+      })
+    ).json();
+    const all = [...page1.rows, ...page2.rows].join('');
+    assert.match(all, /row11/);
+    assert.match(all, /跳过|已跳过/, '带 all=1 时 skipped 也要出现在翻页结果里');
+
+    const bad = await fetch(`${base}/api/tasks/1/runs?before=nope`, { headers: { cookie } });
+    assert.equal(bad.status, 400);
   });
 });
 

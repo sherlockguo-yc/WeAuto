@@ -182,6 +182,32 @@ export function createStore(db, { limits = {} } = {}) {
       `SELECT * FROM runs WHERE user_id = ? AND task_name = ?
        AND status <> 'skipped' ORDER BY ts DESC LIMIT ?`,
     ),
+    /* 历史翻页：keyset（游标）而不是 OFFSET。
+       OFFSET 在「翻页期间又跑了一次任务」时会整体后移一位，同一行出现两次、或整段被跳过；
+       游标只问「比这条更早的还有哪些」，写入新记录不会影响已翻开的位置。
+
+       排序多带一个 id DESC：同一毫秒内的多条记录（手动连点、批量导入）光靠 ts
+       分不出先后，游标就会切在同一秒中间，翻页时重复或漏行。 */
+    runsPageOfTask: db.prepare(
+      `SELECT * FROM runs WHERE user_id = ? AND task_name = ? AND account_key = ?
+       AND (ts < ? OR (ts = ? AND id < ?))
+       ORDER BY ts DESC, id DESC LIMIT ?`,
+    ),
+    runsPageOfTaskExecuted: db.prepare(
+      `SELECT * FROM runs WHERE user_id = ? AND task_name = ? AND account_key = ?
+       AND status <> 'skipped' AND (ts < ? OR (ts = ? AND id < ?))
+       ORDER BY ts DESC, id DESC LIMIT ?`,
+    ),
+    runsPageOfSubscription: db.prepare(
+      `SELECT * FROM runs WHERE user_id = ? AND task_name = ?
+       AND (ts < ? OR (ts = ? AND id < ?))
+       ORDER BY ts DESC, id DESC LIMIT ?`,
+    ),
+    runsPageOfSubscriptionExecuted: db.prepare(
+      `SELECT * FROM runs WHERE user_id = ? AND task_name = ?
+       AND status <> 'skipped' AND (ts < ? OR (ts = ? AND id < ?))
+       ORDER BY ts DESC, id DESC LIMIT ?`,
+    ),
     lastSuccess: db.prepare(
       `SELECT * FROM runs WHERE user_id = ? AND task_name = ? AND account_key = ?
        AND status IN (${inClause}) ORDER BY ts DESC LIMIT 1`,
@@ -401,6 +427,46 @@ export function createStore(db, { limits = {} } = {}) {
       return rows.map(rowToRun);
     }
 
+    /**
+     * 分页取历史：任务页首屏只渲染一屏，滚动到底再拿下一页。
+     *
+     * `before` 是上一页最后一条的 `{ ts, id }`（游标），不传表示从最新一条开始。
+     * 返回值**一定要用「多取一条」的方式判断还有没有下一页**——
+     * 只看「这次拿到的条数是否等于 limit」会漏判：记录数恰好是 limit 的整数倍时，
+     * 最后一页会多出一次什么都没拿到的请求。
+     *
+     * @returns {object[]} 该页的记录（新的在前）
+     */
+    function runsOfTaskPage(
+      taskName,
+      { accountKey = null, limit = 20, includeSkipped = false, before = null } = {},
+    ) {
+      // 游标缺省为「最大」，等价于「从最新一条开始」，于是首屏与后续页走同一条语句，
+      // 排序规则不会在翻页边界上换一套（否则同毫秒的多条记录会在两页间错位）
+      const ts = before?.ts ?? Number.MAX_SAFE_INTEGER;
+      const id = before?.id ?? Number.MAX_SAFE_INTEGER;
+      const rows =
+        accountKey == null
+          ? (includeSkipped ? s.runsPageOfSubscription : s.runsPageOfSubscriptionExecuted).all(
+              userId,
+              taskName,
+              ts,
+              ts,
+              id,
+              limit,
+            )
+          : (includeSkipped ? s.runsPageOfTask : s.runsPageOfTaskExecuted).all(
+              userId,
+              taskName,
+              accountKey,
+              ts,
+              ts,
+              id,
+              limit,
+            );
+      return rows.map(rowToRun);
+    }
+
     /** 我的全部任务最近记录；默认隐藏 skipped（首页要的是「谁出事了」） */
     function recentRuns(limit = 50, { includeSkipped = false } = {}) {
       const rows = includeSkipped ? s.runsAll.all(userId, limit) : s.runsExecuted.all(userId, limit);
@@ -517,6 +583,7 @@ export function createStore(db, { limits = {} } = {}) {
       configOfTask,
       appendRun,
       runsOfTask,
+      runsOfTaskPage,
       recentRuns,
       lastSuccess,
       hasSuccessOn,

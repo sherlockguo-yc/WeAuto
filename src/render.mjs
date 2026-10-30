@@ -57,6 +57,33 @@ export function runBadge(status) {
   return `<span class="badge badge-${s.tone}">${esc(s.text)}</span>`;
 }
 
+/**
+ * 任务页首屏渲染多少条历史。
+ *
+ * 以前是 50 条一次铺满：任务跑上几个月后，进任务页要先滑过几屏「昨天成功、前天成功」，
+ * 真正想看的「最近一次结果」反而被挤到上面要滑回来。历史是抽查用的，不是阅读用的，
+ * 所以首屏只给一屏，剩下的滚到底再取（见 /api/tasks/:id/runs）。
+ */
+export const HISTORY_PAGE_SIZE = 8;
+
+/** 一条执行记录的行标记。首屏与「加载更多」共用，保证两处长得一模一样 */
+export function historyRow(r) {
+  return `<div class="row row-plain">
+            <span class="row-main">${esc(r.time ?? '')}</span>
+            <span class="badges">${runBadge(r.status)}</span>
+            <span class="row-sub">${esc(r.message)}${
+              r.dur ? ` · ${Math.round(r.dur / 1000)}s` : ''
+            }${r.trigger === 'manual' ? ' · 手动' : ''}</span>
+          </div>`;
+}
+
+/** 一屏历史。空态文案留在这里，接口返回的空页则不该再重复它 */
+export function historyRows(runs) {
+  return runs.length
+    ? runs.map(historyRow).join('')
+    : '<p class="empty">还没有执行记录</p>';
+}
+
 /* ── 图标 ────────────────────────────────────────────────
    全部内联 SVG，不引外部资源也不装图标库：部署时少一个失效点。
    统一 24 视口、描边风格，颜色跟着 currentColor 走。
@@ -537,6 +564,10 @@ export function pageTaskDetail({
   canRun,
   hiddenSkipped = 0,
   includeSkipped = false,
+  /** 除了首屏这些，还有更多历史可取（滚动到底时自动加载） */
+  hasMoreRuns = false,
+  /** 下一页的游标，回传给 /api/tasks/:id/runs */
+  runsCursor = '',
   credential = null,
   /** 由 UA 判断：Windows 给可直接双击的 .cmd，其它平台给 .mjs + 一行命令 */
   isWindows = false,
@@ -551,19 +582,7 @@ export function pageTaskDetail({
         .join('')}</dl>`
     : '<p class="empty">这个任务没有声明结果字段（view），执行结果只在下方历史里</p>';
 
-  const history = runs.length
-    ? runs
-        .map(
-          (r) => `<div class="row row-plain">
-            <span class="row-main">${esc(r.time ?? '')}</span>
-            <span class="badges">${runBadge(r.status)}</span>
-            <span class="row-sub">${esc(r.message)}${
-              r.dur ? ` · ${Math.round(r.dur / 1000)}s` : ''
-            }${r.trigger === 'manual' ? ' · 手动' : ''}</span>
-          </div>`,
-        )
-        .join('')
-    : '<p class="empty">还没有执行记录</p>';
+  const history = historyRows(runs);
 
   return `
 ${hintHtml}
@@ -597,7 +616,16 @@ ${taskConfigBody({ task: task, credential: credential, isWindows: isWindows })}
 
 <section class="card">
   <h2>执行历史</h2>
-  ${history}
+  <!-- 首屏只铺一屏，剩下的由「加载更多」按需取：data-cursor 是下一页的游标，
+       滚动到底时 app.js 用它请求 /api/tasks/:id/runs，把返回的行追加到这个容器里 -->
+  <div class="rows" data-history data-task="${esc(task.id)}" data-cursor="${esc(runsCursor)}" data-all="${
+    includeSkipped ? '1' : '0'
+  }">${history}</div>
+  ${
+    hasMoreRuns
+      ? `<button type="button" class="load-more" data-action="load-more-history">加载更多</button>`
+      : ''
+  }
   ${
     hiddenSkipped
       ? `<p class="hint"><a href="?all=1">显示另外 ${hiddenSkipped} 条已跳过的记录</a></p>`
