@@ -84,8 +84,16 @@ export function credentialGroups(tasks) {
   for (const g of map.values()) {
     out.push({
       group: g.group,
-      // 组的可读名用组内模板名，用户认得出「这是 WorkBuddy」
-      label: g.names.join(' / '),
+      /**
+       * 组的可读名。
+       * 单模板组用模板名（「v2free 机场每日签到」一眼就懂）；
+       * 多模板组用组名——把两个模板名拼起来会得到
+       * 「WorkBuddy 每日活跃（发起一次对话）/ WorkBuddy 每日签到领积分」这种标题，
+       * 桌面端撑满一行、手机端折成三行，反而看不出它是一个站点。
+       */
+      label: g.taskNames.length > 1 ? g.group : g.names[0],
+      /** 组内模板名，界面用来解释「这几个任务共用同一个账号」 */
+      names: g.names,
       fields: g.fields,
       taskNames: g.taskNames,
     });

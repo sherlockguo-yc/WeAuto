@@ -86,8 +86,14 @@ describe('credentialGroups（账号归属的唯一来源）', () => {
     const wb = credentialGroups(tasks).find((g) => g.group === 'workbuddy');
     assert.deepEqual(wb.taskNames.sort(), ['wb-active', 'wb-checkin']);
     assert.deepEqual(wb.fields.sort(), ['DEVICE_ID', 'TOKEN']);
-    // 组名要能被人读懂：用组内模板名拼
-    assert.match(wb.label, /wb-checkin/);
+    // 多模板组的标题用站点名（拼模板名会得到撑满一行、手机端折三行的长标题）
+    assert.equal(wb.label, 'workbuddy');
+    assert.deepEqual(wb.names.sort(), ['wb-active', 'wb-checkin']);
+  });
+
+  it('单模板组的标题用模板名（一眼认出是哪个任务）', () => {
+    const v2 = credentialGroups(tasks).find((g) => g.group === 'v2free');
+    assert.equal(v2.label, 'v2free-checkin');
   });
 
   it('每组只出现一次', () => {

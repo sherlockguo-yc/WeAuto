@@ -469,7 +469,7 @@ export function pageTasks({ items, groups, templates = [] }) {
   <h2>模板 <span class="count">${templates.length}</span></h2>
   <div class="template-rail">${templates.map(templateCard).join('')}</div>
   <p class="hint">左右滑动看更多。点一个模板进去看看它是什么、要填什么，
-    确定要用再点「创建任务」——一个任务只跑一个账号，想跑第二个账号就再建一个。</p>
+    确定要用再点「创建任务」——账号在「账号」页统一管理，同一个账号可以被多个任务共用。</p>
 </section>`
     : '';
 
@@ -526,7 +526,7 @@ export function pageTemplate({ template, mine = [] }) {
     )}">创建任务</button>
     <a class="btn-link btn-sm" href="/tasks">返回任务列表</a>
   </div>
-  <p class="hint">建完会直接进任务页填账号密码。一个任务只跑一个账号。</p>
+  <p class="hint">建完会直接进任务页选账号（也可以当场新建一个）。</p>
 </section>
 
 <section class="card">
@@ -833,8 +833,9 @@ function credentialHelperBlock(task, isWindows = false) {
  * 一张卡片——它们要么已经出现在别处（凭据字段就在下面的表单里，模板名在
  * 列表和模板页），要么只在执行失败时才有意义（超时阈值该跟着失败原因走）。
  *
- * 没有「账号列表」了：一个任务只跑一个账号，想跑第二个账号就回任务页
- * 再建一个任务。账号这个概念因此退到执行侧（凭据与历史按它分），界面不再暴露。
+ * 账号不在这里管理：账号是独立实体（`/credentials`），同一个账号可以被签到与活跃
+ * 两个任务引用。这里只负责「选哪一个」——把凭据挂在某一个任务下，就会变成
+ * 「改一处、另一处还是旧 token」，那正是 v7 要消灭的问题。
  */
 function taskConfigBody({ task, credential = null, isWindows = false }) {
   // 有效调度 = 订阅里改过的（若有）否则模板默认。表单要能表达「我改过哪一种」
@@ -1052,12 +1053,20 @@ export function pageCredentials({ groups = [], accounts = [], refs = new Map() }
 
   const rows = byGroup.size
     ? [...byGroup.entries()]
-        .map(
-          ([group, items]) => `<section class="card">
-  <h2>${esc(groupOf.get(group)?.label ?? group)} <span class="count">${items.length}</span></h2>
-  ${items.map((a) => accountRow(a, groupOf.get(group), refs.get(a.id) ?? [])).join('')}
-</section>`,
-        )
+        .map(([group, items]) => {
+          const g = groupOf.get(group);
+          // 多模板组用组名做标题，模板名放到下面一行：标题只回答「哪个站点」，
+          // 「哪几个任务共用它」是解释，不该抢标题的位置
+          const names = g?.names ?? [];
+          const sub = names.length > 1
+            ? `<p class="hint">${esc(names.join(' / '))} 共用这个账号</p>`
+            : '';
+          return `<section class="card">
+  <h2>${esc(g?.label ?? group)} <span class="count">${items.length}</span></h2>
+  ${sub}
+  ${items.map((a) => accountRow(a, g, refs.get(a.id) ?? [])).join('')}
+</section>`;
+        })
         .join('')
     : `<section class="card">
   <h2>还没有账号 <span class="count">0</span></h2>
