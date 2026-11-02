@@ -71,7 +71,8 @@ src/
   secrets.mjs             age 解密（只用于迁移 v1 的旧凭据）
   util.mjs                路径常量、dotenv 解析、时区计算
   auth/                   账号（users / password / token）
-tasks/                    模板：v2free-checkin.mjs、workbuddy-checkin.mjs、workbuddy-active.mjs
+tasks/                    模板：v2free-checkin.mjs、workbuddy-checkin.mjs、workbuddy-active.mjs、
+                          workbuddy-buddy-travel.mjs（internal，待实测后开放）
 scripts/                  probe.mjs、import-runs.mjs 等一次性脚本
 public/                   app.js（前端交互）、style.css
 tests/                    node:test，23 个文件（fixtures/ 放真实页面快照）
@@ -439,6 +440,11 @@ git push (main) → GitHub Actions → Release: weauto.tar.gz（只含源码，�
    所有"一键"能力都必须由**本机进程主动推送**（`POST /api/tools/push-token`），服务端只能等。
    这是架构边界，不是实现取舍。
 10. **macOS 做不到"下载即双击"**（实测见 §5.1）。要彻底不碰终端，只能装常驻定时任务。
+11. **`workbuddy-buddy-travel` 尚未实测**（`visibility: 'internal'`，只有 admin 能看到）。
+   接口路径、响应字段与错误文案来自官方前端 bundle（`growthSpace-*.js` / `GrowthCenterPage-*.js`），
+   但「请求用 `/activity` 还是 `/v2/activity` 前缀」未用真实 token 验证过——
+   网页端用前者、桌面客户端用后者。`scripts/probe-workbuddy-travel.mjs` 默认只读，
+   `--depart` / `--claim` 才真的写；实测通过后删掉模板里的 `visibility` 一行即可开放。
 
 ### 11.1 为什么没有「网页点一个按钮就授权」（方案 B，已否决）
 
@@ -503,3 +509,4 @@ npm test        # node --test tests/*.test.mjs
 | `schedule.test.mjs` / `util.test.mjs` / `format.test.mjs` | 时区与调度算法、格式化 |
 | `history.test.mjs` / `lock.test.mjs` / `credentials.test.mjs` / `contract.test.mjs` | 历史路径与跨仓库契约 |
 | `pairing.test.mjs` / `task-workbuddy.test.mjs` | 配对码通道；WorkBuddy 抓取脚本 |
+| `task-workbuddy-travel.test.mjs` | 旅行状态机（先领后派、每日上限、各种英文错误文案）、run 的 8 条路径 |
