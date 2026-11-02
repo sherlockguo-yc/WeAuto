@@ -440,11 +440,14 @@ git push (main) → GitHub Actions → Release: weauto.tar.gz（只含源码，�
    所有"一键"能力都必须由**本机进程主动推送**（`POST /api/tools/push-token`），服务端只能等。
    这是架构边界，不是实现取舍。
 10. **macOS 做不到"下载即双击"**（实测见 §5.1）。要彻底不碰终端，只能装常驻定时任务。
-11. **`workbuddy-buddy-travel` 尚未实测**（`visibility: 'internal'`，只有 admin 能看到）。
-   接口路径、响应字段与错误文案来自官方前端 bundle（`growthSpace-*.js` / `GrowthCenterPage-*.js`），
-   但「请求用 `/activity` 还是 `/v2/activity` 前缀」未用真实 token 验证过——
-   网页端用前者、桌面客户端用后者。`scripts/probe-workbuddy-travel.mjs` 默认只读，
-   `--depart` / `--claim` 才真的写；实测通过后删掉模板里的 `visibility` 一行即可开放。
+11. **`workbuddy-buddy-travel` 的写路径尚未实测**（`visibility: 'internal'`，只有 admin 能看到）。
+   只读部分 2026-11-02 已用真实 token 验证：`/activity` 与 `/v2/activity` 两个前缀都返回 200
+   （网关互为别名），只带 `Bearer` 就够，`status` / `config` 的字段与前端代码一致。
+   差的是 `depart` / `claim` 的成功返回——它们要消耗当天唯一一次派出机会，
+   只能在自然日重置后测。`scripts/probe-workbuddy-travel.mjs` 默认只读，
+   `--depart` / `--claim` 才真的写；验证通过后删掉模板里的 `visibility` 一行即可开放。
+   实测还确认了一条容易搞错的语义：**当天派过并领完后是 `state=idle` + `daily_limit_reached=true`**，
+   所以「还能不能派」只能看 `daily_limit_reached`，用 `state` 判断会误判。
 
 ### 11.1 为什么没有「网页点一个按钮就授权」（方案 B，已否决）
 

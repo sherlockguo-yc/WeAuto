@@ -91,7 +91,16 @@ async function tokenFromWeauto(dir) {
     import('better-sqlite3'),
     import(path.join(ROOT, 'src', 'user-secrets.mjs')),
   ]);
-  const key = fs.readFileSync(keyPath);
+  /*
+   * 主密钥文件是 **base64 文本**（config.loadMasterKey 写入时就是
+   * `${key.toString('base64')}\n`），不是 32 字节裸二进制。
+   * 直接 readFileSync 拿到 44 字符，喂给 decryptValue 会被长度断言拒掉，
+   * 而报错又被 catch 吞成「没有可解密的凭据」——一个格式问题伪装成数据问题。
+   */
+  const keyFile = fs.readFileSync(keyPath);
+  const fromB64 = Buffer.from(keyFile.toString('utf8').trim(), 'base64');
+  const key = fromB64.length === 32 ? fromB64 : keyFile;
+  if (key.length !== 32) throw new Error(`主密钥长度不对：${key.length} 字节（应为 32）`);
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 
   const candidates = [];

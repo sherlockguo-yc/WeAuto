@@ -24,8 +24,19 @@
  * 「每天 1 次 + 必须先领再派」正好等于本框架的 window 调度（一天跑一次），
  * 所以不需要 every 轮询：一次执行里先领后派，顺序就是条款要求的顺序。
  *
- * ⚠️ 待实测（2026-11-03）：网页端用 /activity 前缀、桌面客户端用 /v2/activity，
- *    两者是否等价未验证。PROBE 脚本会先给出结论，再决定是否保留 API_PREFIX。
+ * 【2026-11-02 实测，真实 token，只读】
+ *   · 前缀：/activity 与 /v2/activity **都返回 200**，网关互为别名，取网页端那个
+ *   · 鉴权：只带 `Authorization: Bearer` 就够，X-User-Id / X-Domain / Referer 均非必需
+ *   · status 实际返回：
+ *       { state, buddy_id, record_id, location, depart_at, arrive_at,
+ *         server_now, letter, use_deeplink, daily_limit_reached,
+ *         duration_hours, reward_credit }        —— 与前端映射函数 nt() 完全一致
+ *   · config 返回 4 个地点，每项带 id / name / duration_hours_min|max / reward_credit_min|max
+ *   · ★ 当天派过并领完之后，服务端给的是 `state=idle` + `daily_limit_reached=true`。
+ *     所以「今天还能不能派」**只能看 daily_limit_reached**；用 state 判断会把
+ *     「已领完、今天到顶」误读成「可以派」。（planFor 已按这条改过，有测试钉住）
+ *   · depart / claim 的成功返回尚未验证：它们要消耗当天唯一一次机会，
+ *     只能在自然日重置后测。模板暂时保持 internal，测完再开放。
  */
 import { readJson, request as defaultRequest } from '../src/http.mjs';
 import { timestampInTZ } from '../src/util.mjs';
@@ -180,9 +191,9 @@ export default {
   accounts: false,
 
   /**
-   * 先只给 admin 看：接口路径与字段名是从官方前端 bundle 读出来的，
-   * 但「/activity 还是 /v2/activity」要等一次真实 token 的实测（见文件头 ⚠️）。
-   * 实测通过后删掉这一行即可对所有人开放。
+   * 先只给 admin 看：只读接口已于 2026-11-02 全部实测通过（见文件头），
+   * 但 depart / claim 的成功路径要消耗当天唯一一次机会，只能等自然日重置后验证。
+   * 测完删掉这一行即可对所有人开放。
    */
   visibility: 'internal',
 
