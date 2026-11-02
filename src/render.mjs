@@ -774,13 +774,20 @@ function credentialHelperBlock(task, isWindows = false) {
      *     所以 macOS 仍然给 .mjs + 一行 node 命令（不引入 Gatekeeper 的坑）。
      */
     if (isWindows) {
+      /*
+       * 给压缩包而不是裸 .cmd：浏览器、SmartScreen 与企业组策略常把「网页下载
+       * .cmd/.bat」判成高风险并直接中断（提示「无法下载 - 出现问题，请重试，或
+       * 联系你的组织」），压缩包不在这些名单上。`.cmd` 保留为压缩包也被拦时的备用。
+       */
       items.push(
-        `<li>下载启动器
+        `<li>下载启动器（压缩包）
           <a class="btn-inline" data-watch-pair="${esc(task.id)}"
-            href="/api/tasks/${esc(task.id)}/grabber.cmd" download>下载 update-workbuddy-token.cmd</a>
+            href="/api/tasks/${esc(task.id)}/grabber.zip" download>下载 update-workbuddy-token.zip</a>
+          <span class="note">.cmd 被浏览器或安全软件拦掉时，
+            才用<a href="/api/tasks/${esc(task.id)}/grabber.cmd" download>直接下载 .cmd</a></span>
         </li>`,
       );
-      items.push('<li><b>双击运行它</b>（首次可能弹一次系统确认，点「运行」）</li>');
+      items.push('<li><b>解压后双击里面的 .cmd</b>（首次可能弹一次系统确认，点「运行」）</li>');
     } else {
       items.push(
         `<li>下载脚本（里面已经带上你这个任务的配对信息）
@@ -814,7 +821,11 @@ function credentialHelperBlock(task, isWindows = false) {
    */
   const outcome = h.download
     ? `<p class="cred-outcome">跑完后本页会自动刷新显示「已设置」，不用手动粘贴。
-        ${isWindows ? '以后每月双击同一个文件即可。' : '以后每月重复第 2 步即可。'}</p>`
+       ${
+         isWindows
+           ? '以后每月双击解压出来的同一个 .cmd 即可。'
+           : '以后每月重复第 2 步即可。'
+       }</p>`
     : '';
 
   return `<div class="cred-helper">

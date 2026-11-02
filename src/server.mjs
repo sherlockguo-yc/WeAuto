@@ -26,8 +26,12 @@ import {
   tokenExpiryMs,
 } from './pairing.mjs';
 import { ROOT, dateInTZ, humanDuration } from './util.mjs';
+import { zipSingleFile } from './zip.mjs';
 
 const COOKIE = 'wa_session';
+
+/** 启动器的文件名：压缩包里、Content-Disposition 里都用它，只写一处 */
+const LAUNCHER_FILE = 'update-workbuddy-token.cmd';
 
 function parseCookies(header) {
   const out = {};
@@ -46,6 +50,61 @@ function groupByGroup(items) {
     map.get(it.group).push(it);
   }
   return [...map.entries()].map(([name, list]) => ({ name, items: list }));
+}
+
+/**
+ * Windows 双击启动器（批处理正文）。
+ *
+ * 里面只放服务器地址和 pushToken，脚本本体运行时从公开端点现取：把 20KB 的 JS
+ * 塞进批处理要转义一堆字符，既难维护又容易坏。
+ *
+ * `curl.exe` 那一步是兜底：Windows 10 1803+ 自带 curl，PowerShell 被执行策略
+ * 锁死（组策略 AllSigned 时 `-ExecutionPolicy Bypass` 也压不住）时还能拉脚本。
+ *
+ * 正文只由 `launcherCmd` 一处生成，`.cmd` 与 `.zip` 两个入口共用，避免两份内容漂移。
+ */
+function launcherCmd({ server, pushToken, helper }) {
+  const lines = [
+    '@echo off',
+    'chcp 65001 >nul',
+    'setlocal',
+    'title WorkBuddy token updater',
+    `set "SERVER=${server}"`,
+    `set "PUSH_TOKEN=${pushToken}"`,
+    'set "TMPFILE=%TEMP%\\wb-grab-%RANDOM%%RANDOM%.mjs"',
+    '',
+    'where node >nul 2>nul',
+    'if errorlevel 1 (',
+    '  echo Node.js 18+ is required. Get it from https://nodejs.org/',
+    '  echo.',
+    '  pause',
+    '  exit /b 1',
+    ')',
+    '',
+    'echo Fetching grabber...',
+    `powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri '${server}/api/tools/${helper.download}' -OutFile '%TMPFILE%' } catch { exit 1 }"`,
+    'if not exist "%TMPFILE%" (',
+    `  curl.exe -fsS -o "%TMPFILE%" "${server}/api/tools/${helper.download}" >nul 2>nul`,
+    ')',
+    'if not exist "%TMPFILE%" (',
+    '  echo Download failed. Check your network and try again.',
+    '  echo.',
+    '  pause',
+    '  exit /b 1',
+    ')',
+    '',
+    'echo Updating WorkBuddy token...',
+    'echo.',
+    'node "%TMPFILE%" --push "%SERVER%" --push-token "%PUSH_TOKEN%"',
+    'set "RC=%ERRORLEVEL%"',
+    'del "%TMPFILE%" >nul 2>nul',
+    'echo.',
+    'pause',
+    'exit /b %RC%',
+    '',
+  ];
+  // CRLF：cmd.exe 对纯 LF 的批处理在某些版本上会解析出错
+  return lines.join('\r\n');
 }
 
 /**
@@ -915,56 +974,41 @@ export function createServer({
    *   · macOS 的 .command 必须有执行位，而浏览器下载不保留权限（HTTP 不传 mode），
    *     实测 644 的文件双击毫无反应；用 zip 保住权限后又会撞 Gatekeeper 隔离标记。
    *
-   * .cmd 里只放服务器地址和 pushToken，脚本本体运行时从公开端点现取：
-   * 把 20KB 的 JS 塞进批处理要转义一堆字符，既难维护又容易坏。
+   * 正文由 `launcherCmd()` 生成，与下面的 zip 入口共用同一份内容。
    */
   app.get('/api/tasks/:id(\\d+)/grabber.cmd', requireLogin, (req, res) => {
     const target = grabberTarget(req, res);
     if (!target) return;
     const { helper, pushToken, server } = target;
 
-    const lines = [
-      '@echo off',
-      'chcp 65001 >nul',
-      'setlocal',
-      'title WorkBuddy token updater',
-      `set "SERVER=${server}"`,
-      `set "PUSH_TOKEN=${pushToken}"`,
-      'set "TMPFILE=%TEMP%\\wb-grab-%RANDOM%%RANDOM%.mjs"',
-      '',
-      'where node >nul 2>nul',
-      'if errorlevel 1 (',
-      '  echo Node.js 18+ is required. Get it from https://nodejs.org/',
-      '  echo.',
-      '  pause',
-      '  exit /b 1',
-      ')',
-      '',
-      'echo Fetching grabber...',
-      `powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri '${server}/api/tools/${helper.download}' -OutFile '%TMPFILE%' } catch { exit 1 }"`,
-      'if not exist "%TMPFILE%" (',
-      '  echo Download failed. Check your network and try again.',
-      '  echo.',
-      '  pause',
-      '  exit /b 1',
-      ')',
-      '',
-      'echo Updating WorkBuddy token...',
-      'echo.',
-      'node "%TMPFILE%" --push "%SERVER%" --push-token "%PUSH_TOKEN%"',
-      'set "RC=%ERRORLEVEL%"',
-      'del "%TMPFILE%" >nul 2>nul',
-      'echo.',
-      'pause',
-      'exit /b %RC%',
-      '',
-    ];
-
     res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', 'attachment; filename="update-workbuddy-token.cmd"');
+    res.setHeader('Content-Disposition', `attachment; filename="${LAUNCHER_FILE}"`);
     res.setHeader('Cache-Control', 'no-store');
-    // CRLF：cmd.exe 对纯 LF 的批处理在某些版本上会解析出错
-    res.send(lines.join('\r\n'));
+    res.send(launcherCmd({ server, pushToken, helper }));
+  });
+
+  /**
+   * 同一份启动器，打成 zip。
+   *
+   * 【为什么要有这个入口】自 2026-10 起，浏览器、SmartScreen 与企业组策略把
+   * 「从网页下载 .cmd/.bat/.exe」当成高风险动作，用户看到的是
+   * 「无法下载 - 出现问题，请重试，或联系你的组织」——服务端完全正常（200、
+   * 正确的 Content-Disposition），是客户端把写入磁盘这一步掐掉了。压缩包不在
+   * 这类名单上，是把文件送到用户机器上最省事的通道。
+   *
+   * 页面主按钮指向这里，`.cmd` 保留为压缩包也被拦时的备用入口。
+   */
+  app.get('/api/tasks/:id(\\d+)/grabber.zip', requireLogin, (req, res) => {
+    const target = grabberTarget(req, res);
+    if (!target) return;
+    const { helper, pushToken, server } = target;
+
+    const body = zipSingleFile(LAUNCHER_FILE, launcherCmd({ server, pushToken, helper }));
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="update-workbuddy-token.zip"');
+    res.setHeader('Content-Length', String(body.length));
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(body);
   });
 
   /**

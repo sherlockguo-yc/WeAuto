@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { inflateRawSync } from 'node:zlib';
 import { after, before, describe, it } from 'node:test';
 import { openDb } from '../src/db.mjs';
 import { createStore } from '../src/store.mjs';
@@ -74,6 +75,27 @@ after(() => {
 });
 
 const USER_ID = 1;
+
+/**
+ * 只解一个条目：读本地文件头，按 method 8 解压。
+ *
+ * 这里刻意不复用 `src/zip.mjs`——测试拿生产代码去验生产代码，等于什么都没验。
+ * 格式本身的正确性由 Windows 资源管理器 / `unzip` 保证，这里只验「能读回来、内容对」。
+ */
+function unzipSingle(buf) {
+  assert.equal(buf.readUInt32LE(0), 0x04034b50, '开头应是 ZIP 本地文件头');
+  const method = buf.readUInt16LE(8);
+  const compSize = buf.readUInt32LE(18);
+  const nameLen = buf.readUInt16LE(26);
+  const extraLen = buf.readUInt16LE(28);
+  const name = buf.subarray(30, 30 + nameLen).toString('utf8');
+  const start = 30 + nameLen + extraLen;
+  assert.equal(buf.readUInt32LE(buf.length - 22), 0x06054b50, '结尾应是中央目录结束记录');
+  return {
+    name,
+    content: method === 8 ? inflateRawSync(buf.subarray(start, start + compSize)) : buf.subarray(start, start + compSize),
+  };
+}
 
 let seq = 0;
 /**
@@ -427,7 +449,41 @@ describe('凭据一键更新（脚本直接推送）', () => {
     assert.equal((await fetch(`${base}/api/tasks/${row.id}/grabber.cmd`)).status, 401);
   });
 
-  it('页面按 UA 给不同的下载方式：Windows 给 .cmd，其它给 .mjs', async () => {
+  it('同一份启动器另给一个 zip：浏览器与安全软件常把 .cmd 下载掐掉', async () => {
+    const { base, cookie, row } = await setup();
+    const res = await fetch(`${base}/api/tasks/${row.id}/grabber.zip`, { headers: { Cookie: cookie } });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /application\/zip/);
+    assert.match(res.headers.get('content-disposition'), /update-workbuddy-token\.zip/);
+    // 里面带着令牌，不能被浏览器或中间层缓存后发给别人
+    assert.match(res.headers.get('cache-control'), /no-store/);
+
+    const { name, content } = unzipSingle(Buffer.from(await res.arrayBuffer()));
+    assert.equal(name, 'update-workbuddy-token.cmd');
+
+    const text = content.toString('utf8');
+    assert.match(text, /^@echo off\r\n/, '必须是 CRLF 的批处理');
+    assert.ok(text.includes(`set "SERVER=${base}"`));
+    assert.match(text, /set "PUSH_TOKEN=wt2_\d+_\d+_[A-Za-z0-9_-]+"/);
+    assert.match(text, /--push "%SERVER%" --push-token "%PUSH_TOKEN%"/);
+  });
+
+  it('zip 与 .cmd 是同一份启动器，内容不许漂移', async () => {
+    const { base, cookie, row } = await setup();
+    const cmd = await (
+      await fetch(`${base}/api/tasks/${row.id}/grabber.cmd`, { headers: { Cookie: cookie } })
+    ).text();
+    const zip = await fetch(`${base}/api/tasks/${row.id}/grabber.zip`, { headers: { Cookie: cookie } });
+    const { content } = unzipSingle(Buffer.from(await zip.arrayBuffer()));
+    assert.equal(content.toString('utf8'), cmd);
+  });
+
+  it('zip 也要登录才能下载', async () => {
+    const { base, row } = await setup();
+    assert.equal((await fetch(`${base}/api/tasks/${row.id}/grabber.zip`)).status, 401);
+  });
+
+  it('页面按 UA 给不同的下载方式：Windows 给 zip 里的 .cmd，其它给 .mjs', async () => {
     const { base, cookie, row } = await setup();
     const html = async (ua) =>
       (
@@ -435,13 +491,15 @@ describe('凭据一键更新（脚本直接推送）', () => {
       ).text();
 
     const win = await html('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-    assert.match(win, new RegExp(`/api/tasks/${row.id}/grabber\\.cmd`));
-    assert.match(win, /双击运行它/);
+    // 主按钮是压缩包：裸 .cmd 会被浏览器/安全软件拦，zip 不在那些名单上
+    assert.match(win, new RegExp(`/api/tasks/${row.id}/grabber\\.zip`));
+    assert.match(win, new RegExp(`/api/tasks/${row.id}/grabber\\.cmd`), '.cmd 留作备用入口');
+    assert.match(win, /解压后双击/);
 
     const mac = await html('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
     assert.match(mac, new RegExp(`/api/tasks/${row.id}/grabber\\.mjs`));
     assert.match(mac, /node grab-workbuddy-token\.mjs/);
-    assert.doesNotMatch(mac, /grabber\.cmd/);
+    assert.doesNotMatch(mac, /grabber\.(cmd|zip)/);
   });
 
   it('重复下载复用同一个 pushToken（之前下载的文件不会突然失效）', async () => {

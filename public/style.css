@@ -836,6 +836,15 @@ label { display: grid; gap: 6px; font-size: 14px; color: var(--dim); }
   padding: 1px 6px;
 }
 .cred-helper .hint { margin: 8px 0 0; }
+/* 备用入口（压缩包被拦时才用得着的那条路）：独占一行、比主按钮弱一档，
+   否则它会跟下载按钮挤在同一行里，看起来像第二个主操作 */
+.cred-helper .note {
+  display: block;
+  margin-top: 6px;
+  color: var(--dim);
+  font-size: 12px;
+}
+.cred-helper .note a { color: var(--dim); text-decoration: underline; }
 
 /* 结果说明：不是用户要做的步骤，所以不编号、也不跟步骤混排。
    比 hint 稍亮一档——它回答的是「我做完会发生什么」，比技术备注更值得先看到 */

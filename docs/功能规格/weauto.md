@@ -210,9 +210,14 @@ v7 把凭据从任务上拆出来变成独立账号实体（表结构在 `db.mjs
 
 | | Windows | macOS |
 |---|---|---|
-| 下载物 | `update-workbuddy-token.cmd`，内嵌服务器地址与 `pushToken` | `grab-workbuddy-token.mjs`，内嵌同样的信息 |
-| 执行方式 | **双击即可**（`.cmd` 走文件关联，不需要权限位） | 必须在终端跑一次 `node <文件>` |
-| 原因 | — | 浏览器下载不保留执行位：`.command` 权限 644 时双击无反应；用 zip 保住权限后又被 Gatekeeper 隔离标记拦下 |
+| 下载物 | `update-workbuddy-token.zip`，包里是同一个 `.cmd`，内嵌服务器地址与 `pushToken` | `grab-workbuddy-token.mjs`，内嵌同样的信息 |
+| 执行方式 | 解压后**双击** `.cmd`（走文件关联，不需要权限位） | 必须在终端跑一次 `node <文件>` |
+| 原因 | 浏览器 / SmartScreen / 企业组策略常把「从网页下载 `.cmd`」判成高风险并直接中断（页面提示「无法下载 - 出现问题，请重试，或联系你的组织」），压缩包不在这些名单上。裸 `.cmd` 保留为备用入口（`/grabber.cmd`） | 浏览器下载不保留执行位：`.command` 权限 644 时双击无反应；用 zip 保住权限后又被 Gatekeeper 隔离标记拦下 |
+
+`.cmd` 与 zip 的正文由 `launcherCmd()` 一处生成（同一份内容两个入口），测试里有一条
+「zip 与 .cmd 内容不许漂移」钉住这点。打包是 `src/zip.mjs`：只有一个文件、不加密，
+手写 30 行比引一个 zip 依赖划算；格式由系统 `unzip` 与 Windows 资源管理器负责验证。
+批处理里 `curl.exe` 是 PowerShell 那条路的兜底——组策略把 `-ExecutionPolicy Bypass` 也压死时还能拉脚本。
 
 **客户端怎么找**（`scripts/grab-workbuddy-token.mjs` 的 `findApp`）：
 目标是「**不管装在哪都能找到**」，所以分四级，便宜的在前、贵的兜底，命中即停：
