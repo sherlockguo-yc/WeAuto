@@ -211,13 +211,25 @@ v7 把凭据从任务上拆出来变成独立账号实体（表结构在 `db.mjs
 | | Windows | macOS |
 |---|---|---|
 | 下载物 | `update-workbuddy-token.zip`，包里是同一个 `.cmd`，内嵌服务器地址与 `pushToken` | `grab-workbuddy-token.mjs`，内嵌同样的信息 |
-| 执行方式 | 解压后**双击** `.cmd`（走文件关联，不需要权限位） | 必须在终端跑一次 `node <文件>` |
+| 执行方式 | 解压后**双击** `.cmd`（走文件关联，不需要权限位）。本机没有 Node 时批处理自己装一份便携版再继续，不再是"报错 → 用户自己解决" | 必须在终端跑一次 `node <文件>`（Node 由用户自己准备） |
 | 原因 | 浏览器 / SmartScreen / 企业组策略常把「从网页下载 `.cmd`」判成高风险并直接中断（页面提示「无法下载 - 出现问题，请重试，或联系你的组织」），压缩包不在这些名单上。裸 `.cmd` 保留为备用入口（`/grabber.cmd`） | 浏览器下载不保留执行位：`.command` 权限 644 时双击无反应；用 zip 保住权限后又被 Gatekeeper 隔离标记拦下 |
 
-`.cmd` 与 zip 的正文由 `launcherCmd()` 一处生成（同一份内容两个入口），测试里有一条
-「zip 与 .cmd 内容不许漂移」钉住这点。打包是 `src/zip.mjs`：只有一个文件、不加密，
+`.cmd` 与 zip 的正文由 `launcherCmd()`（`src/launcher.mjs`）一处生成（同一份内容两个入口），
+测试里有一条「zip 与 .cmd 内容不许漂移」钉住这点。打包是 `src/zip.mjs`：只有一个文件、不加密，
 手写 30 行比引一个 zip 依赖划算；格式由系统 `unzip` 与 Windows 资源管理器负责验证。
 批处理里 `curl.exe` 是 PowerShell 那条路的兜底——组策略把 `-ExecutionPolicy Bypass` 也压死时还能拉脚本。
+
+**Node.js 缺失时自举（2026-11-02）**：以前批处理检测不到 `node` 就 `exit /b 1`，用户盯着
+一句英文报错无路可走。现在按顺序取：PATH 上的 `node`（版本 ≥18 才认）→ 之前自举过的便携版
+（`%LOCALAPPDATA%\WeAuto\node\node-vX-win-x64\node.exe`）→ 现下载一份便携 zip（npmmirror 优先、
+nodejs.org 兜底，约 36MB）→ `Expand-Archive`，PS5 缺失时用 Win10 1803+ 自带的 `tar.exe`。
+
+选便携 zip 而不是官方 MSI 的三个理由：**不需要管理员权限**（MSI 要 UAC，公司电脑通常不给装）、
+**不改 PATH 不写注册表**（运行时用绝对路径调用，所以"配置"这一步不存在，卸载即删目录）、
+**失败面小**（解压失败就换个解压器，不涉及 Windows Installer）。解压后还会试跑一次
+`node -v`，跑不起来就删目录重来——半截包和杀软改写过的 exe 都栽在这一步。
+CI 在 Linux 上跑不了批处理，所以 `tests/launcher.test.mjs` 把「不许再直接报错退出」「标签必须存在」
+「正文必须纯 ASCII」这些静态不变量钉住（纯 ASCII 的原因：`chcp 65001` 失败的机器上中文会乱码）。
 
 **客户端怎么找**（`scripts/grab-workbuddy-token.mjs` 的 `findApp`）：
 目标是「**不管装在哪都能找到**」，所以分四级，便宜的在前、贵的兜底，命中即停：

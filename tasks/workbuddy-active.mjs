@@ -330,7 +330,7 @@ export default {
   credentialHelper: {
     download: 'grab-workbuddy-token.mjs',
     command: 'node grab-workbuddy-token.mjs',
-    note: '需要 Node 18+。客户端装在 C 盘以外也能自动找到；运行时会短暂重启 WorkBuddy（约 10 秒），完成后自动恢复原样。',
+    note: '需要 Node 18+（Windows 上没装会自动下载一份便携版，约 36MB，不需要管理员权限）。客户端装在 C 盘以外也能自动找到；运行时会短暂重启 WorkBuddy（约 10 秒），完成后自动恢复原样。',
   },
 
   accounts: false,

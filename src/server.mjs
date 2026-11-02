@@ -27,11 +27,9 @@ import {
 } from './pairing.mjs';
 import { ROOT, dateInTZ, humanDuration } from './util.mjs';
 import { zipSingleFile } from './zip.mjs';
+import { LAUNCHER_FILE, launcherCmd } from './launcher.mjs';
 
 const COOKIE = 'wa_session';
-
-/** 启动器的文件名：压缩包里、Content-Disposition 里都用它，只写一处 */
-const LAUNCHER_FILE = 'update-workbuddy-token.cmd';
 
 function parseCookies(header) {
   const out = {};
@@ -52,60 +50,6 @@ function groupByGroup(items) {
   return [...map.entries()].map(([name, list]) => ({ name, items: list }));
 }
 
-/**
- * Windows 双击启动器（批处理正文）。
- *
- * 里面只放服务器地址和 pushToken，脚本本体运行时从公开端点现取：把 20KB 的 JS
- * 塞进批处理要转义一堆字符，既难维护又容易坏。
- *
- * `curl.exe` 那一步是兜底：Windows 10 1803+ 自带 curl，PowerShell 被执行策略
- * 锁死（组策略 AllSigned 时 `-ExecutionPolicy Bypass` 也压不住）时还能拉脚本。
- *
- * 正文只由 `launcherCmd` 一处生成，`.cmd` 与 `.zip` 两个入口共用，避免两份内容漂移。
- */
-function launcherCmd({ server, pushToken, helper }) {
-  const lines = [
-    '@echo off',
-    'chcp 65001 >nul',
-    'setlocal',
-    'title WorkBuddy token updater',
-    `set "SERVER=${server}"`,
-    `set "PUSH_TOKEN=${pushToken}"`,
-    'set "TMPFILE=%TEMP%\\wb-grab-%RANDOM%%RANDOM%.mjs"',
-    '',
-    'where node >nul 2>nul',
-    'if errorlevel 1 (',
-    '  echo Node.js 18+ is required. Get it from https://nodejs.org/',
-    '  echo.',
-    '  pause',
-    '  exit /b 1',
-    ')',
-    '',
-    'echo Fetching grabber...',
-    `powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri '${server}/api/tools/${helper.download}' -OutFile '%TMPFILE%' } catch { exit 1 }"`,
-    'if not exist "%TMPFILE%" (',
-    `  curl.exe -fsS -o "%TMPFILE%" "${server}/api/tools/${helper.download}" >nul 2>nul`,
-    ')',
-    'if not exist "%TMPFILE%" (',
-    '  echo Download failed. Check your network and try again.',
-    '  echo.',
-    '  pause',
-    '  exit /b 1',
-    ')',
-    '',
-    'echo Updating WorkBuddy token...',
-    'echo.',
-    'node "%TMPFILE%" --push "%SERVER%" --push-token "%PUSH_TOKEN%"',
-    'set "RC=%ERRORLEVEL%"',
-    'del "%TMPFILE%" >nul 2>nul',
-    'echo.',
-    'pause',
-    'exit /b %RC%',
-    '',
-  ];
-  // CRLF：cmd.exe 对纯 LF 的批处理在某些版本上会解析出错
-  return lines.join('\r\n');
-}
 
 /**
  * @param {object} deps
