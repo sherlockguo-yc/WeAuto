@@ -956,6 +956,57 @@ export function createServer({
   });
 
   /**
+   * macOS 启动器：一个 .sh，自举 Node.js 之后再去抓 token。
+   *
+   * 和 Windows 那两个入口解决的是同一类死路：本机没有 Node.js 时用户只会看到
+   * `command not found: node`。区别在交付形态——macOS 的 `.command` 双击不可行
+   * （浏览器下载不保留执行位，见上面 `.cmd` 那段注释），所以这一侧一直是
+   * 「下载 + 在终端跑一行」，页面给的命令是 `bash update-workbuddy-token.sh`。
+   *
+   * 三个占位符注入后即用：`SERVER` / `PUSH_TOKEN` / `GRABBER`。脚本正文在
+   * `scripts/grab-workbuddy-token.sh`，与 `.mjs` 放在一起便于对照。
+   */
+  app.get('/api/tasks/:id(\\d+)/grabber.sh', requireLogin, (req, res) => {
+    const target = grabberTarget(req, res);
+    if (!target) return;
+    const { helper, pushToken, server } = target;
+    // 模板没声明启动器就没有这一份：不猜文件名，也不回落到 download 去凑一个
+    if (!helper.launchScript) return res.status(404).json({ error: '这个任务没有 macOS 启动器' });
+
+    let source;
+    try {
+      source = fs.readFileSync(path.join(ROOT, 'scripts', helper.launchScript), 'utf8');
+    } catch {
+      // 部署包漏了 scripts/ 时的表现。给一句能定位的话，比空白 500 省一次排查。
+      return res.status(404).json({
+        error: `启动器不存在：${helper.launchScript}（部署包可能没带 scripts/ 目录）`,
+      });
+    }
+    const anchors = [
+      ['SERVER=""', `SERVER="${server}"`],
+      ['PUSH_TOKEN=""', `PUSH_TOKEN="${pushToken}"`],
+      ['GRABBER=""', `GRABBER="${helper.download}"`],
+    ];
+    let injected = source;
+    for (const [from, to] of anchors) {
+      /*
+       * 每个锚点必须**恰好**出现一次。少一次是把没配对的文件发出去（用户跑到一半
+       * 才发现没有服务器地址），多一次说明锚点撞了别的行——两种都得当场报错。
+       */
+      const hits = injected.split(from).length - 1;
+      if (hits !== 1) {
+        return res.status(500).json({ error: `启动器锚点 ${from} 出现 ${hits} 次，注入失败` });
+      }
+      injected = injected.replace(from, to);
+    }
+
+    res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="update-workbuddy-token.sh"');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(injected);
+  });
+
+  /**
    * 脚本：推送凭据 —— **不鉴权中间件，靠 code / pushToken 自证**。
    *
    * 两条路径：

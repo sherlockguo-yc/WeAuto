@@ -771,7 +771,7 @@ function credentialHelperBlock(task, isWindows = false) {
      * 两个平台给不同的东西，因为能力本身不同（2026-10-20 实测）：
      *   · Windows 的 .cmd 由文件关联执行，不需要权限位 —— 下载后双击即可；
      *   · macOS 的 .command 必须有执行位，而浏览器下载不保留权限，双击没反应。
-     *     所以 macOS 仍然给 .mjs + 一行 node 命令（不引入 Gatekeeper 的坑）。
+     *     所以 macOS 给的是 .sh + 一行 `bash`（不依赖执行位，也不引入 Gatekeeper 的坑）。
      */
     if (isWindows) {
       /*
@@ -789,18 +789,42 @@ function credentialHelperBlock(task, isWindows = false) {
       );
       items.push('<li><b>解压后双击里面的 .cmd</b>（首次可能弹一次系统确认，点「运行」）</li>');
     } else {
-      items.push(
-        `<li>下载脚本（里面已经带上你这个任务的配对信息）
-          <a class="btn-inline" data-watch-pair="${esc(task.id)}"
-            href="/api/tasks/${esc(task.id)}/grabber.mjs" download>下载 ${esc(h.download)}</a>
-        </li>`,
-      );
-      items.push(
-        `<li>在终端运行 <code>node ${esc(h.download)}</code>
-          <button type="button" class="btn-inline" data-action="copy-command"
-            data-cmd="node ${esc(h.download)}">复制命令</button>
-        </li>`,
-      );
+      /*
+       * macOS 给 .sh 而不是 .mjs：.sh 会自己找 Node.js，找不到就装一份便携版到
+       * ~/.weauto/node（不需要 sudo）。以前直接给 `node xxx.mjs`，没装 Node 的人
+       * 只会看到 `command not found: node`，然后就卡住了。
+       * 模板没声明启动器时才回落到「下载 .mjs + node 命令」的老路径。
+       */
+      if (h.launchScript) {
+        const runIt = `cd ~/Downloads && bash ${h.launchScript}`;
+        items.push(
+          `<li>下载启动器（里面已经带上你这个任务的配对信息）
+            <a class="btn-inline" data-watch-pair="${esc(task.id)}"
+              href="/api/tasks/${esc(task.id)}/grabber.sh" download>下载 ${esc(h.launchScript)}</a>
+            <span class="note">本机没有 Node.js 也能跑：它会自己装一份到 ~/.weauto/node
+              （约 50MB，不需要 sudo，不碰系统环境）</span>
+          </li>`,
+        );
+        items.push(
+          `<li>在终端运行 <code>${esc(runIt)}</code>
+            <button type="button" class="btn-inline" data-action="copy-command"
+              data-cmd="${esc(runIt)}">复制命令</button>
+          </li>`,
+        );
+      } else {
+        items.push(
+          `<li>下载脚本（里面已经带上你这个任务的配对信息）
+            <a class="btn-inline" data-watch-pair="${esc(task.id)}"
+              href="/api/tasks/${esc(task.id)}/grabber.mjs" download>下载 ${esc(h.download)}</a>
+          </li>`,
+        );
+        items.push(
+          `<li>在终端运行 <code>node ${esc(h.download)}</code>
+            <button type="button" class="btn-inline" data-action="copy-command"
+              data-cmd="node ${esc(h.download)}">复制命令</button>
+          </li>`,
+        );
+      }
     }
   } else if (h.command) {
     // 没有可下载脚本的模板：只能给一条命令，值由用户自己粘回下面的输入框

@@ -49,6 +49,7 @@ const HELPER_TASK = {
   displayName: '带取号指引的任务',
   credentialHelper: {
     download: 'grab-workbuddy-token.mjs',
+    launchScript: 'grab-workbuddy-token.sh',
     command: 'node grab-workbuddy-token.mjs',
     note: '需要 Node 18+',
   },
@@ -246,8 +247,8 @@ describe('凭据获取引导（模板声明才出现）', () => {
 
     // 标题用第一个 requires 字段拼出来，证明它读的是声明而不是写死的任务名
     assert.match(html, /怎么拿到 DEMO_TOKEN/);
-    // 下载的是「个性化」脚本（带配对信息），不是那个通用文件
-    assert.match(html, new RegExp(`/api/tasks/${row.id}/grabber\\.mjs`));
+    // 下载的是「个性化」启动器（带配对信息），不是那个通用文件
+    assert.match(html, new RegExp(`/api/tasks/${row.id}/grabber\\.sh`));
     assert.match(html, /data-watch-pair=/);
     assert.match(html, /需要 Node 18\+/);
   });
@@ -483,7 +484,53 @@ describe('凭据一键更新（脚本直接推送）', () => {
     assert.equal((await fetch(`${base}/api/tasks/${row.id}/grabber.zip`)).status, 401);
   });
 
-  it('页面按 UA 给不同的下载方式：Windows 给 zip 里的 .cmd，其它给 .mjs', async () => {
+  it('macOS 启动器：一个自举 Node 的 .sh，带服务器与令牌', async () => {
+    const { base, cookie, row } = await setup();
+    const res = await fetch(`${base}/api/tasks/${row.id}/grabber.sh`, { headers: { Cookie: cookie } });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /shellscript/);
+    assert.match(res.headers.get('content-disposition'), /update-workbuddy-token\.sh/);
+    assert.match(res.headers.get('cache-control'), /no-store/);
+
+    const text = await res.text();
+    // shell 脚本必须是 LF：CRLF 会让 bash 报 bad interpreter
+    assert.match(text, /^#!\/usr\/bin\/env bash\n/);
+    assert.doesNotMatch(text, /\r/);
+
+    assert.ok(text.includes(`SERVER="${base}"`), '服务器地址要写死进去');
+    assert.match(text, /PUSH_TOKEN="wt2_\d+_\d+_[A-Za-z0-9_-]+"/);
+    assert.match(text, /GRABBER="grab-workbuddy-token\.mjs"/);
+    // 锚点没被替换掉就等于发了一份没配对的文件出去
+    assert.doesNotMatch(text, /^SERVER=""$/m);
+    assert.doesNotMatch(text, /^PUSH_TOKEN=""$/m);
+  });
+
+  it('macOS 启动器也要登录才能下载', async () => {
+    const { base, row } = await setup();
+    assert.equal((await fetch(`${base}/api/tasks/${row.id}/grabber.sh`)).status, 401);
+  });
+
+  it('模板没声明 launchScript 时 .sh 返回 404，不去猜文件名', async () => {
+    const ctx = await startServer({
+      extraTasks: [
+        {
+          ...HELPER_TASK,
+          name: 'no-launcher',
+          credentialHelper: { download: 'grab-workbuddy-token.mjs' },
+        },
+      ],
+    });
+    const cookie = await login(ctx.base);
+    const row = ctx.store.forUser(USER_ID).createTask('no-launcher', { label: '没有启动器' });
+    const account = ctx.userSecrets.create(USER_ID, { groupName: 'no-launcher', label: '演示账号' });
+    ctx.store.forUser(USER_ID).updateTask(row.id, { credentialId: account.id });
+
+    const res = await fetch(`${ctx.base}/api/tasks/${row.id}/grabber.sh`, { headers: { Cookie: cookie } });
+    assert.equal(res.status, 404);
+    assert.match((await res.json()).error, /macOS 启动器/);
+  });
+
+  it('页面按 UA 给不同的下载方式：Windows 给 zip 里的 .cmd，macOS 给自举的 .sh', async () => {
     const { base, cookie, row } = await setup();
     const html = async (ua) =>
       (
@@ -497,8 +544,10 @@ describe('凭据一键更新（脚本直接推送）', () => {
     assert.match(win, /解压后双击/);
 
     const mac = await html('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
-    assert.match(mac, new RegExp(`/api/tasks/${row.id}/grabber\\.mjs`));
-    assert.match(mac, /node grab-workbuddy-token\.mjs/);
+    // macOS 给 .sh：它会自己准备 Node.js，没装的人不再撞 command not found
+    assert.match(mac, new RegExp(`/api/tasks/${row.id}/grabber\.sh`));
+    assert.match(mac, /bash grab-workbuddy-token\.sh/);
+    assert.match(mac, /~\/Downloads/);
     assert.doesNotMatch(mac, /grabber\.(cmd|zip)/);
   });
 

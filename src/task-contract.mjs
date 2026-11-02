@@ -112,6 +112,8 @@ function normalizeView(taskName, view) {
  * 真正的第二道闸在下载路由（只认模板声明过的名字），这里只是让非法声明在加载期就炸。
  */
 const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9-]*\.mjs$/;
+/** macOS 启动器：同一套命名规则，只是扩展名是 .sh */
+const LAUNCH_NAME_RE = /^[a-z0-9][a-z0-9-]*\.sh$/;
 
 /**
  * 凭据获取引导（可选）。
@@ -123,6 +125,7 @@ const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9-]*\.mjs$/;
  * 形态：
  *   credentialHelper: {
  *     download: 'grab-workbuddy-token.mjs',   // scripts/ 下的文件名，会渲染成下载链接
+ *     launchScript: 'grab-workbuddy-token.sh', // 可选，macOS 的启动器（自举运行时后调 download）
  *     command: 'node grab-workbuddy-token.mjs', // 可选，渲染成可一键复制的命令
  *     steps: ['token 会自动复制到剪贴板，粘到下面'], // 可选，补充文字步骤
  *     note: '需要 Node 18+；运行时会重启客户端约 10 秒。',
@@ -131,9 +134,9 @@ const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9-]*\.mjs$/;
 export function normalizeCredentialHelper(taskName, helper) {
   if (helper === undefined || helper === null) return null;
   if (typeof helper !== 'object' || Array.isArray(helper)) {
-    bad(`任务 ${taskName} 的 credentialHelper 必须是对象 { download, command, steps, note }`);
+    bad(`任务 ${taskName} 的 credentialHelper 必须是对象 { download, launchScript, command, steps, note }`);
   }
-  const allowed = ['download', 'command', 'steps', 'note'];
+  const allowed = ['download', 'launchScript', 'command', 'steps', 'note'];
   const extra = Object.keys(helper).filter((k) => !allowed.includes(k));
   if (extra.length) {
     bad(`任务 ${taskName} 的 credentialHelper 含未知字段：${extra.join(', ')}（允许 ${allowed.join(' / ')}）`);
@@ -142,6 +145,15 @@ export function normalizeCredentialHelper(taskName, helper) {
     bad(
       `任务 ${taskName} 的 credentialHelper.download 必须是 scripts/ 下的 .mjs 文件名` +
         `（小写字母/数字/连字符，如 grab-workbuddy-token.mjs），当前 ${JSON.stringify(helper.download)}`,
+    );
+  }
+  if (
+    helper.launchScript !== undefined &&
+    (typeof helper.launchScript !== 'string' || !LAUNCH_NAME_RE.test(helper.launchScript))
+  ) {
+    bad(
+      `任务 ${taskName} 的 credentialHelper.launchScript 必须是 scripts/ 下的 .sh 文件名` +
+        `（小写字母/数字/连字符），当前 ${JSON.stringify(helper.launchScript)}`,
     );
   }
   if (helper.command !== undefined && (typeof helper.command !== 'string' || !helper.command.trim())) {
@@ -160,6 +172,7 @@ export function normalizeCredentialHelper(taskName, helper) {
   }
   return {
     download: helper.download ?? null,
+    launchScript: helper.launchScript ?? null,
     command: helper.command?.trim() ?? null,
     steps: helper.steps ? [...helper.steps] : [],
     note: helper.note ?? null,
