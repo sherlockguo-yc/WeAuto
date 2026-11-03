@@ -33,10 +33,21 @@
  *         duration_hours, reward_credit }        —— 与前端映射函数 nt() 完全一致
  *   · config 返回 4 个地点，每项带 id / name / duration_hours_min|max / reward_credit_min|max
  *   · ★ 当天派过并领完之后，服务端给的是 `state=idle` + `daily_limit_reached=true`。
- *     所以「今天还能不能派」**只能看 daily_limit_reached**；用 state 判断会把
- *     「已领完、今天到顶」误读成「可以派」。（planFor 已按这条改过，有测试钉住）
- *   · depart / claim 的成功返回尚未验证：它们要消耗当天唯一一次机会，
- *     只能在自然日重置后测。模板暂时保持 internal，测完再开放。
+ *     用 state 判断会把「已领完、今天到顶」误读成「可以派」。（planFor 有测试钉住）
+ *
+ * 【2026-11-03 实测，真实派出（自然日重置后）】
+ *   · POST /travel/depart { location_id: 1 } 成功返回：
+ *       { state:"traveling", buddy_id, record_id,
+ *         location:{ id, code, name, duration_hours, cover_url },
+ *         depart_at, arrive_at, server_now, daily_limit_reached:false,
+ *         duration_hours:0, reward_credit:0 }
+ *     实际抽到 2 小时：11:54 出发 → 13:54 归来。
+ *   · 立刻再派一次：**HTTP 403 + code 403 + msg "already traveling"**
+ *     —— 这是重复派出的幂等信号（classifyError → 'traveling'）。
+ *   · ★ 派出成功后 `daily_limit_reached` **仍然是 false**。它表示「今日的派出机会
+ *     是否已经用尽/领完」，不表示「今天是否派过」。所以 planFor 必须同时看
+ *     state 与这个标志，单看任何一个都会出错（见函数注释）。
+ *   · claim 的成功返回仍未验证（要等 arrive_at 之后）。
  */
 import { readJson, request as defaultRequest } from '../src/http.mjs';
 import { timestampInTZ } from '../src/util.mjs';
@@ -90,10 +101,14 @@ export function parseTravel(raw) {
  * 两个动作互不排斥：可以先领再派（条款要求的顺序），也可以只做其中一个。
  *   · needClaim：state=arrived 才算「回了家」。traveling 但本地算着已过 arrive_at
  *     时也试一次 —— 服务端状态可能滞后几秒，claim 失败只是白跑一个请求。
- *   · canDepart：**唯一判据是今天的次数**（dailyLimitReached），不是当前状态。
- *     早派晚归的号在早上是 idle、晚上是 arrived，两种都还能派；中午派出的号
- *     下午回来会带着 dailyLimitReached=true，这时只能领。把「state=idle」当条件
- *     会让「昨天派出、今天归来」的账号永远派不出去。
+ *   · canDepart：两个条件缺一不可，**单看任何一个都会出错**：
+ *       ① state 必须是 idle 或 arrived —— 拦住「今天已经派出、还在路上」的重复调用
+ *          （实测：重复 depart 返回 403 already traveling）
+ *       ② dailyLimitReached 必须是 false —— 拦住「今天已派过且已领完」（实测：
+ *          2026-11-02 派完领完后是 idle + limit=true）
+ *     只看 ① 会把「已领完、今天到顶」误读成可派；只看 ② 更糟 ——
+ *     实测 depart 成功后 daily_limit_reached 仍然是 false，只看它就会在同一天
+ *     反复派人出门（第二次被服务端 403 挡下，但历史里会攒一堆 failed）。
  */
 export function planFor(s) {
   const arrivedByClock = s.state === TRAVELING && s.arriveAt > 0 && s.serverNow >= s.arriveAt;
