@@ -279,6 +279,7 @@ export default {
   displayName: '我的任务',
   requires: ['MY_TOKEN'],     // 解密后校验这些字段存在
   credentialGroup: 'my-site', // 账号归属的站点组：同组模板共用同一个账号（不写 = 模板名自成一组）
+  credentialGroupLabel: '我的站点', // 可选：账号页「站点」下拉的显示名（同组必须一致；不写 = 组名或模板名）
   accounts: false,            // 预留：多账号由「建多个账号 + 多个任务」表达，当前不做门禁
   visibility: 'public',       // 'internal' = 只有 admin 可见可启用
   schedule: { window: { start: '09:00', end: '09:50' } },

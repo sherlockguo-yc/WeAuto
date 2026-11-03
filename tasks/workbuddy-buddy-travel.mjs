@@ -222,6 +222,9 @@ export default {
   /** 与签到、活跃共用一把 token：填过一次，三个任务都能跑 */
   credentialGroup: 'workbuddy',
 
+  /** 与签到同站，站点名必须一致（registry 会校验） */
+  credentialGroupLabel: 'WorkBuddy',
+
   /** 与签到同窗；种子含任务名，所以两者落在窗口内不同时刻 */
   schedule: { window: { start: '09:00', end: '09:50' } },
 

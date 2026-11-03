@@ -51,6 +51,7 @@ export default {
   requires: ['V2FREE_EMAIL', 'V2FREE_PASSWORD'],  // 凭据字段；缺失时不执行并标「缺少凭据」
   accounts: false,                    // 预留：true = 按「账号」维度多次执行（见 §6）
   credentialGroup: 'workbuddy',       // 可选，默认等于 name。同组模板共用凭据（见 §3.4）
+  credentialGroupLabel: 'WorkBuddy',  // 可选。站点可读名（账号页「站点」下拉），同组须一致
 
   // ── 执行参数（UI 可覆盖，代码里是默认值）───────────────
   schedule: { window: { start: '09:00', end: '09:50' } },
@@ -151,8 +152,13 @@ v7 起凭据是**独立账号实体**，任务只引用它（决策与迁移见
 `docs/requirements/weauto-accounts.md`）：
 
 ```js
-credentialGroup: 'workbuddy'   // 可选；不写 = 自成一组（与旧行为一致）
+credentialGroup: 'workbuddy'        // 可选；不写 = 自成一组（与旧行为一致）
+credentialGroupLabel: 'WorkBuddy'   // 可选；站点可读名，同组必须一致
 ```
+
+`credentialGroup` 是机器名（小写、无空格），不适合直接显示；`credentialGroupLabel`
+是账号页「站点」下拉与账号分组标题上的名字。不写时的回退：多模板组用组名，
+单模板组用模板名（于是 v2free 会显示成「v2free 机场每日签到」，所以模板应当显式声明）。
 
 | 情况 | 行为 |
 |---|---|

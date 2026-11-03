@@ -122,6 +122,9 @@ export default {
    */
   credentialGroup: 'workbuddy',
 
+  /** 账号页「站点」下拉的显示名：组名是小写机器名，直接显示不像站点 */
+  credentialGroupLabel: 'WorkBuddy',
+
   /** 北京时间窗口；实际执行时刻由种子化随机决定，每天不同 */
   schedule: { window: { start: '09:00', end: '09:50' } },
 

@@ -733,7 +733,9 @@ function accountPicker(credential) {
   const accounts = credential?.accounts ?? [];
   const current = credential?.credentialId ?? null;
   return `<label class="field">
-    <span class="field-label">账号<code class="field-key">${esc(credential?.group ?? '')}</code></span>
+    <span class="field-label">账号<code class="field-key">${esc(
+      credential?.groupLabel ?? credential?.group ?? '',
+    )}</code></span>
     <select name="credentialId" data-action="pick-account">
       <option value="">— 还没选 —</option>
       ${accounts
@@ -1090,8 +1092,8 @@ export function pageCredentials({ groups = [], accounts = [], refs = new Map() }
     ? [...byGroup.entries()]
         .map(([group, items]) => {
           const g = groupOf.get(group);
-          // 多模板组用组名做标题，模板名放到下面一行：标题只回答「哪个站点」，
-          // 「哪几个任务共用它」是解释，不该抢标题的位置
+          // 标题只回答「哪个站点」（组 label：模板声明的站点名优先），
+          // 「哪几个任务共用它」是解释，放到下面一行，不该抢标题的位置
           const names = g?.names ?? [];
           const sub = names.length > 1
             ? `<p class="hint">${esc(names.join(' / '))} 共用这个账号</p>`

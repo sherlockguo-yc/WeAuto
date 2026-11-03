@@ -1130,7 +1130,13 @@ export function createServer({
     // 不写 credentialGroup = 自成一组（契约默认值）
     const group = task.credentialGroup ?? task.name;
     if (cur.groupName !== group) {
-      return { error: `这个账号属于「${cur.groupName}」，不能用在「${group}」的任务上` };
+      // 文案用站点可读名：「workbuddy」这种组名对用户没有意义
+      const labels = new Map(credentialGroups(visibleTasks(req)).map((g) => [g.group, g.label]));
+      return {
+        error:
+          `这个账号属于「${labels.get(cur.groupName) ?? cur.groupName}」，` +
+          `不能用在「${labels.get(group) ?? group}」的任务上`,
+      };
     }
     return { ok: true, id };
   }

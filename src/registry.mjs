@@ -45,6 +45,11 @@ export async function loadTasks() {
     }
     tasks.set(task.name, task);
   }
+  /*
+   * 主动跑一次聚合，让「同组站点名冲突」这类跨文件错误在加载期就炸：
+   * 留到页面渲染时才抛，看到的是 500，而不是「哪个任务文件的哪一行写错了」。
+   */
+  credentialGroups(tasks);
   return tasks;
 }
 
@@ -73,25 +78,43 @@ export function credentialGroups(tasks) {
     const group = task.credentialGroup ?? task.name;
     let g = map.get(group);
     if (!g) {
-      g = { group, label: '', names: [], fields: [], taskNames: [] };
+      g = { group, label: '', declared: null, declaredBy: null, names: [], fields: [], taskNames: [] };
       map.set(group, g);
     }
     g.taskNames.push(name);
     if (!g.names.includes(task.displayName)) g.names.push(task.displayName);
     for (const f of requires) if (!g.fields.includes(f)) g.fields.push(f);
+    /*
+     * 站点名必须组内一致：它是「一个站点」的名字，同一个组出现两个名字时
+     * 界面上显示哪个取决于文件加载顺序——那种不确定性不该留给运行时。
+     * 在加载期抛错，改一个字的成本远低于猜「为什么两个页面叫法不同」。
+     */
+    const declared = task.credentialGroupLabel ?? null;
+    if (declared) {
+      if (g.declared && g.declared !== declared) {
+        throw new Error(
+          `凭据组 ${group} 的站点名（credentialGroupLabel）不一致：` +
+            `任务 ${g.declaredBy} 写的是「${g.declared}」，任务 ${name} 写的是「${declared}」`,
+        );
+      }
+      g.declared = declared;
+      g.declaredBy = name;
+    }
   }
   const out = [];
   for (const g of map.values()) {
     out.push({
       group: g.group,
       /**
-       * 组的可读名。
-       * 单模板组用模板名（「v2free 机场每日签到」一眼就懂）；
-       * 多模板组用组名——把两个模板名拼起来会得到
-       * 「WorkBuddy 每日活跃（发起一次对话）/ WorkBuddy 每日签到领积分」这种标题，
-       * 桌面端撑满一行、手机端折成三行，反而看不出它是一个站点。
+       * 组的可读名，优先级：
+       *   1. 模板声明的 credentialGroupLabel —— 站点自己的名字
+       *      （「v2free 机场」：用户在这里填的是站点账号，不是某个任务的签到）；
+       *   2. 多模板组退回组名 —— 把两个模板名拼起来会得到
+       *      「WorkBuddy 每日活跃（发起一次对话）/ WorkBuddy 每日签到领积分」这种标题，
+       *      桌面端撑满一行、手机端折成三行，反而看不出它是一个站点；
+       *   3. 单模板组用模板名 —— 没有声明的旧模板至少还能认出是哪个任务。
        */
-      label: g.taskNames.length > 1 ? g.group : g.names[0],
+      label: g.declared ?? (g.taskNames.length > 1 ? g.group : g.names[0]),
       /** 组内模板名，界面用来解释「这几个任务共用同一个账号」 */
       names: g.names,
       fields: g.fields,

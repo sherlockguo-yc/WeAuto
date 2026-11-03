@@ -72,6 +72,57 @@ describe('credentialGroup 契约', () => {
   });
 });
 
+describe('credentialGroupLabel（站点可读名）', () => {
+  it('不声明时是 null：既有回退规则一律不变', () => {
+    assert.equal(mkTask('lonely').credentialGroupLabel, null);
+  });
+
+  it('首尾空格会被裁掉', () => {
+    assert.equal(
+      mkTask('a', { credentialGroupLabel: '  v2free 机场  ' }).credentialGroupLabel,
+      'v2free 机场',
+    );
+  });
+
+  it('空白、超长、含换行在加载期就报错', () => {
+    assert.throws(() => mkTask('a', { credentialGroupLabel: '   ' }), /credentialGroupLabel/);
+    assert.throws(() => mkTask('a', { credentialGroupLabel: 'x'.repeat(25) }), /credentialGroupLabel/);
+    assert.throws(() => mkTask('a', { credentialGroupLabel: 'a\nb' }), /控制字符/);
+  });
+
+  it('声明后覆盖默认回退：单模板组也不再显示模板名', () => {
+    const t = mkTask('v2free-checkin', {
+      credentialGroup: 'v2free',
+      credentialGroupLabel: 'v2free 机场',
+      requires: ['EMAIL'],
+    });
+    const g = credentialGroups(new Map([[t.name, t]])).find((x) => x.group === 'v2free');
+    assert.equal(g.label, 'v2free 机场');
+    // 模板名仍单独给出：账号页要说明「哪几个任务共用它」
+    assert.deepEqual(g.names, ['v2free-checkin']);
+  });
+
+  it('多模板组声明后用声明值，而不是组名', () => {
+    const tasks = new Map(
+      [
+        mkTask('wb-a', { credentialGroup: 'workbuddy', credentialGroupLabel: 'WorkBuddy' }),
+        mkTask('wb-b', { credentialGroup: 'workbuddy', credentialGroupLabel: 'WorkBuddy' }),
+      ].map((t) => [t.name, t]),
+    );
+    assert.equal(credentialGroups(tasks)[0].label, 'WorkBuddy');
+  });
+
+  it('同组站点名不一致时立刻抛错（界面不该取决于加载顺序）', () => {
+    const tasks = new Map(
+      [
+        mkTask('wb-a', { credentialGroup: 'workbuddy', credentialGroupLabel: 'WorkBuddy' }),
+        mkTask('wb-b', { credentialGroup: 'workbuddy', credentialGroupLabel: 'WB 积分站' }),
+      ].map((t) => [t.name, t]),
+    );
+    assert.throws(() => credentialGroups(tasks), /站点名（credentialGroupLabel）不一致/);
+  });
+});
+
 describe('credentialGroups（账号归属的唯一来源）', () => {
   const tasks = new Map(
     [

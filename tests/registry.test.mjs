@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { assertValidTask, getTask, loadTasks } from '../src/registry.mjs';
+import { assertValidTask, credentialGroups, getTask, loadTasks } from '../src/registry.mjs';
 import { hhmmToSeconds } from '../src/util.mjs';
 
 const base = { name: 'demo', run: async () => ({ status: 'success' }) };
@@ -97,5 +97,18 @@ describe('loadTasks / getTask（对真实 tasks/ 目录）', () => {
 
   it('getTask 对未知任务给出可用列表', async () => {
     await assert.rejects(() => getTask('no-such-task'), /未知任务[\s\S]*v2free-checkin/);
+  });
+
+  /*
+   * 站点的可读名必须来自模板声明，而不是模板名：
+   * 「站点」下拉下面填的是站点账号，显示「v2free 机场每日签到」会让人以为
+   * 这个账号只服务于签到任务。
+   */
+  it('站点可读名用模板声明的 credentialGroupLabel', async () => {
+    const groups = credentialGroups(await loadTasks());
+    const v2 = groups.find((g) => g.group === 'v2free');
+    assert.equal(v2.label, 'v2free 机场');
+    const wb = groups.find((g) => g.group === 'workbuddy');
+    assert.equal(wb.label, 'WorkBuddy');
   });
 });

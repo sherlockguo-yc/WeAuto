@@ -75,6 +75,14 @@ export const DEFAULT_RETENTION = Object.freeze({ days: 90, maxRows: 2000, logDay
 /** 任务名会进 URL 与数据库，必须限定字符集（与 WeMonitor 侧的白名单一致） */
 export const TASK_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+/**
+ * 站点可读名的最大长度。
+ *
+ * 「站点」是下拉框与分组标题的文案，宽度有限；24 个字符足够放下
+ * 「v2free 机场」这类名字，又能拦住把整段说明写进去的情况。
+ */
+export const MAX_GROUP_LABEL = 24;
+
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /* ─────────────────── 校验 ─────────────────── */
@@ -355,6 +363,29 @@ export function assertValidTask(task, file) {
       );
     }
   }
+  /*
+   * 站点的可读名（可选）。
+   *
+   * credentialGroup 是机器名（小写、无空格），直接显示会得到「workbuddy」这种
+   * 不像站点的字；而拿模板的 displayName 顶替又会得到「v2free 机场每日签到」——
+   * 用户在这个位置填的是**站点账号**，不是某个任务。
+   *
+   * 允许空格与中文（站点名本来就长这样），只挡会破坏界面的东西：
+   * 控制字符（含换行）和超长。空串视为没写，免得渲染出空标题。
+   */
+  if (task.credentialGroupLabel !== undefined) {
+    const label = task.credentialGroupLabel;
+    if (typeof label !== 'string' || !label.trim()) {
+      bad(`任务 ${task.name} 的 credentialGroupLabel 必须是非空字符串（如 v2free 机场）`);
+    }
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f]/.test(label)) {
+      bad(`任务 ${task.name} 的 credentialGroupLabel 不能含换行或控制字符`);
+    }
+    if (label.trim().length > MAX_GROUP_LABEL) {
+      bad(`任务 ${task.name} 的 credentialGroupLabel 超过 ${MAX_GROUP_LABEL} 个字符`);
+    }
+  }
   if (task.visibility !== undefined && !['public', 'internal'].includes(task.visibility)) {
     bad(`任务 ${task.name} 的 visibility 只能是 public / internal，当前是 ${task.visibility}`);
   }
@@ -405,6 +436,11 @@ export function normalizeTask(task, file) {
      * 不写 = 模板名自成一组。字段并集由 registry.credentialGroups 计算。
      */
     credentialGroup: task.credentialGroup ?? task.name,
+    /**
+     * 站点的可读名，界面上「站点」下拉与账号分组标题用它。
+     * 不写就由 registry.credentialGroups 兜底：多模板组用组名，单模板组用模板名。
+     */
+    credentialGroupLabel: task.credentialGroupLabel?.trim() ?? null,
     /** public：所有人可见可订阅；internal：只有 admin 看得见（自用模板、还在调试的模板） */
     visibility: task.visibility ?? 'public',
     timeoutMs: task.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -429,6 +465,7 @@ export function describeTask(task) {
     requires: task.requires,
     accounts: task.accounts,
     credentialGroup: task.credentialGroup ?? task.name,
+    credentialGroupLabel: task.credentialGroupLabel ?? null,
     timeoutMs: task.timeoutMs,
     retention: task.retention,
     schedule: task.schedule,
