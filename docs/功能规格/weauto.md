@@ -72,7 +72,7 @@ src/
   util.mjs                路径常量、dotenv 解析、时区计算
   auth/                   账号（users / password / token）
 tasks/                    模板：v2free-checkin.mjs、workbuddy-checkin.mjs、workbuddy-active.mjs、
-                          workbuddy-buddy-travel.mjs（internal，待实测后开放）
+                          workbuddy-buddy-travel.mjs（派 Buddy 旅行，与签到共用 token）
 scripts/                  probe.mjs、import-runs.mjs 等一次性脚本
 public/                   app.js（前端交互）、style.css
 tests/                    node:test，23 个文件（fixtures/ 放真实页面快照）
@@ -440,14 +440,6 @@ git push (main) → GitHub Actions → Release: weauto.tar.gz（只含源码，�
    所有"一键"能力都必须由**本机进程主动推送**（`POST /api/tools/push-token`），服务端只能等。
    这是架构边界，不是实现取舍。
 10. **macOS 做不到"下载即双击"**（实测见 §5.1）。要彻底不碰终端，只能装常驻定时任务。
-11. **`workbuddy-buddy-travel` 的写路径尚未实测**（`visibility: 'internal'`，只有 admin 能看到）。
-   只读部分 2026-11-02 已用真实 token 验证：`/activity` 与 `/v2/activity` 两个前缀都返回 200
-   （网关互为别名），只带 `Bearer` 就够，`status` / `config` 的字段与前端代码一致。
-   差的是 `depart` / `claim` 的成功返回——它们要消耗当天唯一一次派出机会，
-   只能在自然日重置后测。`scripts/probe-workbuddy-travel.mjs` 默认只读，
-   `--depart` / `--claim` 才真的写；验证通过后删掉模板里的 `visibility` 一行即可开放。
-   实测还确认了一条容易搞错的语义：**当天派过并领完后是 `state=idle` + `daily_limit_reached=true`**，
-   所以「还能不能派」只能看 `daily_limit_reached`，用 `state` 判断会误判。
 
 ### 11.1 为什么没有「网页点一个按钮就授权」（方案 B，已否决）
 

@@ -47,7 +47,21 @@
  *   · ★ 派出成功后 `daily_limit_reached` **仍然是 false**。它表示「今日的派出机会
  *     是否已经用尽/领完」，不表示「今天是否派过」。所以 planFor 必须同时看
  *     state 与这个标志，单看任何一个都会出错（见函数注释）。
- *   · claim 的成功返回仍未验证（要等 arrive_at 之后）。
+ *
+ * 【2026-11-03 14:18 实测，Buddy 归来后】
+ *   · 到达后、领取前：state 变 arrived，`daily_limit_reached` 也翻成 **true**
+ *     （出差途中是 false）。所以三个状态与标志的组合是：
+ *       idle + false      = 今天还没派 → 派
+ *       idle + true       = 今天派过且已领完 → 什么都不做
+ *       traveling + false = 在路上 → 等
+ *       arrived + false   = 昨天派的、今天回来 → 领完再派
+ *       arrived + true    = 今天派的、今天回来 → 只领不派
+ *   · POST /travel/claim {} 成功返回：
+ *       { state:"idle", record_id, letter:{ id, text, guide_text },
+ *         reward_credit:10, use_deeplink:"workbuddy://..." }
+ *     **返回里没有 daily_limit_reached** —— 这正是「领完要重查状态」的原因：
+ *     领奖会不会改写今日次数，这个响应里看不出来。
+ *   · 实测抽到 2 小时、10 积分（区间 5~10 的上限）。
  */
 import { readJson, request as defaultRequest } from '../src/http.mjs';
 import { timestampInTZ } from '../src/util.mjs';
@@ -204,13 +218,6 @@ export default {
   },
 
   accounts: false,
-
-  /**
-   * 先只给 admin 看：只读接口已于 2026-11-02 全部实测通过（见文件头），
-   * 但 depart / claim 的成功路径要消耗当天唯一一次机会，只能等自然日重置后验证。
-   * 测完删掉这一行即可对所有人开放。
-   */
-  visibility: 'internal',
 
   /** 与签到、活跃共用一把 token：填过一次，三个任务都能跑 */
   credentialGroup: 'workbuddy',
