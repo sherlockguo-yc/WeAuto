@@ -281,6 +281,11 @@ export default {
     let claimedSomething = false;
     let departNote = '';
     let alreadyReason = '';
+    /**
+     * 派出与否要先记下来：领取会改写服务端状态（`daily_limit_reached` 与 state 都可能变），
+     * 所以领完之后必须用一份**新的快照**再决定，而不是拿领奖前那份旧结论。
+     */
+    let canDepart = plan.canDepart;
 
     /* ── 2. 先领：条款要求「下次派出之前」领，所以顺序不能反 ── */
     if (plan.needClaim) {
@@ -306,13 +311,36 @@ export default {
         claimedSomething = true;
         data.credit = credit;
         data.state = TRAVEL_IDLE;
-        // 领取不重置每日次数：今天派过就还是派过，plan.canDepart 已在领取前算好
         log(`已领取 ${credit} 积分`);
+
+        /*
+         * 领取是**服务端的状态变更**，必须重查一次再决定派不派。
+         * 实测（2026-11-03）证明「今天派过」这件事根本不在 status 的每日字段里：
+         * 刚派出时 daily_limit_reached 还是 false。领奖之后它会不会翻成 true、
+         * 当天算不算已用完，只有服务端说了算 —— 拿领奖前的快照去派，
+         * 猜错的方向只有一个：重复调用换回一个 403 already traveling。
+         *
+         * 重查失败时保持原判断（乐观），因为真正派出那一步本身也有幂等保护。
+         */
+        if (canDepart) {
+          try {
+            const fresh = await api(request, token, STATUS_PATH);
+            if (!failureOf(fresh)) {
+              const s2 = parseTravel(fresh.json.data);
+              canDepart = planFor(s2).canDepart;
+              data.state = s2.state;
+              data.dailyLimitReached = s2.dailyLimitReached;
+              if (!canDepart) alreadyReason = '领取后今日次数已用完';
+            }
+          } catch {
+            log('⚠️ 领取后复查状态失败，按领奖前的判断继续');
+          }
+        }
       }
     }
 
-    /* ── 3. 再派：只在 idle 且今天还没派过时 ── */
-    if (plan.canDepart) {
+    /* ── 3. 再派：状态以「领完之后」的最新快照为准 ── */
+    if (canDepart) {
       let configRes;
       try {
         configRes = await api(request, token, CONFIG_PATH);

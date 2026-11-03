@@ -234,12 +234,21 @@ describe('run：正常路径', () => {
     );
   });
 
-  it('arrived → 先领再派，两个动作都记在结果里', async () => {
+  it('arrived → 先领、复查状态、再派', async () => {
+    let statusCalls = 0;
     const request = fakeRequest({
-      'travel/status': fakeResponse({
-        code: 0,
-        data: { state: 'arrived', arrive_at: 1_700_000_000, server_now: 1_700_000_500, daily_limit_reached: false },
-      }),
+      // 第一次：还没领；第二次：领完之后的重查
+      'travel/status': () => {
+        statusCalls += 1;
+        return fakeResponse(
+          statusCalls === 1
+            ? {
+                code: 0,
+                data: { state: 'arrived', arrive_at: 1_700_000_000, server_now: 1_700_000_500, daily_limit_reached: false },
+              }
+            : STATUS_IDLE,
+        );
+      },
       'travel/claim': fakeResponse({ code: 0, data: { reward_credit: 7, letter: null } }),
       'travel/config': fakeResponse(CONFIG),
       'travel/depart': fakeResponse({
@@ -252,11 +261,37 @@ describe('run：正常路径', () => {
     assert.equal(out.data.credit, 7);
     assert.equal(out.data.locationName, '巴黎');
     assert.match(out.message, /领取 7 积分/);
-    // 领取必须排在派出之前：条款规定「下次派出前未领视为放弃」
+    // 顺序：领取 → 复查（领取会改写服务端状态）→ 取地点 → 派出
     assert.deepEqual(
       request.calls.map((c) => c.key),
-      ['travel/status', 'travel/claim', 'travel/config', 'travel/depart'],
+      ['travel/status', 'travel/claim', 'travel/status', 'travel/config', 'travel/depart'],
     );
+  });
+
+  it('领取后复查发现今日次数已用完 → 只领不派', async () => {
+    let statusCalls = 0;
+    const request = fakeRequest({
+      'travel/status': () => {
+        statusCalls += 1;
+        return fakeResponse(
+          statusCalls === 1
+            ? {
+                code: 0,
+                data: { state: 'arrived', arrive_at: 1_700_000_000, server_now: 1_700_000_500, daily_limit_reached: false },
+              }
+            : // 领完之后服务端把今天的次数标成用尽
+              { code: 0, data: { state: 'idle', server_now: 1_700_000_600, daily_limit_reached: true } },
+        );
+      },
+      'travel/claim': fakeResponse({ code: 0, data: { reward_credit: 5 } }),
+      'travel/config': fakeResponse(CONFIG),
+      'travel/depart': fakeResponse({ code: 0, data: { state: 'traveling' } }),
+    });
+    const out = await task.run(ctx(request));
+    assert.equal(out.status, 'success');
+    assert.equal(out.data.credit, 5);
+    assert.ok(!request.calls.some((c) => c.key === 'travel/depart'), '不该在次数用尽后再派');
+    assert.match(out.message, /领取 5 积分/);
   });
 
   it('traveling 未到点 → already-signed，不发任何写请求', async () => {
