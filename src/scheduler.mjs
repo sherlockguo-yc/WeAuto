@@ -15,7 +15,7 @@
  * 调度器**不写「跳过」记录**：每 30 秒写一条「窗口已过」会瞬间淹掉执行历史。
  * 页面上的「今日未执行 / 已错过」由「计划 + 实际记录」推导，而不是靠冗余记录。
  */
-import { dateInTZ, hhmmToSeconds, secondsToHHMM, startOfDayBeijingMs } from './util.mjs';
+import { dateInTZ, hhmmToSeconds, secondsToHHMM, startOfDayBeijingMs, timestampInTZ } from './util.mjs';
 import { effectiveSchedule, targetSecondsOfDay } from './schedule.mjs';
 
 export const TICK_MS = 30_000;
@@ -81,6 +81,29 @@ export function planTask({
   accountKey = '',
   random = Math.random,
 }) {
+  /*
+   * 续跑优先于一切调度类型。
+   *
+   * 「派出 → 等它归来 → 领取」是一轮业务，但两次调用之间隔着 1~4 小时，
+   * 只能拆成两次 run。resume_at 就是这一轮的「下一半什么时候做」。
+   *
+   * 必须放在「今天已成功」之前判断：派出那一次就是今天的成功记录，
+   * 若先走 window 分支，续跑会被幂等直接挡掉（这正是改造前的行为——
+   * 奖励要等到第二天那次调度才顺手领走）。
+   */
+  const resumeAt = Number(state.resume_at) || 0;
+  if (resumeAt > 0) {
+    if (nowMs >= resumeAt) {
+      return { due: true, reason: '到点续跑（上一轮还没结束）', nextState: {}, resume: true };
+    }
+    return {
+      due: false,
+      reason: `等待续跑（${timestampInTZ(new Date(resumeAt)).slice(5, 16)}）`,
+      nextState: {},
+      waitingResume: resumeAt,
+    };
+  }
+
   const sch = task.schedule;
   if (!sch) {
     return { due: false, reason: '未声明调度，只能手动触发', nextState: {} };
@@ -316,14 +339,19 @@ export function createScheduler({
          * **只对 window 类生效**：every 的节奏本来由 next_due_ts 推进
          * （失败也照样等一个间隔），once 执行过就被 hasScheduledRun 拦住，
          * 两者都不存在「30 秒重打」，套上「3 次就停一天」反而会误伤。
+         *
+         * 续跑（resume）也不走这张表：它自己有时间点与次数上限，
+         * 套上「失败 3 次当天收手」会让一次网络抖动的领取彻底作废。
          */
-        if (task.schedule?.kind === 'window') {
+        if (task.schedule?.kind === 'window' && !plan.resume) {
           const gate = retryGate(mine.failuresOn(cfg.taskName, accountKey, today), nowMs);
           // 与「不写跳过记录」同一原则：不落库，页面上的状态由既有记录推导
           if (gate.blocked) continue;
         }
 
-        if (runNow(target, 'schedule')) started.push(`${cfg.taskName}:${accountKey}`);
+        if (runNow(target, plan.resume ? 'resume' : 'schedule')) {
+          started.push(`${cfg.taskName}:${accountKey}`);
+        }
       }
       return { started };
     } finally {

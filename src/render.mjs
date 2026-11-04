@@ -552,7 +552,24 @@ function credentialHint(task) {
   const broken = task.todayStatus === 'config-error' || task.lastRun?.status === 'config-error';
   if (!broken) return '';
   return `<div class="banner banner-bad">这个任务报了配置错误，通常是账号密码没填，
-    或者你在别处改过密码。<a href="#credentials">去填写或更新凭据</a></div>`;
+   或者你在别处改过密码。<a href="#credentials">去填写或更新凭据</a></div>`;
+}
+
+/** epoch 毫秒 → 北京时间「MM-DD HH:mm」 */
+function resumeLabel(ms) {
+  return new Date(ms + 8 * 36e5).toISOString().slice(5, 16).replace('T', ' ');
+}
+
+/**
+ * 「这一轮还没完」的提示。
+ *
+ * 必须显式写出来：派出那一次已经是 success 徽章，而奖励要等到它归来才领，
+ * 不加这句话用户会以为钱已经到手了，转头发现没有又会以为任务坏了。
+ */
+function resumeHint(task) {
+  if (!task.resume) return '';
+  return `<div class="banner">${esc(task.resume.note || '这一轮还没结束')}：
+    ${esc(resumeLabel(task.resume.atMs))} 会自动接着执行一次（不需要你手动点）</div>`;
 }
 
 /**
@@ -580,7 +597,7 @@ export function pageTaskDetail({
   /** 由 UA 判断：Windows 给可直接双击的 .cmd，其它平台给 .mjs + 一行命令 */
   isWindows = false,
 }) {
-  const hintHtml = credentialHint(task);
+  const hintHtml = credentialHint(task) + resumeHint(task);
   const result = view.rows.length
     ? `<dl class="kv">${view.rows
         .map(

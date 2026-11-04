@@ -133,6 +133,144 @@ describe('配额', () => {
   });
 });
 
+/**
+ * 续跑：一轮业务拆成两次 run（派出 → 几小时后回来领）。
+ *
+ * 钉住三件事：
+ *   · 结果写回**同一条**记录，历史里不该出现两条 success
+ *   · 续跑不被「今日已完成」挡住（派出那次就是今天的成功记录）
+ *   · 失败有上限地重排，不能靠续跑把进程拖到第二天
+ */
+describe('续跑', () => {
+  /** 造一个「第一次派出、续跑时领取」的任务 */
+  function travelTask(resumeAt, claimResult = { status: 'success', message: '已领取 10 积分' }) {
+    return {
+      ...task,
+      run: async (ctx) =>
+        ctx.trigger === 'resume'
+          ? claimResult
+          : { status: 'success', message: '已派出', resumeAt, resumeNote: '归来领取' },
+    };
+  }
+
+  it('任务返回 resumeAt → 写进调度状态，并指向这条记录', async () => {
+    const { store } = fresh();
+    const resumeAt = NOW + 2 * 3600_000;
+    const ex = createExecutor({ store, now: () => NOW });
+
+    const rec = await ex(travelTask(resumeAt), { trigger: 'schedule', userId: USER_ID });
+    const state = store.forUser(USER_ID).stateOf('t');
+    assert.equal(state.resume_at, resumeAt);
+    assert.equal(state.resume_note, '归来领取');
+    assert.equal(state.resume_run_id, rec.id);
+    assert.equal(state.resume_tries, 0);
+  });
+
+  it('续跑写回同一条记录，不新增行；成功后清空续跑', async () => {
+    const { store } = fresh();
+    const resumeAt = NOW + 2 * 3600_000;
+    let nowMs = NOW;
+    const ex = createExecutor({ store, now: () => nowMs });
+    const t = travelTask(resumeAt);
+
+    const first = await ex(t, { trigger: 'schedule', userId: USER_ID });
+    nowMs = resumeAt;
+    const second = await ex(t, { trigger: 'resume', userId: USER_ID });
+
+    assert.equal(second.id, first.id, '续跑必须写回原记录');
+    assert.equal(second.message, '已领取 10 积分');
+    assert.equal(second.dur, 2 * 3600_000, '耗时按整轮算，不是第二次请求的耗时');
+    assert.equal(store.forUser(USER_ID).runsOfTask('t', { limit: 10 }).length, 1);
+
+    const state = store.forUser(USER_ID).stateOf('t');
+    assert.equal(state.resume_at, null);
+    assert.equal(state.resume_run_id, null);
+  });
+
+  it('续跑不被「今日已完成」挡住（手动触发才有这条闸）', async () => {
+    const { store } = fresh();
+    const resumeAt = NOW + 3600_000;
+    let nowMs = NOW;
+    const ex = createExecutor({ store, now: () => nowMs });
+    const t = travelTask(resumeAt);
+
+    await ex(t, { trigger: 'schedule', userId: USER_ID });
+    // 同一天、已有 success 记录，仍然必须能续跑
+    nowMs = resumeAt;
+    const rec = await ex(t, { trigger: 'resume', userId: USER_ID });
+    assert.ok(rec);
+    assert.equal(rec.status, 'success');
+  });
+
+  it('续跑失败 → 排到 10 分钟后重试，达到上限后彻底清空', async () => {
+    const { store } = fresh();
+    const resumeAt = NOW + 3600_000;
+    let nowMs = NOW;
+    const ex = createExecutor({ store, now: () => nowMs, log: () => {} });
+    const t = travelTask(resumeAt, { status: 'network-error', message: 'socket hang up' });
+
+    await ex(t, { trigger: 'schedule', userId: USER_ID });
+
+    for (let i = 0; i < 3; i++) {
+      const state = store.forUser(USER_ID).stateOf('t');
+      assert.ok(state.resume_at, `第 ${i + 1} 次续跑前应仍有排期`);
+      nowMs = state.resume_at;
+      await ex(t, { trigger: 'resume', userId: USER_ID });
+    }
+
+    const state = store.forUser(USER_ID).stateOf('t');
+    assert.equal(state.resume_at, null, '超过次数上限就不再重排');
+    assert.equal(state.resume_tries, 0);
+  });
+
+  it('续跑失败但未达上限时，下一次排期是 10 分钟后', async () => {
+    const { store } = fresh();
+    const resumeAt = NOW + 3600_000;
+    let nowMs = NOW;
+    const ex = createExecutor({ store, now: () => nowMs, log: () => {} });
+    const t = travelTask(resumeAt, { status: 'network-error', message: 'boom' });
+
+    await ex(t, { trigger: 'schedule', userId: USER_ID });
+    nowMs = resumeAt;
+    await ex(t, { trigger: 'resume', userId: USER_ID });
+
+    const state = store.forUser(USER_ID).stateOf('t');
+    assert.equal(state.resume_at, nowMs + 10 * 60_000);
+    assert.equal(state.resume_tries, 1);
+  });
+
+  it('手动执行不会清掉已排好的续跑（点一下看看状态，不该毁掉几小时后的自动领取）', async () => {
+    const { store } = fresh();
+    const resumeAt = NOW + 2 * 3600_000;
+    const ex = createExecutor({ store, now: () => NOW });
+    const t = {
+      ...task,
+      run: async (ctx) =>
+        ctx.trigger === 'resume'
+          ? { status: 'success', message: '已领取' }
+          : { status: 'success', message: '已派出', resumeAt, resumeNote: '归来领取' },
+    };
+
+    await ex(t, { trigger: 'schedule', userId: USER_ID });
+    // 手动再跑一次，这次任务什么都没给（比如状态还是 traveling）
+    await ex(t, { trigger: 'manual', userId: USER_ID });
+
+    assert.equal(store.forUser(USER_ID).stateOf('t').resume_at, resumeAt);
+  });
+
+  it('任务给出的时间太近/太远都不认（防止把状态表当定时器用）', async () => {
+    for (const resumeAt of [NOW + 1000, NOW + 48 * 3600_000]) {
+      const { store } = fresh();
+      const ex = createExecutor({ store, now: () => NOW });
+      await ex(
+        { ...task, run: async () => ({ status: 'success', message: 'ok', resumeAt }) },
+        { trigger: 'manual', userId: USER_ID },
+      );
+      assert.equal(store.forUser(USER_ID).stateOf('t').resume_at ?? null, null);
+    }
+  });
+});
+
 describe('凭据', () => {
   it('没选账号时转成 CONFIG 状态，页面能提示去选账号', async () => {
     const { store, userSecrets } = fresh();

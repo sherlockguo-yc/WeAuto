@@ -189,7 +189,29 @@ describe('调度状态', () => {
       today_target_ts: 111,
       next_due_ts: null,
       last_run_id: r.id,
+      resume_at: null,
+      resume_note: null,
+      resume_run_id: null,
+      resume_tries: 0,
     });
+  });
+
+  it('续跑状态可以写入、局部更新、再清空（null 是有意义的值）', () => {
+    const store = fresh();
+    const r = run(store);
+
+    store.saveState('t', '', { resume_at: 123456, resume_note: '归来领取', resume_run_id: r.id });
+    assert.equal(store.stateOf('t').resume_at, 123456);
+    assert.equal(store.stateOf('t').resume_note, '归来领取');
+    assert.equal(store.stateOf('t').resume_run_id, r.id);
+
+    // 只改次数时不该把时间弄丢
+    store.saveState('t', '', { resume_tries: 1 });
+    assert.equal(store.stateOf('t').resume_at, 123456);
+
+    store.saveState('t', '', { resume_at: null, resume_note: null, resume_run_id: null, resume_tries: 0 });
+    assert.equal(store.stateOf('t').resume_at, null);
+    assert.equal(store.stateOf('t').resume_run_id, null);
   });
 
   it('last_run_id 必须指向真实记录（外键兜住脏数据）', () => {
@@ -205,6 +227,39 @@ describe('调度状态', () => {
 
     store.pruneTask('t', { days: 90, maxRows: 2000, logDays: 30 }, NOW);
     assert.equal(store.stateOf('t').last_run_id, null);
+  });
+});
+
+describe('改写执行记录（续跑用）', () => {
+  it('更新同一条记录，不新增行', () => {
+    const store = fresh();
+    const r = run(store, { status: 'success', message: '已派出' });
+
+    const updated = store.updateRun(r.id, { status: 'success', message: '已领取 10 积分', dur: 7200_000 });
+    assert.equal(updated.id, r.id);
+    assert.equal(updated.message, '已领取 10 积分');
+    assert.equal(updated.dur, 7200_000);
+    assert.equal(store.runsOfTask('t', { limit: 10 }).length, 1);
+  });
+
+  it('记录不存在（被保留策略删了）时返回 null，由调用方决定退回追加', () => {
+    const store = fresh();
+    assert.equal(store.updateRun(99999, { status: 'success' }), null);
+  });
+
+  it('不能改别人的记录', () => {
+    const root = freshRoot();
+    root.forUser(1).createTask('t');
+    root.forUser(2).createTask('t');
+    const mine = root.forUser(1).appendRun({
+      taskName: 't',
+      date: '2026-10-14',
+      ts: 1,
+      status: 'success',
+      message: 'one',
+    });
+    assert.equal(root.forUser(2).updateRun(mine.id, { status: 'failed' }), null);
+    assert.equal(root.forUser(1).getRun(mine.id).status, 'success');
   });
 });
 

@@ -57,9 +57,10 @@ export function summarizeTask({
 
   const today = dateInTZ(new Date(nowMs));
   const hasSuccessToday = store.hasSuccessOn(task.name, today, accountKey);
+  const state = store.stateOf(task.name, accountKey);
   const plan = planTask({
     task: effectiveTask,
-    state: store.stateOf(task.name, accountKey),
+    state,
     nowMs,
     hasSuccessToday,
     hasScheduledRun: schedule?.kind === 'once' ? store.hasScheduledRun(task.name, accountKey) : false,
@@ -125,6 +126,15 @@ export function summarizeTask({
           })
         : null,
     planReason: plan.reason,
+    /**
+     * 这一轮还没完：等 `atMs` 到点会自动再跑一次（派出后等归来领取）。
+     *
+     * 与 todayStatus 不冲突——派出那一次已经是「今日成功」，
+     * 页面要额外说明「奖励还没领」，否则用户看到一个 success 会以为已经落袋。
+     */
+    resume: state.resume_at
+      ? { atMs: state.resume_at, note: state.resume_note ?? '', tries: state.resume_tries ?? 0 }
+      : null,
     lastRun: lastRun ?? null,
     lastSuccess: lastSuccess ?? null,
   };

@@ -41,6 +41,42 @@ export function isSuccess(status) {
 
 export const ALL_STATUSES = Object.values(STATUS);
 
+/* ─────────────────── 续跑（resume） ─────────────────── */
+
+/**
+ * 有些任务是「一次执行、分两个时刻」的：派出后要等对方归来才能领奖，
+ * 而单次 run 的 timeoutMs 上限 30 分钟，不可能阻塞等 1~4 小时。
+ *
+ * 所以 `run()` 可以返回 `{ resumeAt, resumeNote }`：这一轮还没完，
+ * 到 `resumeAt`（epoch 毫秒）再调一次。框架把它持久化进 task_state，
+ * 到点后以 trigger='resume' 续跑，**并写回同一条执行记录**——
+ * 对用户来说仍然是「一次执行」，不是两次。
+ *
+ * 上限 24 小时是刻意的：超过一天就不是「等归来」而是「定时任务」了，
+ * 那应该用 schedule.every，而不是把状态表当调度器用。
+ */
+export const MIN_RESUME_DELAY_MS = 5_000;
+export const MAX_RESUME_DELAY_MS = 24 * 60 * 60_000;
+
+/**
+ * 校验任务返回的续跑请求。
+ *
+ * 非法值一律返回 null（框架忽略），而不是抛错：
+ * 算错一个时间戳不该让整次执行变成 failed，那时真正要紧的结果已经拿到了。
+ *
+ * @param {{resumeAt?: any, resumeNote?: any}} result run() 的返回值
+ * @param {number} nowMs 判定「太近 / 太远」的基准时刻
+ * @returns {{atMs: number, note: string} | null}
+ */
+export function normalizeResume(result, nowMs) {
+  const at = Number(result?.resumeAt);
+  if (!Number.isFinite(at) || at <= 0) return null;
+  const delay = at - nowMs;
+  if (delay < MIN_RESUME_DELAY_MS || delay > MAX_RESUME_DELAY_MS) return null;
+  const note = typeof result?.resumeNote === 'string' ? result.resumeNote.trim().slice(0, 80) : '';
+  return { atMs: Math.round(at), note };
+}
+
 /* ─────────────────── view（结果展示声明） ─────────────────── */
 
 /** 类型词表，保持小而可扩展 */

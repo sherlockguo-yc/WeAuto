@@ -371,6 +371,29 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 8,
+    description: '续跑：任务可以「隔一段时间再接着跑同一轮」（派出 → 归来领取）',
+    up(db) {
+      /*
+       * 场景：派 Buddy 出门 1~4 小时后才回来领奖，单次 run 不可能阻塞等这么久。
+       * 任务返回 resumeAt，框架把「什么时候再来」写在这里，到点自动续跑，
+       * 并把结果写回同一条 runs 记录（resume_run_id 指回去）。
+       *
+       * 存在 task_state 而不是新表：它和 next_due_ts 是同一类东西——
+       * 调度的中间状态，一个任务实例最多一条待续跑。
+       *
+       * resume_tries 只用于「续跑失败后有限重试」：任务自己排的续跑失败
+       * 往往是网络抖动，重排一次比直接放弃更划算；但不能无限重排。
+       */
+      db.exec(`
+        ALTER TABLE task_state ADD COLUMN resume_at INTEGER;
+        ALTER TABLE task_state ADD COLUMN resume_note TEXT;
+        ALTER TABLE task_state ADD COLUMN resume_run_id INTEGER;
+        ALTER TABLE task_state ADD COLUMN resume_tries INTEGER NOT NULL DEFAULT 0;
+      `);
+    },
+  },
 ];
 
 /** 用 meta 表记录 schema 版本（用户表之外的第一张表，永远存在） */

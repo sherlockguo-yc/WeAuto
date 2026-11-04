@@ -145,6 +145,63 @@ describe('planTask：没有调度声明', () => {
   });
 });
 
+/**
+ * 续跑 = 一轮业务拆两半：上午派出（今天已成功），几小时后回来领。
+ * 这一组用例钉住的是「不能等第二天」——改造前正是被「今日已完成」挡在门外。
+ */
+describe('planTask：续跑', () => {
+  const RESUME_AT = NOON + 2 * 3600_000;
+
+  it('未到续跑时刻 → 不执行，并说明在等', () => {
+    const p = planTask({ task: windowTask, nowMs: NOON, state: { resume_at: RESUME_AT } });
+    assert.equal(p.due, false);
+    assert.equal(p.waitingResume, RESUME_AT);
+    assert.match(p.reason, /等待续跑/);
+  });
+
+  it('到点 → due 且带 resume 标记（调度器据此用 trigger=resume）', () => {
+    const p = planTask({
+      task: windowTask,
+      nowMs: RESUME_AT,
+      state: { resume_at: RESUME_AT },
+    });
+    assert.equal(p.due, true);
+    assert.equal(p.resume, true);
+  });
+
+  it('优先于「今日已完成」：派出那次就是今天的成功记录', () => {
+    const p = planTask({
+      task: windowTask,
+      nowMs: RESUME_AT,
+      state: { resume_at: RESUME_AT },
+      hasSuccessToday: true,
+    });
+    assert.equal(p.due, true);
+    assert.equal(p.resume, true);
+  });
+
+  it('窗口已过也照样续跑（归来往往在窗口之后）', () => {
+    const p = planTask({
+      task: windowTask,
+      nowMs: atBeijing('20:00'),
+      state: { resume_at: NOON },
+    });
+    assert.equal(p.due, true);
+    assert.equal(p.resume, true);
+    assert.equal(p.missed ?? false, false);
+  });
+
+  it('没有调度声明的任务也能续跑（手动派出的一轮同样要收尾）', () => {
+    const p = planTask({
+      task: { name: 'm', schedule: null },
+      nowMs: RESUME_AT,
+      state: { resume_at: RESUME_AT },
+    });
+    assert.equal(p.due, true);
+    assert.equal(p.resume, true);
+  });
+});
+
 /* ─────────────────── 用真实 SQLite 验证调度循环 ─────────────────── */
 
 let dir;
@@ -233,6 +290,42 @@ describe('调度循环', () => {
     assert.deepEqual(second.started, []);
     await sch.waitForIdle();
     assert.equal(calls.length, 1);
+  });
+
+  it('续跑到点：以 trigger=resume 执行，不被「今日已完成」挡住', async () => {
+    const { store } = fresh();
+    const resumeAt = NOON + 2 * 3600_000;
+    const { execute, calls } = fakeExecute(store, { ts: resumeAt });
+    const tasks = new Map([[windowTask.name, windowTask]]);
+    const sch = createScheduler({ store, tasks, execute, now: () => resumeAt });
+
+    // 上午派出成功（今天已有 success），并排好了归来领取
+    store.forUser(USER_ID).appendRun({
+      taskName: 'w-task',
+      date: DAY,
+      ts: NOON,
+      status: 'success',
+      message: '已派出',
+    });
+    store.forUser(USER_ID).saveState('w-task', '', { resume_at: resumeAt });
+
+    const r = sch.tick();
+    assert.deepEqual(r.started, ['w-task:']);
+    await sch.waitForIdle();
+    assert.equal(calls[0].trigger, 'resume');
+  });
+
+  it('续跑未到点 → 不执行（不能每 30 秒打一次接口）', async () => {
+    const { store } = fresh();
+    const { execute, calls } = fakeExecute(store);
+    const tasks = new Map([[windowTask.name, windowTask]]);
+    const sch = createScheduler({ store, tasks, execute, now: () => NOON + 30 * 60_000 });
+
+    store.forUser(USER_ID).saveState('w-task', '', { resume_at: NOON + 2 * 3600_000 });
+    const r = sch.tick();
+    assert.deepEqual(r.started, []);
+    await sch.waitForIdle();
+    assert.equal(calls.length, 0);
   });
 
   it('执行期间再次 tick 不会并发跑同一个任务', async () => {

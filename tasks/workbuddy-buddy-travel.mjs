@@ -21,8 +21,12 @@
  *   · 回家后**必须在下一次派出之前**领取，逾期视为放弃
  *   · 每位用户每日可派 1 次，按自然日重置
  *
- * 「每天 1 次 + 必须先领再派」正好等于本框架的 window 调度（一天跑一次），
- * 所以不需要 every 轮询：一次执行里先领后派，顺序就是条款要求的顺序。
+ * 调度用 window（一天一次）而不是 every：不该为了等一只猫每 30 分钟打一次接口。
+ * 一轮完整业务因此拆成两次 run、但只算**一条执行记录**：
+ *   · 09:xx 出门 —— 派完立刻把 arrive_at 折算成 resumeAt 交给框架
+ *   · 11:xx 归来 —— 框架到点以 trigger='resume' 续跑，领奖结果写回同一条记录
+ * 续跑时先看 departedToday：当天派出去的那一趟，领完就结束，不再试派
+ * （当天名额已用）；跨天归来则领完可以接着派，顺序仍是条款要求的「先领后派」。
  *
  * 【2026-11-02 实测，真实 token，只读】
  *   · 前缀：/activity 与 /v2/activity **都返回 200**，网关互为别名，取网页端那个
@@ -64,7 +68,7 @@
  *   · 实测抽到 2 小时、10 积分（区间 5~10 的上限）。
  */
 import { readJson, request as defaultRequest } from '../src/http.mjs';
-import { timestampInTZ } from '../src/util.mjs';
+import { dateInTZ, timestampInTZ } from '../src/util.mjs';
 import { STATUS } from '../src/task-contract.mjs';
 // 与签到/活跃同一把 token，剩余天数判断复用同一份实现，避免三个任务各写一遍
 import { daysLeft, tokenExpiryMs, WARN_DAYS } from './workbuddy-checkin.mjs';
@@ -85,6 +89,9 @@ export const ARRIVED = 'arrived';
 
 /** 单次最多发 4 个请求；域名节流 1~3 秒一个，40s 留足跨境抖动 */
 const REQ_TIMEOUT_MS = 20_000;
+
+/** 到点续跑却拿到 "not arrived yet"（服务端状态滞后）时，隔多久再试 */
+const CLAIM_RETRY_MS = 10 * 60_000;
 
 /* ───────────────────── 纯函数（可测） ───────────────────── */
 
@@ -147,6 +154,32 @@ export function pickLocation(locations, random = Math.random) {
   return list[i];
 }
 
+/**
+ * 「什么时候回来领」——返回 epoch 毫秒，算不出来给 0。
+ *
+ * 用 arrive_at 与 server_now 的**差值**，而不是把 arrive_at 直接当绝对时间：
+ * 本机时钟可能漂移（N150 上曾漂 121 秒），差值不受本机时钟影响。
+ * 再加一段缓冲，因为 arrive_at 只精确到秒，而且状态落库有延迟
+ * （2026-11-03 实测：到点后立刻 claim 会拿到 "not arrived yet"）。
+ */
+export function resumeAtFor(snap, nowMs = Date.now(), bufferSec = 90) {
+  const remainingSec = Number(snap?.arriveAt) - Number(snap?.serverNow);
+  if (!Number.isFinite(remainingSec) || remainingSec <= 0) return 0;
+  return nowMs + remainingSec * 1000 + bufferSec * 1000;
+}
+
+/**
+ * 这次派出是不是「今天」的事。
+ *
+ * 只用来回答一个问题：续跑那一刻领完奖之后，还能不能再派一轮。
+ * 当天派出、当天归来 → 今天的名额已经用掉，领完就结束；
+ * 昨天派出、今天归来（跨天才回来，或服务停了一夜）→ 领完可以接着派。
+ */
+export function departedToday(snap, nowMs = Date.now()) {
+  if (!(snap?.departAt > 0)) return false;
+  return dateInTZ(new Date(snap.departAt * 1000)) === dateInTZ(new Date(nowMs));
+}
+
 /** 失败文案 → 归类。后端返回英文，大小写按前端一律 lower 处理 */
 export function classifyError(httpStatus, msg) {
   const m = String(msg ?? '').toLowerCase();
@@ -204,7 +237,7 @@ function failureOf(r) {
 export default {
   name: 'workbuddy-buddy-travel',
   displayName: 'WorkBuddy 派 Buddy 旅行',
-  description: '每天派出 Buddy 旅行（1~4 小时后归来），并领取上一次旅行的 5~10 积分',
+  description: '每天派 Buddy 出门旅行（1~4 小时），归来后自动领取 5~10 积分；一轮只留一条执行记录',
   group: '签到',
   tags: ['积分', '旅行', 'Buddy'],
   requires: ['WB_ACCESS_TOKEN'],
@@ -240,7 +273,7 @@ export default {
     { key: 'tokenDaysLeft', label: '凭据剩余天数', type: 'number' },
   ],
 
-  async run({ secrets, request = defaultRequest, log }) {
+  async run({ secrets, request = defaultRequest, log, trigger = 'schedule' }) {
     const token = secrets.WB_ACCESS_TOKEN;
     const expMs = tokenExpiryMs(token);
     const left = daysLeft(expMs);
@@ -279,6 +312,20 @@ export default {
     const plan = planFor(snap);
     log(`当前状态 ${snap.state}${snap.dailyLimitReached ? '（今日已派满）' : ''}`);
 
+    /**
+     * 这一轮的下半场：归来领取。
+     *
+     * 框架会在 resumeAt 到点后自动再跑一次（trigger='resume'），
+     * 并把结果写回同一条执行记录 —— 用户看到的仍是「一次执行」。
+     * 路上就先排好，不用等下一次每日调度（那是改造前的行为：
+     * 早上派出、中午回来，奖励要等到第二天早上才领）。
+     */
+    let resume = null;
+    if (snap.state === TRAVELING) {
+      const at = resumeAtFor(snap);
+      if (at) resume = { atMs: at, note: '归来领取' };
+    }
+
     const data = {
       state: snap.state,
       dailyLimitReached: snap.dailyLimitReached,
@@ -296,6 +343,13 @@ export default {
      * 所以领完之后必须用一份**新的快照**再决定，而不是拿领奖前那份旧结论。
      */
     let canDepart = plan.canDepart;
+    /*
+     * 续跑触发时，若这一趟是今天派出去的，今天的名额已经用掉：
+     * 领完就结束，别再去试一次 depart（服务端会给 403 already traveling，
+     * 白白多一个请求）。跨天归来（昨天派、今天回）仍然允许领完再派。
+     */
+    const serverNowMs = snap.serverNow > 0 ? snap.serverNow * 1000 : Date.now();
+    if (trigger === 'resume' && departedToday(snap, serverNowMs)) canDepart = false;
 
     /* ── 2. 先领：条款要求「下次派出之前」领，所以顺序不能反 ── */
     if (plan.needClaim) {
@@ -310,8 +364,15 @@ export default {
         return { status: STATUS.CONFIG, message: '凭据已失效（HTTP 401），请重新获取 WB_ACCESS_TOKEN', data };
       }
       if (claimFail?.kind === 'nothing-to-claim') {
-        // 服务端认为还没到/没有可领的：不是错误，继续走派出
-        log('暂无可领取的奖励（可能刚回来，状态还没落库）');
+        // 服务端认为还没到/没有可领的：不是错误
+        if (trigger === 'resume') {
+          // 我们按 arrive_at 来的，服务端说还没到 = 状态落库滞后，过一会儿再来
+          resume = { atMs: Date.now() + CLAIM_RETRY_MS, note: '等归来状态落库' };
+          log('服务端还没到可领取状态，10 分钟后再试');
+        } else {
+          // 非续跑路径：继续走派出，别把一次调度卡死在这里
+          log('暂无可领取的奖励（可能刚回来，状态还没落库）');
+        }
       } else if (claimFail) {
         // 领取失败不该拦住派出，但要如实记下来
         log(`⚠️ 领取失败：${claimFail.msg}`);
@@ -423,8 +484,21 @@ export default {
         data.dailyLimitReached = after.dailyLimitReached;
         departNote = `已派 ${data.locationName || 'Buddy'} 出门${data.arriveAtLabel ? `，预计 ${data.arriveAtLabel} 归来` : ''}`;
         log(departNote);
+
+        /* 出门成功 → 排好下半场：到点自动回来领，不需要再等一次每日调度 */
+        const back = resumeAtFor(after);
+        if (back) {
+          resume = { atMs: back, note: '归来领取' };
+          log(`到点会自动领取${data.arriveAtLabel ? `（${data.arriveAtLabel}）` : ''}`);
+        }
       }
     }
+
+    /*
+     * 领到了就是这一轮的正事办完了：除非又派了一趟新的出门，
+     * 否则不该再排续跑（否则会对着已领完的状态反复空跑）。
+     */
+    if (claimedSomething && !departNote) resume = null;
 
     /* ── 4. 组装结论 ── */
     const parts = [];
@@ -440,6 +514,12 @@ export default {
     const status = claimedSomething || departNote ? STATUS.SUCCESS : STATUS.ALREADY;
     const tail = Number.isFinite(left) && left <= WARN_DAYS ? `；凭据 ${left} 天后过期，请更新` : '';
 
-    return { status, message: `${parts.join('；')}${tail}`, data };
+    return {
+      status,
+      message: `${parts.join('；')}${tail}`,
+      data,
+      // 有下半场就交给框架：到点自动续跑一次，结果写回同一条记录
+      ...(resume ? { resumeAt: resume.atMs, resumeNote: resume.note } : {}),
+    };
   },
 };

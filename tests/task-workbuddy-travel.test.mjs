@@ -14,9 +14,11 @@ import { describe, it } from 'node:test';
 import {
   classifyError,
   clockText,
+  departedToday,
   parseTravel,
   pickLocation,
   planFor,
+  resumeAtFor,
 } from '../tasks/workbuddy-buddy-travel.mjs';
 import task from '../tasks/workbuddy-buddy-travel.mjs';
 
@@ -198,12 +200,46 @@ describe('clockText', () => {
   });
 });
 
+/* ───────────────────── 续跑时间 ───────────────────── */
+
+describe('resumeAtFor', () => {
+  it('用 arrive_at 与 server_now 的差值算，不受本机时钟影响', () => {
+    // 还剩 600 秒，缓冲 60 秒 → 本机时间 + 660 秒
+    assert.equal(resumeAtFor({ arriveAt: 1_000, serverNow: 400 }, 5_000, 60), 5_000 + 660_000);
+  });
+
+  it('已经到点 / 字段缺失 → 0（不给框架排一个过去的时间）', () => {
+    assert.equal(resumeAtFor({ arriveAt: 100, serverNow: 100 }), 0);
+    assert.equal(resumeAtFor({ arriveAt: 100, serverNow: 200 }), 0);
+    assert.equal(resumeAtFor({}), 0);
+  });
+});
+
+describe('departedToday', () => {
+  const at = (iso) => Date.parse(iso);
+
+  it('同一天派出 → true（领完就结束，今天名额已用）', () => {
+    const snap = { departAt: at('2026-11-04T09:30:00+08:00') / 1000 };
+    assert.equal(departedToday(snap, at('2026-11-04T12:00:00+08:00')), true);
+  });
+
+  it('昨天派出、今天归来 → false（领完可以接着派）', () => {
+    const snap = { departAt: at('2026-11-03T23:00:00+08:00') / 1000 };
+    assert.equal(departedToday(snap, at('2026-11-04T01:00:00+08:00')), false);
+  });
+
+  it('没有 depart_at → false（不猜）', () => {
+    assert.equal(departedToday({}, Date.now()), false);
+  });
+});
+
 /* ───────────────────── run 端到端 ───────────────────── */
 
-const ctx = (request) => ({
+const ctx = (request, trigger = 'schedule') => ({
   secrets: { WB_ACCESS_TOKEN: TOKEN },
   request,
   log: () => {},
+  trigger,
 });
 
 describe('run：正常路径', () => {
@@ -305,6 +341,100 @@ describe('run：正常路径', () => {
     assert.equal(out.status, 'already-signed');
     assert.match(out.message, /还在路上/);
     assert.deepEqual(request.calls.map((c) => c.key), ['travel/status']);
+  });
+});
+
+/**
+ * 续跑：一轮「派出 → 归来领」只有一条执行记录。
+ * 时间一律用服务端时间戳，避免测试依赖跑测试那台机器的时钟。
+ */
+describe('run：续跑', () => {
+  const DEPART_AT = 1_700_000_100; // 服务端秒级时间戳（2023-11-14 约 22:15 北京时间）
+
+  it('派出成功 → 交回 resumeAt（剩余时长 + 缓冲），并标为归来领取', async () => {
+    const request = fakeRequest({
+      'travel/status': fakeResponse(STATUS_IDLE),
+      'travel/config': fakeResponse(CONFIG),
+      'travel/depart': fakeResponse({
+        code: 0,
+        data: {
+          state: 'traveling',
+          location: { id: 11, name: '京都' },
+          depart_at: DEPART_AT,
+          arrive_at: DEPART_AT + 7200,
+          server_now: DEPART_AT,
+          daily_limit_reached: false,
+        },
+      }),
+    });
+    const before = Date.now();
+    const out = await task.run(ctx(request));
+
+    const expected = 7200 * 1000 + 90_000;
+    assert.ok(out.resumeAt >= before + expected, '不能早于理论归来时刻');
+    assert.ok(out.resumeAt <= Date.now() + expected + 2000, '也不该晚太多');
+    assert.equal(out.resumeNote, '归来领取');
+  });
+
+  it('已在路上（本次不是续跑）→ 也算好归来时刻，上线时在途的号能自愈', async () => {
+    const request = fakeRequest({
+      'travel/status': fakeResponse({
+        code: 0,
+        data: {
+          state: 'traveling',
+          depart_at: DEPART_AT,
+          arrive_at: DEPART_AT + 3600,
+          server_now: DEPART_AT + 600,
+          daily_limit_reached: true,
+        },
+      }),
+    });
+    const out = await task.run(ctx(request));
+    assert.equal(out.status, 'already-signed');
+    assert.ok(out.resumeAt > Date.now(), '必须排上下半场，否则要等到明天');
+  });
+
+  it('续跑触发且这趟是今天派的 → 只领不派（当天名额已用）', async () => {
+    const request = fakeRequest({
+      'travel/status': fakeResponse({
+        code: 0,
+        data: {
+          state: 'arrived',
+          // 服务端说 daily_limit 还没用尽，但 depart_at 是今天 → 仍然不该派
+          depart_at: DEPART_AT,
+          arrive_at: DEPART_AT + 3600,
+          server_now: DEPART_AT + 3700,
+          daily_limit_reached: false,
+        },
+      }),
+      'travel/claim': fakeResponse({ code: 0, data: { reward_credit: 8, letter: null } }),
+      'travel/config': fakeResponse(CONFIG),
+      'travel/depart': fakeResponse({ code: 0, data: { state: 'traveling' } }),
+    });
+    const out = await task.run(ctx(request, 'resume'));
+
+    assert.equal(out.data.credit, 8);
+    assert.ok(!request.calls.some((c) => c.key === 'travel/depart'), '当天已派出，不该再派');
+    assert.equal(out.resumeAt, undefined, '领完这一轮就结束了');
+  });
+
+  it('续跑触发但服务端说还没到 → 10 分钟后再试，而不是当成结束', async () => {
+    const request = fakeRequest({
+      'travel/status': fakeResponse({
+        code: 0,
+        data: {
+          state: 'traveling',
+          depart_at: DEPART_AT,
+          arrive_at: DEPART_AT + 3600,
+          server_now: DEPART_AT + 3660,
+          daily_limit_reached: true,
+        },
+      }),
+      'travel/claim': fakeResponse({ code: 40002, msg: 'not arrived yet' }, 400),
+    });
+    const out = await task.run(ctx(request, 'resume'));
+    assert.ok(out.resumeAt >= Date.now() + 9 * 60_000, '要在 10 分钟后重试');
+    assert.match(out.resumeNote, /状态落库/);
   });
 });
 

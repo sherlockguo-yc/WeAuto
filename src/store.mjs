@@ -169,6 +169,15 @@ export function createStore(db, { limits = {} } = {}) {
                @message, @data_json, @dur, @trigger)`,
     ),
     runById: db.prepare('SELECT * FROM runs WHERE id = ?'),
+    /**
+     * 续跑时改写同一条记录：一轮「派出 → 归来领取」在用户眼里是一件事，
+     * 追加第二条会让人以为任务跑了两次，也会把「今日成功数」算重。
+     * 只允许改结果字段，date / ts / trigger 保持首次执行时的值。
+     */
+    updateRunById: db.prepare(
+      `UPDATE runs SET status = @status, message = @message, data_json = @data_json, dur = @dur
+        WHERE id = @id AND user_id = @user_id`,
+    ),
     runsOfTask: db.prepare(
       'SELECT * FROM runs WHERE user_id = ? AND task_name = ? AND account_key = ? ORDER BY ts DESC LIMIT ?',
     ),
@@ -286,12 +295,17 @@ export function createStore(db, { limits = {} } = {}) {
     ),
     upsertState: db.prepare(
       `INSERT INTO task_state (user_id, task_name, account_key, today_date, today_target_ts,
-                               next_due_ts, last_run_id, updated_at)
+                               next_due_ts, last_run_id, resume_at, resume_note, resume_run_id,
+                               resume_tries, updated_at)
        VALUES (@user_id, @task_name, @account_key, @today_date, @today_target_ts,
-               @next_due_ts, @last_run_id, @updated_at)
+               @next_due_ts, @last_run_id, @resume_at, @resume_note, @resume_run_id,
+               @resume_tries, @updated_at)
        ON CONFLICT(user_id, task_name, account_key) DO UPDATE SET
          today_date = @today_date, today_target_ts = @today_target_ts,
-         next_due_ts = @next_due_ts, last_run_id = @last_run_id, updated_at = @updated_at`,
+         next_due_ts = @next_due_ts, last_run_id = @last_run_id,
+         resume_at = @resume_at, resume_note = @resume_note,
+         resume_run_id = @resume_run_id, resume_tries = @resume_tries,
+         updated_at = @updated_at`,
     ),
     deleteStatesOfUser: db.prepare('DELETE FROM task_state WHERE user_id = ?'),
 
@@ -451,6 +465,22 @@ export function createStore(db, { limits = {} } = {}) {
     }
 
     /**
+     * 改写一条已有执行记录（续跑用）。记录已被保留策略删掉时返回 null，
+     * 调用方应退回 appendRun —— 宁可多一条，也不能把结果丢掉。
+     */
+    function updateRun(id, { status, message = '', data = null, dur = 0 } = {}) {
+      const changed = s.updateRunById.run({
+        id,
+        user_id: userId,
+        status,
+        message,
+        data_json: data == null ? null : JSON.stringify(data),
+        dur,
+      }).changes;
+      return changed ? rowToRun(s.runById.get(id)) : null;
+    }
+
+    /**
      * 某个账号的历史；不传 accountKey 时返回该模板下全部账号的历史。
      *
      * `includeSkipped = true` 是历史默认（取到的就是最近 N 条，含 skipped）；
@@ -556,6 +586,10 @@ export function createStore(db, { limits = {} } = {}) {
             today_target_ts: row.today_target_ts,
             next_due_ts: row.next_due_ts,
             last_run_id: row.last_run_id,
+            resume_at: row.resume_at,
+            resume_note: row.resume_note,
+            resume_run_id: row.resume_run_id,
+            resume_tries: row.resume_tries ?? 0,
           }
         : {};
     }
@@ -571,6 +605,11 @@ export function createStore(db, { limits = {} } = {}) {
         today_target_ts: merged.today_target_ts ?? null,
         next_due_ts: merged.next_due_ts ?? null,
         last_run_id: merged.last_run_id ?? null,
+        // null 对这四个字段是有意义的值（= 没有待续跑），不能用 ?? 兜底
+        resume_at: merged.resume_at ?? null,
+        resume_note: merged.resume_note ?? null,
+        resume_run_id: merged.resume_run_id ?? null,
+        resume_tries: merged.resume_tries ?? 0,
         updated_at: Date.now(),
       });
       return stateOf(taskName, accountKey);
@@ -633,6 +672,7 @@ export function createStore(db, { limits = {} } = {}) {
       ensureConfig,
       configOfTask,
       appendRun,
+      updateRun,
       runsOfTask,
       runsOfTaskPage,
       recentRuns,
