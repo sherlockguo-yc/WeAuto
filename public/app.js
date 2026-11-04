@@ -427,12 +427,35 @@
    * 进度交给 onProgress：详情页写在 #action-hint 上，列表页写在按钮上——
    * 列表页一个任务一个按钮，用浮层提示会连着弹一串行 toast。
    */
+  /**
+   * 执行结果的状态用词。与 render.mjs 的徽章同一套口径，
+   * 只是这里要拼成一句话给 toast，所以单独放一份短的。
+   */
+  var RUN_STATUS_TEXT = {
+    success: '成功',
+    'already-signed': '今日已完成',
+    skipped: '已跳过',
+    failed: '失败',
+    blocked: '被拦截',
+    'network-error': '网络错误',
+    'config-error': '配置问题',
+  };
+
   async function waitForTask(id, onProgress) {
     for (var i = 0; i < 40; i++) {
       await sleep(2000);
-      var d = await api('GET', '/api/tasks/' + encodeURIComponent(id));
+      /*
+       * ?all=1 是必须的：被配额拒绝、被跳过这类记录默认不进 runs，
+       * 于是「点了执行但什么反应都没有」——用户只能对着旧状态猜。
+       * 执行结束一定有记录（成功失败都会落库），拿它作结果反馈。
+       */
+      var d = await api('GET', '/api/tasks/' + encodeURIComponent(id) + '?all=1');
       if (!d.running) {
-        location.reload();
+        var last = (d.runs && d.runs[0]) || null;
+        var msg = last
+          ? (RUN_STATUS_TEXT[last.status] || last.status) + '：' + last.message
+          : '执行结束';
+        reloadWithFeedback(msg);
         return;
       }
       onProgress('执行中…（' + ((i + 1) * 2) + 's）');
@@ -441,7 +464,7 @@
     // 刷新后页面仍显示「执行中」，他可以再等或再点。
     hint('仍在执行，即将刷新…');
     await sleep(1500);
-    location.reload();
+    reloadWithFeedback('仍在执行，刷新后可在执行历史里看结果');
   }
 
   /**

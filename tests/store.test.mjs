@@ -390,6 +390,27 @@ describe('资源上限（由装配层注入，本模块不读环境变量）', (
     assert.equal(store.countRunsToday('2026-10-14'), 1);
     assert.equal(store.countRunsToday('2026-10-15'), 1);
   });
+
+  /*
+   * 2026-11-04 的事故：v2free 一个任务自动失败 101 次，把用户当天的 100 次配额
+   * 吃光，同用户其他任务连手动执行都被拒（报「已达今日配额上限」），
+   * 而用户自己一次都没点过。自动失败已经有失败退避兜着，不该再占配额。
+   */
+  it('自动重试的失败不占配额', () => {
+    const store = fresh();
+    for (let i = 0; i < 20; i++) {
+      run(store, { date: '2026-10-14', ts: 100 + i, status: 'blocked', trigger: 'schedule' });
+    }
+    run(store, { date: '2026-10-14', ts: 1, status: 'success', trigger: 'schedule' });
+    assert.equal(store.countRunsToday('2026-10-14'), 1, '20 条自动失败之后配额只用了 1 次');
+  });
+
+  it('手动触发的失败照旧占配额（配额防的就是连点）', () => {
+    const store = fresh();
+    run(store, { date: '2026-10-14', ts: 1, status: 'failed', trigger: 'manual' });
+    run(store, { date: '2026-10-14', ts: 2, status: 'network-error', trigger: 'manual' });
+    assert.equal(store.countRunsToday('2026-10-14'), 2);
+  });
 });
 
 describe('保留策略：先聚合、再删明细', () => {

@@ -235,9 +235,22 @@ export function createStore(db, { limits = {} } = {}) {
     ),
     deleteRun: db.prepare('DELETE FROM runs WHERE id = ?'),
     deleteRunsOfUser: db.prepare('DELETE FROM runs WHERE user_id = ?'),
-    // 配额计数：skipped 不计入，它代表「没真的发出请求」
+    /*
+     * 配额计数：只算「真的想跑」的那些。
+     *
+     * skipped 不计入（它代表没真的发出请求）——这条一直有。
+     * 2026-11-04 补上后半截：**自动重试的失败也不计入配额**。
+     * 那天 v2free 一个任务失败 101 次，把用户当天 100 次配额吃光，
+     * 结果同一用户其他任务连手动执行都被拒，报「已达今日配额上限」——
+     * 用户自己一次都没点过，配额却没了。
+     *
+     * 自动失败已经有调度器的失败退避兜着（每任务每天最多 3 次），
+     * 不需要再用配额卡第二遍。手动触发照旧计入，那才是配额要防的「连点」。
+     */
     countRunsToday: db.prepare(
-      `SELECT COUNT(*) AS n FROM runs WHERE user_id = ? AND date = ? AND status <> 'skipped'`,
+      `SELECT COUNT(*) AS n FROM runs
+       WHERE user_id = ? AND date = ? AND status <> 'skipped'
+         AND (status IN (${inClause}) OR COALESCE(trigger, 'schedule') = 'manual')`,
     ),
     /** 配额超限的提示当天只记一次，否则每 30 秒一条 */
     countQuotaSkips: db.prepare(
@@ -628,7 +641,7 @@ export function createStore(db, { limits = {} } = {}) {
       hasScheduledRun,
       failuresOn,
       /** 今日已执行次数（配额用） */
-      countRunsToday: (date) => s.countRunsToday.get(userId, date).n,
+      countRunsToday: (date) => s.countRunsToday.get(userId, date, ...successList).n,
       /** 当天是否已记过一条「配额超限」（避免每轮 tick 都写） */
       countQuotaSkips: (date, taskName, accountKey = '') =>
         s.countQuotaSkips.get(userId, date, taskName, accountKey).n,
