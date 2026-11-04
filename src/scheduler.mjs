@@ -24,6 +24,42 @@ export const TICK_MS = 30_000;
 export const ONCE_GRACE_MS = 5 * 60_000;
 
 /**
+ * 失败退避：第 1、2 次失败之后分别等这么久再自动重试，第 3 次失败当天放弃。
+ *
+ * 为什么必须有：窗口只有 50 分钟，而 tick 是 30 秒一次。一个必失败的任务
+ * （站点改版、凭据失效）会在窗口内被打 100 次——2026-11-04 的 v2free 就是
+ * 101 条 blocked。除了白打目标站点，更要紧的是它把同用户其他任务挤掉了。
+ *
+ * 为什么不是「失败就当天放弃」：网络抖动与站点瞬时故障很常见，
+ * 一次失败就丢一整天太脆。10 分钟 + 20 分钟两档，50 分钟的窗口里
+ * 最多尝试 3 次，且都给得起。
+ */
+export const FAILURE_BACKOFF_MS = Object.freeze([10 * 60_000, 20 * 60_000]);
+/** 当天最多自动尝试次数（含首次）。超了就不再自动重试，手动触发不受限 */
+export const MAX_ATTEMPTS_PER_DAY = 3;
+
+/**
+ * 纯函数：这个任务现在该不该被自动重试。
+ *
+ * @param {{count: number, lastTs: number}} failures 当天已失败次数与最后一次失败时刻
+ * @param {number} nowMs
+ * @returns {{ blocked: boolean, reason?: string, waitMs?: number }}
+ */
+export function retryGate(failures, nowMs) {
+  const count = failures?.count ?? 0;
+  if (count === 0) return { blocked: false };
+  if (count >= MAX_ATTEMPTS_PER_DAY) {
+    return { blocked: true, reason: `今日已失败 ${count} 次，不再自动重试（可手动执行）` };
+  }
+  const waitMs = FAILURE_BACKOFF_MS[Math.min(count, FAILURE_BACKOFF_MS.length) - 1];
+  const elapsed = nowMs - (failures.lastTs ?? 0);
+  if (elapsed < waitMs) {
+    return { blocked: true, waitMs: waitMs - elapsed, reason: `失败退避中，还需 ${Math.ceil((waitMs - elapsed) / 60_000)} 分钟` };
+  }
+  return { blocked: false };
+}
+
+/**
  * 纯函数：判断某个任务此刻是否到期。不做任何 IO，因此可以完整测边界。
  *
  * @param {object} args
@@ -152,8 +188,6 @@ export function createScheduler({
 }) {
   /** key = `${configId}:${accountKey}` —— 同一个任务的两个账号互不影响 */
   const inFlight = new Map();
-  /** 同一用户最多一个在飞：不希望一个人把自己的两个账号同时打向同一个站点 */
-  const runningUsers = new Set();
   let timer = null;
   let ticking = false;
 
@@ -201,11 +235,19 @@ export function createScheduler({
     }
   }
 
-  /** 启动/手动触发的执行入口：处理互斥、并发闸门、异常兜底与状态回写 */
+  /**
+   * 启动/手动触发的执行入口：处理互斥、并发闸门、异常兜底与状态回写。
+   *
+   * 互斥只按「同一个任务实例」——不同任务之间互不阻塞。
+   * 以前这里还有一条「同一用户同时只跑一个任务」，本意是别把两个账号同时打向
+   * 同一个站点，实际效果是：一个必失败的任务每 30 秒重试一次，把同用户其他任务
+   * 在窗口内全部挤掉（2026-11-04：v2free 101 条 blocked，另外三个任务零记录）。
+   * 真正需要防的「同一站点并发」由 http.mjs 的域名节流兜底，它按 host 排队，
+   * 比按用户串行精确得多，也不会误伤不同站点的任务。
+   */
   function runNow({ cfg, task, accountKey, key }, trigger) {
     if (inFlight.has(key)) return null;
     if (inFlight.size >= maxConcurrent) return null;
-    if (runningUsers.has(cfg.userId)) return null;
 
     const mine = store.forUser(cfg.userId);
     const promise = (async () => {
@@ -224,12 +266,10 @@ export function createScheduler({
         return null;
       } finally {
         inFlight.delete(key);
-        runningUsers.delete(cfg.userId);
       }
     })();
 
     inFlight.set(key, promise);
-    runningUsers.add(cfg.userId);
     return promise;
   }
 
@@ -264,6 +304,24 @@ export function createScheduler({
           mine.saveState(cfg.taskName, accountKey, plan.nextState);
         }
         if (!plan.due) continue;
+
+        /*
+         * 失败退避：到期不等于该马上重试。
+         *
+         * 必失败的任务（站点改版、凭据失效）以前每 30 秒被重打一次，
+         * 50 分钟的窗口能打 100 次。现在失败后等 10 / 20 分钟，
+         * 第三次失败当天收手。放在 due 之后而不是 planTask 里，
+         * 是因为它要看 runs 表，而 planTask 是纯函数（不碰 IO）。
+         *
+         * **只对 window 类生效**：every 的节奏本来由 next_due_ts 推进
+         * （失败也照样等一个间隔），once 执行过就被 hasScheduledRun 拦住，
+         * 两者都不存在「30 秒重打」，套上「3 次就停一天」反而会误伤。
+         */
+        if (task.schedule?.kind === 'window') {
+          const gate = retryGate(mine.failuresOn(cfg.taskName, accountKey, today), nowMs);
+          // 与「不写跳过记录」同一原则：不落库，页面上的状态由既有记录推导
+          if (gate.blocked) continue;
+        }
 
         if (runNow(target, 'schedule')) started.push(`${cfg.taskName}:${accountKey}`);
       }

@@ -245,6 +245,19 @@ export function createStore(db, { limits = {} } = {}) {
        WHERE user_id = ? AND date = ? AND task_name = ? AND account_key = ?
          AND status = 'skipped' AND message LIKE '%配额%'`,
     ),
+    /*
+     * 当天这个任务失败了几次、最后一次是什么时候。
+     *
+     * 调度的失败退避靠它：失败任务以前每 30 秒重试一次，会把窗口内的
+     * 执行机会全占掉（2026-11-04 v2free 101 条 blocked，同用户另外三个任务零记录）。
+     * 次数与时间都从 runs 现算，不另存字段 —— 单一事实来源，
+     * 也不会出现「状态说重试了 2 次、历史里有 3 条」这种对不上的情况。
+     */
+    failuresOn: db.prepare(
+      `SELECT COUNT(*) AS n, COALESCE(MAX(ts), 0) AS last_ts FROM runs
+       WHERE user_id = ? AND task_name = ? AND account_key = ? AND date = ?
+         AND status IN ('failed', 'blocked', 'network-error', 'config-error')`,
+    ),
 
     /* ───────── 日志 ───────── */
     insertLog: db.prepare(
@@ -506,6 +519,15 @@ export function createStore(db, { limits = {} } = {}) {
       return s.scheduledCount.get(userId, taskName, accountKey).n > 0;
     }
 
+    /**
+     * 当天失败次数与最后一次失败时刻（毫秒）。调度器的失败退避读它。
+     * @returns {{ count: number, lastTs: number }}
+     */
+    function failuresOn(taskName, accountKey = '', date) {
+      const row = s.failuresOn.get(userId, taskName, accountKey, date);
+      return { count: row?.n ?? 0, lastTs: row?.last_ts ?? 0 };
+    }
+
     function appendLogs(runId, taskName, lines, ts = Date.now()) {
       const tx = db.transaction(() => {
         for (const line of lines) s.insertLog.run(runId, userId, taskName, ts, String(line));
@@ -604,6 +626,7 @@ export function createStore(db, { limits = {} } = {}) {
       lastSuccess,
       hasSuccessOn,
       hasScheduledRun,
+      failuresOn,
       /** 今日已执行次数（配额用） */
       countRunsToday: (date) => s.countRunsToday.get(userId, date).n,
       /** 当天是否已记过一条「配额超限」（避免每轮 tick 都写） */

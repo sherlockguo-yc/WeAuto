@@ -12,7 +12,14 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { openDb } from '../src/db.mjs';
 import { createStore } from '../src/store.mjs';
-import { ONCE_GRACE_MS, createScheduler, planTask } from '../src/scheduler.mjs';
+import {
+  FAILURE_BACKOFF_MS,
+  MAX_ATTEMPTS_PER_DAY,
+  ONCE_GRACE_MS,
+  createScheduler,
+  planTask,
+  retryGate,
+} from '../src/scheduler.mjs';
 import { targetSecondsOfDay } from '../src/schedule.mjs';
 import { dateInTZ, startOfDayBeijingMs } from '../src/util.mjs';
 
@@ -177,7 +184,7 @@ function fresh(subs = [windowTask.name, everyTask.name]) {
 }
 
 /** 假执行器：像真执行器那样自己落库，这样幂等才能被验证 */
-function fakeExecute(store, { status = 'success', delayMs = 0 } = {}) {
+function fakeExecute(store, { status = 'success', delayMs = 0, ts = NOON } = {}) {
   const calls = [];
   return {
     calls,
@@ -187,8 +194,8 @@ function fakeExecute(store, { status = 'success', delayMs = 0 } = {}) {
       return store.forUser(userId).appendRun({
         taskName: task.name,
         accountKey,
-        date: dateInTZ(new Date(NOON)),
-        ts: NOON,
+        date: dateInTZ(new Date(ts)),
+        ts,
         status,
         message: 'fake',
         trigger,
@@ -396,7 +403,14 @@ describe('调度循环', () => {
     assert.notEqual(calls[0].accountKey, extra.accountKey);
   });
 
-  it('同一用户串行：两个账号不会同时打出去', async () => {
+  /*
+   * 以前这里断言的是「同一用户串行：两个账号不会同时打出去」。
+   * 那条互斥在 2026-11-04 被删掉了：一个必失败的任务每 30 秒重试，
+   * 会把同用户其他任务在窗口内全部挤掉。防「同一站点并发」改由
+   * http.mjs 的域名节流负责（按 host 排队，比按用户串行精确）。
+   * 所以现在要断言的是相反的行为：两个实例各跑各的。
+   */
+  it('同一模板的两个实例同时到期时各跑各的，互不阻塞', async () => {
     const { store } = fresh();
     store.forUser(USER_ID).createTask('w-task', { label: '小号' });
 
@@ -404,13 +418,152 @@ describe('调度循环', () => {
     const sch = createScheduler({
       store,
       tasks: new Map([[windowTask.name, windowTask]]),
+      // 窗口末尾：保证两个实例的目标时刻都已过（种子不同，最晚也是 09:49:59）
+      now: () => atBeijing('09:49') + 59_000,
       execute,
-      now: () => windowTargetMs + 1000,
     });
 
     const r = sch.tick();
     await sch.waitForIdle();
-    assert.equal(r.started.length, 1, '同一时刻只启动一个，另一个留给下一轮');
+    assert.equal(r.started.length, 2, '两个实例都应启动');
+    assert.equal(calls.length, 2);
+  });
+});
+
+describe('retryGate：失败退避', () => {
+  it('没失败过 → 不拦', () => {
+    assert.equal(retryGate({ count: 0, lastTs: 0 }, NOON).blocked, false);
+  });
+
+  it('首次失败后，退避期内不重试', () => {
+    const g = retryGate({ count: 1, lastTs: NOON }, NOON + FAILURE_BACKOFF_MS[0] - 1);
+    assert.equal(g.blocked, true);
+    assert.ok(g.waitMs > 0);
+  });
+
+  it('退避时间一到就放行', () => {
+    assert.equal(retryGate({ count: 1, lastTs: NOON }, NOON + FAILURE_BACKOFF_MS[0]).blocked, false);
+  });
+
+  it('第二次失败后等更久（20 分钟），而不是又等 10 分钟', () => {
+    const justAfterFirst = retryGate({ count: 2, lastTs: NOON }, NOON + FAILURE_BACKOFF_MS[0] + 1000);
+    assert.equal(justAfterFirst.blocked, true);
+    assert.equal(
+      retryGate({ count: 2, lastTs: NOON }, NOON + FAILURE_BACKOFF_MS[1]).blocked,
+      false,
+    );
+  });
+
+  it('失败达到上限后当天彻底不再自动重试（多久都不行）', () => {
+    const g = retryGate({ count: MAX_ATTEMPTS_PER_DAY, lastTs: NOON }, NOON + 6 * 3600_000);
+    assert.equal(g.blocked, true);
+    assert.match(g.reason, /不再自动重试/);
+  });
+});
+
+describe('失败退避接入调度循环', () => {
+  it('刚失败过的任务，下一个 tick 不会立刻重打', async () => {
+    const { store } = fresh();
+    const nowMs = windowTargetMs + 1000;
+    const { execute, calls } = fakeExecute(store, { status: 'blocked', ts: nowMs });
+    const sch = createScheduler({
+      store,
+      tasks: new Map([[windowTask.name, windowTask]]),
+      execute,
+      now: () => nowMs,
+    });
+
+    sch.tick();
+    await sch.waitForIdle();
+    const second = sch.tick();
+    await sch.waitForIdle();
+    assert.deepEqual(second.started, [], '退避期内不该重试');
     assert.equal(calls.length, 1);
+  });
+
+  it('退避期过后会重试一次', async () => {
+    const { store } = fresh();
+    const startMs = windowTargetMs + 1000;
+    const { execute, calls } = fakeExecute(store, { status: 'blocked', ts: startMs });
+    let nowMs = startMs;
+    const sch = createScheduler({
+      store,
+      tasks: new Map([[windowTask.name, windowTask]]),
+      execute,
+      now: () => nowMs,
+    });
+
+    sch.tick();
+    await sch.waitForIdle();
+    nowMs = startMs + FAILURE_BACKOFF_MS[0];
+    sch.tick();
+    await sch.waitForIdle();
+    assert.equal(calls.length, 2, '退避结束后应重试');
+  });
+
+  it('失败达到上限后，窗口内再多的 tick 也不再执行', async () => {
+    const { store } = fresh();
+    const startMs = windowTargetMs + 1000;
+    const { execute, calls } = fakeExecute(store, { status: 'blocked', ts: startMs });
+    let nowMs = startMs;
+    const sch = createScheduler({
+      store,
+      tasks: new Map([[windowTask.name, windowTask]]),
+      execute,
+      now: () => nowMs,
+    });
+
+    // 每次失败后推进到退避结束，直到用完 3 次机会
+    for (let i = 0; i < MAX_ATTEMPTS_PER_DAY; i++) {
+      nowMs = startMs + i * FAILURE_BACKOFF_MS[FAILURE_BACKOFF_MS.length - 1];
+      sch.tick();
+      await sch.waitForIdle();
+    }
+    assert.equal(calls.length, MAX_ATTEMPTS_PER_DAY);
+
+    // 再推进 1 小时，仍不该执行
+    nowMs = startMs + 3600_000;
+    const r = sch.tick();
+    await sch.waitForIdle();
+    assert.deepEqual(r.started, []);
+    assert.equal(calls.length, MAX_ATTEMPTS_PER_DAY);
+  });
+
+  it('一个任务在失败退避中，同用户的另一个任务照常执行', async () => {
+    const otherTask = { name: 'w2-task', schedule: { kind: 'window', window: { start: '09:00', end: '09:50' } } };
+    const { store } = fresh([windowTask.name, otherTask.name]);
+    const nowMs = atBeijing('09:49') + 59_000;
+
+    const calls = [];
+    const execute = async (task, { trigger, userId = USER_ID, accountKey = '' }) => {
+      calls.push(task.name);
+      return store.forUser(userId).appendRun({
+        taskName: task.name,
+        accountKey,
+        date: dateInTZ(new Date(nowMs)),
+        ts: nowMs,
+        // 第一个任务必失败，第二个成功
+        status: task.name === windowTask.name ? 'blocked' : 'success',
+        message: 'fake',
+        trigger,
+      });
+    };
+
+    const sch = createScheduler({
+      store,
+      tasks: new Map([[windowTask.name, windowTask], [otherTask.name, otherTask]]),
+      execute,
+      now: () => nowMs,
+    });
+
+    const first = sch.tick();
+    await sch.waitForIdle();
+    assert.deepEqual(first.started.sort(), ['w-task:', 'w2-task:'], '两个任务都应启动');
+
+    // 第二轮：w-task 失败退避中跳过，w2-task 已成功也跳过 → 谁都不跑
+    const second = sch.tick();
+    await sch.waitForIdle();
+    assert.deepEqual(second.started, []);
+    assert.equal(calls.length, 2, '失败任务没有把另一个任务堵住');
   });
 });
