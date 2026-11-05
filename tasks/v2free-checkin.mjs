@@ -136,8 +136,131 @@ export function successMessage({ gain, remain } = {}) {
   return parts.length ? `签到成功，${parts.join('，')}` : '签到成功';
 }
 
+async function browserState(page, signal) {
+  signal.throwIfAborted();
+  try {
+    await page.waitForFunction(() =>
+      (location.pathname.startsWith('/user') && (document.querySelector('#checkin') || /今日已签到/.test(document.body.innerText))) ||
+      (location.pathname === '/auth/login' && document.querySelector('#login') && document.querySelector('#passwd')),
+    null, { timeout: 35_000 });
+  } catch {
+    signal.throwIfAborted();
+    return null;
+  }
+  signal.throwIfAborted();
+  return new URL(page.url()).pathname.startsWith('/user') ? 'user' : 'login';
+}
+
+async function browserJson(response) {
+  const headers = await response.allHeaders();
+  if (headers['cf-mitigated'] === 'challenge') return { challenge: true, httpStatus: response.status() };
+  let json;
+  try { json = await response.json(); } catch {}
+  return { json, httpStatus: response.status() };
+}
+
+function browserResponse(path) {
+  return (response) => {
+    const url = new URL(response.url());
+    return url.origin === BASE && url.pathname === path && response.request().method() === 'POST';
+  };
+}
+
+export async function runBrowser({ browser, secrets, signal, log }) {
+  const page = browser.page;
+  const blocked = (stage, httpStatus) => ({
+    status: 'blocked',
+    message: `${stage}遇到 Cloudflare 验证或页面未就绪，本轮停止`,
+    data: { transport: 'browser', stage, ...(httpStatus ? { httpStatus } : {}) },
+  });
+  let stage = '访问账户页';
+  try {
+    signal.throwIfAborted();
+    await page.goto(`${BASE}/user`, { waitUntil: 'domcontentloaded' });
+    let state = await browserState(page, signal);
+    if (!state) return blocked(stage);
+    if (state === 'login') {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        stage = '登录';
+        signal.throwIfAborted();
+        await page.locator('#email').fill(secrets.V2FREE_EMAIL);
+        await page.locator('#passwd').fill(secrets.V2FREE_PASSWORD);
+        signal.throwIfAborted();
+        const pending = page.waitForResponse(browserResponse('/auth/login'), { timeout: 30_000 });
+        pending.catch(() => {});
+        await page.locator('#login').click();
+        const response = await browserJson(await pending);
+        log(`浏览器登录响应 HTTP ${response.httpStatus}`);
+        if (response.challenge) {
+          if (attempt > 0) return blocked(stage, response.httpStatus);
+          signal.throwIfAborted();
+          await page.reload({ waitUntil: 'domcontentloaded' });
+          state = await browserState(page, signal);
+          if (!state) return blocked(stage, response.httpStatus);
+          if (state === 'user') break;
+          continue;
+        }
+        if (!response.json) return blocked(stage, response.httpStatus);
+        if (response.json.ret !== 1) return { status: 'failed', message: '浏览器登录未成功，请检查账号或站点提示', data: { transport: 'browser' } };
+        stage = '等待登录跳转';
+        await page.waitForURL(`${BASE}/user**`, { waitUntil: 'domcontentloaded', timeout: 35_000 });
+        if (await browserState(page, signal) !== 'user') return blocked(stage);
+        break;
+      }
+      log('浏览器登录成功');
+    } else {
+      log('浏览器登录态有效');
+    }
+    signal.throwIfAborted();
+    const beforeHtml = await page.content();
+    const info = parseSessionData(beforeHtml);
+    const lastCheckin = parseLastCheckin(beforeHtml);
+    if (hasSignedToday(beforeHtml)) return {
+      status: 'already-signed', message: `今日已签到（上次签到 ${lastCheckin ?? '未知'}），未重复请求签到接口`,
+      data: { ...info, lastCheckin, transport: 'browser' },
+    };
+    stage = '签到';
+    signal.throwIfAborted();
+    const pending = page.waitForResponse(browserResponse('/user/checkin'), { timeout: 30_000 });
+    pending.catch(() => {});
+    await page.locator('#checkin').click();
+    const response = await browserJson(await pending);
+    log(`浏览器签到响应 HTTP ${response.httpStatus}`);
+    if (response.challenge || !response.json) return blocked(stage, response.httpStatus);
+    const json = response.json;
+    if (json.ret !== 1) return {
+      status: /已经签到|已签到/.test(json.msg ?? '') ? 'already-signed' : 'failed',
+      message: /已经签到|已签到/.test(json.msg ?? '') ? '今日已签到' : '签到未成功，本轮不重试',
+      data: { ...info, lastCheckin, transport: 'browser' },
+    };
+    const fromCheckin = remainFromCheckin(json);
+    let latest = info;
+    let lastAfter = null;
+    try {
+      signal.throwIfAborted();
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      if (await browserState(page, signal) === 'user') {
+        const html = await page.content();
+        latest = parseSessionData(html) ?? info;
+        lastAfter = parseLastCheckin(html);
+      }
+    } catch {}
+    const remain = fromCheckin ?? latest?.remainTraffic;
+    const gain = gainedTraffic({ msg: json.msg, before: info?.remainTraffic, after: latest?.remainTraffic });
+    return {
+      status: 'success', message: successMessage({ gain, remain }),
+      data: { ...latest, ...(remain != null ? { remainTraffic: remain } : {}),
+        ...(gain ? { gainedTraffic: gain } : {}), lastCheckin: lastAfter ?? lastCheckin, transport: 'browser' },
+    };
+  } catch {
+    return signal.aborted ? { status: 'network-error', message: '浏览器任务已取消' } :
+      { status: 'network-error', message: `${stage}浏览器操作失败，未自动重试`, data: { transport: 'browser', stage } };
+  }
+}
+
 export default {
   name: 'v2free-checkin',
+  browser: true,
   displayName: 'v2free 机场每日签到',
   description: '登录 v2free 领取当日免费流量',
   group: '签到',
@@ -194,7 +317,8 @@ export default {
    * request 由执行器注入（绑定到本账号的 UA），默认值只为「直接调 task.run」的场景兜底。
    * 不要在这里 import 模块级 request 来用——那样多个账号会共用同一个 UA。
    */
-  async run({ secrets, log, request = defaultRequest }) {
+  async run({ secrets, log, request = defaultRequest, browser, signal }) {
+    if (browser) return runBrowser({ secrets, log, browser, signal });
     const jar = new CookieJar();
 
     /* ── 1. 登录 ── */

@@ -357,6 +357,18 @@ export default {
 
 **调度算法**：`seed = sha256(taskName:date)`，目标时刻落在窗口内，每天不同。
 
+### 8.1 v2free 浏览器单次验证
+
+`bin/weauto-browser-checkin.mjs` 是应用级验证入口，不启动调度器，不初始化/迁移数据库。调用时指定 `--user`、`--account`、`--profile-dir`；CDP 默认为 `http://127.0.0.1:19222`，只接受回环 HTTP 地址。外部已启动的正常 Chrome 必须使用这个独立 profile，禁止指向日常浏览器。
+
+入口唯一解析用户、凭据组/标签和任务引用，拒绝同名或多任务绑定歧义；然后通过原 `createExecutor` → `secretsLoaderFor` 在应用内部加载凭据并运行。执行预算 180 秒，状态和日志写入已有任务历史。profile 下保存 `.weauto-binding.json`（用户/凭据 ID/组）与执行互斥锁；绑定其他账号的 profile 不可复用。
+
+`src/browser.mjs` 只向任务提供本次拥有的页面，关闭页面不会关闭用户的其他标签页。执行超时/结束发送 `ctx.signal`；晚到的浏览器租约也先清理再结束。原 HTTP 任务暂未接入该取消信号。执行结果和日志会按加载的凭据值脱敏，浏览器任务不记录 Cookie、完整 HTML、trace/HAR 或原始异常。
+
+v2free 先访问账户页，失效则自动填写并提交登录；登录 AJAX 收到明确挑战时允许一次正常刷新、等待浏览器自然验证后再次登录，仍失败返回 `blocked`。跳转只等待 DOM 就绪，不等待外部字体等资源。今日已签不请求；未签到只点击一次并以接口 `ret:1` 确认，回读账户页补齐签到时间，`data.transport = 'browser'`。
+
+**现阶段仅提供显式单次验证**：常驻服务和旧 CLI 未装配 browser provider，生产每日任务仍走原 HTTP 路径。profile 不保证登录态或 Cloudflare 验证跨天有效；长期浏览器健康管理、每日接入和人工验证恢复需另行完成。
+
 ---
 
 ## 9. 页面与接口

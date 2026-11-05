@@ -29,12 +29,28 @@ export const MAX_LOG_LINE_LEN = 2000;
 export const RESUME_RETRY_MS = 10 * 60_000;
 export const MAX_RESUME_TRIES = 3;
 
-function withTimeout(promise, ms, label) {
+function withTimeout(promise, ms, label, controller) {
   let timer;
   const guard = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} 超时（${Math.round(ms / 1000)}s）`)), ms);
+    timer = setTimeout(() => {
+      const error = new Error(`${label} 超时（${Math.round(ms / 1000)}s）`);
+      reject(error);
+      controller.abort(error);
+    }, ms);
   });
   return Promise.race([promise, guard]).finally(() => clearTimeout(timer));
+}
+
+function redact(value, secrets) {
+  const hidden = [...new Set(Object.values(secrets).filter((v) => typeof v === 'string' && v)
+    .flatMap((v) => [v, encodeURIComponent(v)]))].sort((a, b) => b.length - a.length);
+  const visit = (item) => {
+    if (typeof item === 'string') return hidden.reduce((text, secret) => text.split(secret).join('[redacted]'), item);
+    if (Array.isArray(item)) return item.map(visit);
+    if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item).map(([k, v]) => [k, visit(v)]));
+    return item;
+  };
+  return visit(value);
 }
 
 /**
@@ -64,6 +80,7 @@ function userStore(store, userId) {
 export function createExecutor({
   store,
   secretsLoader = ({ requires }) => loadSecrets(requires),
+  browserProvider = null,
   quotaPerDay = 0,
   now = () => Date.now(),
   log = () => {},
@@ -115,12 +132,14 @@ export function createExecutor({
     }
 
     const lines = [];
+    const controller = new AbortController();
     const record = (msg) => {
-      if (lines.length < MAX_LOG_LINES) lines.push(String(msg).slice(0, MAX_LOG_LINE_LEN));
+      if (!controller.signal.aborted && lines.length < MAX_LOG_LINES) lines.push(String(msg).slice(0, MAX_LOG_LINE_LEN));
     };
 
     const ctx = {
       secrets: {},
+      signal: controller.signal,
       /**
        * 这次是哪种触发：'schedule' 常规调度 / 'manual' 手动 / 'resume' 续跑。
        * 任务可以用它区分「第一次派出」和「回来领取」，不必自己去猜。
@@ -143,21 +162,41 @@ export function createExecutor({
     };
 
     let result;
+    let lease;
+    let acquiring;
     try {
       ctx.secrets = task.requires.length
-        ? secretsLoader({ userId, taskName: task.name, credentialId, requires: task.requires })
+        ? await secretsLoader({ userId, taskName: task.name, credentialId, requires: task.requires })
         : {};
+      const identity = { userId, credentialId, groupName: task.credentialGroup ?? task.name };
+      const useBrowser = task.browser === true && browserProvider?.matches(identity);
       record(
         `开始执行 ${task.displayName}（${trigger === 'manual' ? '手动' : trigger === 'resume' ? '续跑' : '调度'}）`,
       );
-      result = await withTimeout(task.run(ctx), task.timeoutMs, task.name);
+      const run = async () => {
+        if (useBrowser) {
+          acquiring = browserProvider.acquire({ ...identity, signal: ctx.signal });
+          lease = await acquiring;
+          ctx.signal.throwIfAborted();
+          ctx.browser = { page: lease.page };
+        }
+        return task.run(ctx);
+      };
+      result = await withTimeout(run(), task.timeoutMs, task.name, controller);
     } catch (err) {
-      // 凭据问题与网络问题分开记：界面上的处置方式完全不同
-      result =
-        err instanceof SecretsError
-          ? { status: STATUS.CONFIG, message: err.message }
-          : { status: STATUS.NETWORK, message: err.message };
+      result = {
+        status: err instanceof SecretsError ? STATUS.CONFIG :
+          [STATUS.CONFIG, STATUS.BLOCKED].includes(err.status) ? err.status : STATUS.NETWORK,
+        message: err.message,
+      };
+    } finally {
+      controller.abort();
+      if (acquiring && !lease) await acquiring.catch(() => {});
+      if (lease) await lease.release();
     }
+    result = redact(result, ctx.secrets);
+    const safeLines = redact(lines, ctx.secrets);
+    ctx.secrets = {};
 
     const nowMs = now();
     const saved = saveRun({
@@ -171,7 +210,7 @@ export function createExecutor({
       resumeRunId,
       result,
     });
-    if (lines.length) mine.appendLogs(saved.id, task.name, lines, startedAt);
+    if (safeLines.length) mine.appendLogs(saved.id, task.name, safeLines, startedAt);
 
     trackResume({ mine, task, accountKey, result, isResume, prevState, saved, nowMs, log });
 

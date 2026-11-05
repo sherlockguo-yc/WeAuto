@@ -351,3 +351,74 @@ describe('凭据', () => {
     assert.equal(rec.status, 'config-error');
   });
 });
+
+describe('浏览器能力', () => {
+  it('凭据由原加载器提供，浏览器只绑定本次账号且运行后释放', async () => {
+    const { store, userSecrets } = fresh();
+    const account = userSecrets.create(USER_ID, { groupName: 't', label: 'A', fields: { TOKEN: 'private-token' } });
+    let released = 0;
+    let identity;
+    const page = {};
+    const provider = {
+      matches: () => true,
+      acquire: async (args) => { identity = args; return { page, release: async () => { released++; } }; },
+    };
+    const ex = createExecutor({ store, secretsLoader: secretsLoaderFor(userSecrets), browserProvider: provider, now: () => NOW });
+    const run = await ex({ ...task, browser: true, requires: ['TOKEN'], run: async (ctx) => {
+      assert.equal(ctx.secrets.TOKEN, 'private-token');
+      assert.equal(ctx.browser.page, page);
+      ctx.log(`debug ${ctx.secrets.TOKEN}`);
+      return { status: 'success', message: ctx.secrets.TOKEN, data: { nested: [ctx.secrets.TOKEN] } };
+    } }, { trigger: 'manual', userId: USER_ID, credentialId: account.id });
+    assert.equal(identity.userId, USER_ID);
+    assert.equal(identity.credentialId, account.id);
+    assert.equal(identity.groupName, 't');
+    assert.equal(released, 1);
+    assert.equal(run.message, '[redacted]');
+    assert.deepEqual(run.data, { nested: ['[redacted]'] });
+    assert.ok(!JSON.stringify(store.forUser(USER_ID).logsOfRun(run.id)).includes('private-token'));
+    assert.ok(identity.signal.aborted);
+  });
+
+  it('超时会取消浏览器并释放本次租约', async () => {
+    const { store } = fresh();
+    let signal;
+    let released = 0;
+    const ex = createExecutor({ store, browserProvider: { matches: () => true, acquire: async (args) => {
+      signal = args.signal;
+      return { page: {}, release: async () => { released++; } };
+    } }, now: () => NOW });
+    const run = await ex({ ...task, browser: true, timeoutMs: 10, run: () => new Promise(() => {}) }, { userId: USER_ID, trigger: 'manual' });
+    assert.equal(run.status, 'network-error');
+    assert.match(run.message, /超时/);
+    assert.ok(signal.aborted);
+    assert.equal(released, 1);
+  });
+
+  it('获取阶段超时后晚到租约也会释放，不会开始登录任务', async () => {
+    const { store } = fresh();
+    let released = 0;
+    let invoked = false;
+    const ex = createExecutor({ store, browserProvider: { matches: () => true, acquire: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { page: {}, release: async () => { released++; } };
+    } }, now: () => NOW });
+    const run = await ex({ ...task, browser: true, timeoutMs: 5, run: async () => {
+      invoked = true;
+      return { status: 'success' };
+    } }, { userId: USER_ID, trigger: 'manual' });
+    assert.equal(run.status, 'network-error');
+    assert.equal(released, 1);
+    assert.equal(invoked, false);
+  });
+
+  it('未匹配账号不注入浏览器且不影响原 HTTP 路径', async () => {
+    const { store } = fresh();
+    const ex = createExecutor({ store, browserProvider: { matches: () => false, acquire: () => assert.fail('must not acquire') }, now: () => NOW });
+    const run = await ex({ ...task, browser: true, run: async (ctx) => {
+      assert.equal(ctx.browser, undefined);
+      return { status: 'success' };
+    } }, { userId: USER_ID, trigger: 'manual' });
+    assert.equal(run.status, 'success');
+  });
+});
