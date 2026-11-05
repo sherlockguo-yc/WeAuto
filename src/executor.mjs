@@ -31,14 +31,21 @@ export const MAX_RESUME_TRIES = 3;
 
 function withTimeout(promise, ms, label, controller) {
   let timer;
+  let onAbort;
   const guard = new Promise((_, reject) => {
+    onAbort = () => reject(controller.signal.reason ?? new Error('任务已取消'));
+    if (controller.signal.aborted) onAbort();
+    else controller.signal.addEventListener('abort', onAbort, { once: true });
     timer = setTimeout(() => {
       const error = new Error(`${label} 超时（${Math.round(ms / 1000)}s）`);
       reject(error);
       controller.abort(error);
     }, ms);
   });
-  return Promise.race([promise, guard]).finally(() => clearTimeout(timer));
+  return Promise.race([promise, guard]).finally(() => {
+    clearTimeout(timer);
+    controller.signal.removeEventListener('abort', onAbort);
+  });
 }
 
 function redact(value, secrets) {
@@ -85,12 +92,13 @@ export function createExecutor({
   now = () => Date.now(),
   log = () => {},
 }) {
+  const controllers = new Set();
   /**
    * @param {object} task 已规范化任务
    * @param {{trigger?: 'schedule'|'manual'|'resume', userId?: number, accountKey?: string, credentialId?: number|null}} [opts]
    * @returns {Promise<object|null>} null 表示「这次不需要执行」
    */
-  return async function execute(
+  const execute = async function execute(
     task,
     { trigger = 'schedule', userId = null, accountKey = '', credentialId = null } = {},
   ) {
@@ -164,18 +172,21 @@ export function createExecutor({
     let result;
     let lease;
     let acquiring;
+    controllers.add(controller);
+    const deadlineAt = Date.now() + task.timeoutMs;
     try {
-      ctx.secrets = task.requires.length
-        ? await secretsLoader({ userId, taskName: task.name, credentialId, requires: task.requires })
-        : {};
       const identity = { userId, credentialId, groupName: task.credentialGroup ?? task.name };
       const useBrowser = task.browser === true && browserProvider?.matches(identity);
+      if (task.browserRequired && !useBrowser) throw new SecretsError('此任务必须使用浏览器，但浏览器配置或账号绑定不可用');
       record(
         `开始执行 ${task.displayName}（${trigger === 'manual' ? '手动' : trigger === 'resume' ? '续跑' : '调度'}）`,
       );
       const run = async () => {
+        ctx.secrets = task.requires.length
+          ? await secretsLoader({ userId, taskName: task.name, credentialId, requires: task.requires }) : {};
+        ctx.signal.throwIfAborted();
         if (useBrowser) {
-          acquiring = browserProvider.acquire({ ...identity, signal: ctx.signal });
+          acquiring = browserProvider.acquire({ ...identity, signal: ctx.signal, deadlineAt });
           lease = await acquiring;
           ctx.signal.throwIfAborted();
           ctx.browser = { page: lease.page };
@@ -192,7 +203,10 @@ export function createExecutor({
     } finally {
       controller.abort();
       if (acquiring && !lease) await acquiring.catch(() => {});
-      if (lease) await lease.release();
+      try { if (lease) await lease.release(); } catch {
+        result = { status: STATUS.NETWORK, message: '浏览器资源清理失败，停止复用该 profile' };
+      }
+      controllers.delete(controller);
     }
     result = redact(result, ctx.secrets);
     const safeLines = redact(lines, ctx.secrets);
@@ -217,6 +231,10 @@ export function createExecutor({
     log(`[${saved.status}] ${saved.message}`);
     return saved;
   };
+  execute.cancelAll = () => {
+    for (const controller of controllers) controller.abort(new Error('服务退出，任务已取消'));
+  };
+  return execute;
 }
 
 /**

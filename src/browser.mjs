@@ -18,9 +18,7 @@ export function validateBrowserEndpoint(endpoint) {
   return url.origin;
 }
 
-export function createBrowserProvider({ endpoint, profileDir, userId, credentialId, groupName,
-  connect = (url) => chromium.connectOverCDP(url, { timeout: 15_000 }) }) {
-  const address = validateBrowserEndpoint(endpoint);
+export function prepareBrowserProfile({ profileDir, userId, credentialId, groupName }) {
   if (!Number.isInteger(userId) || userId <= 0 || !Number.isInteger(credentialId) || credentialId <= 0 || !groupName) {
     throw new BrowserError('浏览器必须绑定明确的用户和站点账号');
   }
@@ -44,6 +42,13 @@ export function createBrowserProvider({ endpoint, profileDir, userId, credential
       throw new BrowserError('浏览器 profile 已绑定其他账号，拒绝复用');
     }
   }
+  return directory;
+}
+
+export function createBrowserProvider({ endpoint, profileDir, userId, credentialId, groupName,
+  connect = (url) => chromium.connectOverCDP(url, { timeout: 15_000 }) }) {
+  const address = validateBrowserEndpoint(endpoint);
+  const directory = prepareBrowserProfile({ profileDir, userId, credentialId, groupName });
   const lockFile = path.join(directory, '.weauto-browser.lock');
   let busy = false;
   let connection;

@@ -213,6 +213,7 @@ export function createScheduler({
   const inFlight = new Map();
   let timer = null;
   let ticking = false;
+  let stopped = false;
 
   /**
    * 待调度的目标 = 已启动的任务。一个任务就是一个账号，不再有第二层循环。
@@ -269,6 +270,7 @@ export function createScheduler({
    * 比按用户串行精确得多，也不会误伤不同站点的任务。
    */
   function runNow({ cfg, task, accountKey, key }, trigger) {
+    if (stopped) return null;
     if (inFlight.has(key)) return null;
     if (inFlight.size >= maxConcurrent) return null;
 
@@ -298,6 +300,7 @@ export function createScheduler({
 
   /** 走一遍全部目标。不做等待：任务之间是并行的，慢任务不应拖住别的任务 */
   function tick() {
+    if (stopped) return { skipped: '调度器已停止', started: [] };
     if (ticking) return { skipped: '上一轮 tick 尚未结束', started: [] };
     ticking = true;
     const started = [];
@@ -363,6 +366,7 @@ export function createScheduler({
     /** 启动：先归一化状态，再按 tickMs 周期检查 */
     start() {
       if (timer) return;
+      stopped = false;
       normalizeOnStart();
       timer = setInterval(() => tick(), tickMs);
       // 常驻进程不该被这个定时器拖住退出
@@ -371,6 +375,7 @@ export function createScheduler({
     },
 
     stop() {
+      stopped = true;
       if (!timer) return;
       clearInterval(timer);
       timer = null;

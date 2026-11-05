@@ -162,13 +162,22 @@ if ! ensure_deps; then
   exit 1
 fi
 
+cd "$DIR" || { log "✗ 目录不存在：$DIR"; exit 1; }
+[ -f "$DIR/.env" ] && . "$DIR/.env"
+if ! "$NODE" --input-type=module -e 'import fs from "node:fs"; import {browserConfig,readEnvFile,ENV_FILE} from "./src/config.mjs"; const e=readEnvFile(process.env.WEAUTO_ENV_FILE || ENV_FILE); const c=browserConfig((k,d)=>process.env[k]??e[k]??d); if(c.mode==="managed") for(const f of [c.executablePath,c.xvfbPath]) fs.accessSync(f,fs.constants.X_OK); console.log("browser preflight:",c.mode);'; then
+  log "✗ 浏览器运行环境不可用，保持旧进程"
+  exit 1
+fi
+
 # ── 3. 停掉旧进程 ──────────────────────────────────────────────────
 OLD_PID=$(lsof -ti:$PORT 2>/dev/null)
 if [ -n "$OLD_PID" ]; then
   kill $OLD_PID 2>/dev/null
-  sleep 2
-  # 优雅退出失败再强杀。服务收到 SIGTERM 会自己收尾（停调度器、关库）
-  kill -9 $OLD_PID 2>/dev/null
+  for i in $(seq 1 35); do
+    kill -0 $OLD_PID 2>/dev/null || break
+    sleep 1
+  done
+  kill -0 $OLD_PID 2>/dev/null && kill -9 $OLD_PID 2>/dev/null
   log "已停止旧进程 PID $OLD_PID"
 fi
 

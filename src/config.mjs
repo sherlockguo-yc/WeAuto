@@ -15,6 +15,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { DATA_DIR, parseDotenv } from './util.mjs';
 import { KEY_LEN, generateMasterKey } from './user-secrets.mjs';
 
@@ -117,6 +118,20 @@ export const TENANT_LIMITS = {
   maxConcurrent: 4,
 };
 
+export function browserConfig(pick, platform = process.platform) {
+  const mode = pick('WEAUTO_BROWSER_MODE', platform === 'linux' ? 'managed' : 'http');
+  if (!['managed', 'http'].includes(mode)) throw new Error('WEAUTO_BROWSER_MODE 必须是 managed 或 http');
+  const maxConcurrent = Number(pick('WEAUTO_BROWSER_CONCURRENCY', '1'));
+  if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > 4) throw new Error('浏览器并发必须为 1 到 4');
+  const profileRoot = pick('WEAUTO_BROWSER_PROFILES', path.join(os.homedir(), 'weauto-browser-profiles'));
+  const executablePath = pick('WEAUTO_CHROME_PATH', '/opt/google/chrome/chrome');
+  const xvfbPath = pick('WEAUTO_XVFB_PATH', '/usr/bin/xvfb-run');
+  for (const file of [profileRoot, executablePath, xvfbPath]) {
+    if (!path.isAbsolute(file)) throw new Error('浏览器目录和可执行文件必须使用绝对路径');
+  }
+  return { mode, profileRoot, executablePath, xvfbPath, maxConcurrent };
+}
+
 export function loadConfig({ env = process.env } = {}) {
   const fileEnv = readEnvFile(env.WEAUTO_ENV_FILE || ENV_FILE);
   const pick = (key, fallback) => env[key] ?? fileEnv[key] ?? fallback;
@@ -139,6 +154,7 @@ export function loadConfig({ env = process.env } = {}) {
     inviteOnly: pick('WEAUTO_INVITE_ONLY', '1') !== '0',
     /** 是否只在 HTTPS 下带 cookie。经 Cloudflare Tunnel 时由代理头判断 */
     trustProxy: true,
-    envFile: ENV_FILE,
+    envFile: env.WEAUTO_ENV_FILE || ENV_FILE,
+    browser: browserConfig(pick),
   };
 }

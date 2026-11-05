@@ -357,7 +357,7 @@ export default {
 
 **调度算法**：`seed = sha256(taskName:date)`，目标时刻落在窗口内，每天不同。
 
-### 8.1 v2free 浏览器单次验证
+### 8.1 v2free 浏览器定时执行与验证
 
 `bin/weauto-browser-checkin.mjs` 是应用级验证入口，不启动调度器，不初始化/迁移数据库。调用时指定 `--user`、`--account`、`--profile-dir`；CDP 默认为 `http://127.0.0.1:19222`，只接受回环 HTTP 地址。外部已启动的正常 Chrome 必须使用这个独立 profile，禁止指向日常浏览器。
 
@@ -365,9 +365,19 @@ export default {
 
 `src/browser.mjs` 只向任务提供本次拥有的页面，关闭页面不会关闭用户的其他标签页。执行超时/结束发送 `ctx.signal`；晚到的浏览器租约也先清理再结束。原 HTTP 任务暂未接入该取消信号。执行结果和日志会按加载的凭据值脱敏，浏览器任务不记录 Cookie、完整 HTML、trace/HAR 或原始异常。
 
-v2free 先访问账户页，失效则自动填写并提交登录；登录 AJAX 收到明确挑战时允许一次正常刷新、等待浏览器自然验证后再次登录，仍失败返回 `blocked`。跳转只等待 DOM 就绪，不等待外部字体等资源。今日已签不请求；未签到只点击一次并以接口 `ret:1` 确认，回读账户页补齐签到时间，`data.transport = 'browser'`。
+v2free 先打开登录页并等待正常浏览器自然完成检查（最多一次普通刷新），再访问账户页，失效则自动填写并提交登录；登录 AJAX 收到明确挑战时允许一次正常刷新后再次登录，仍失败返回 `blocked`。跳转只等待 DOM 就绪，不等待外部字体等资源。今日已签不请求；未签到只点击一次并以接口 `ret:1` 确认，回读账户页补齐签到时间，`data.transport = 'browser'`。
 
-**现阶段仅提供显式单次验证**：常驻服务和旧 CLI 未装配 browser provider，生产每日任务仍走原 HTTP 路径。profile 不保证登录态或 Cloudflare 验证跨天有效；长期浏览器健康管理、每日接入和人工验证恢复需另行完成。
+**生产模式**：Linux 常驻服务默认 `WEAUTO_BROWSER_MODE=managed`，Mac 开发默认 `http`；显式 `http` 保留原路径。装配层将 v2free 标记为浏览器必选并设模板默认预算 180 秒，任务自设的调度和超时仍优先；缺浏览器/账号匹配失败时不解密、不回退 HTTP。其他任务不使用浏览器。
+
+`src/managed-browser.mjs` 每次执行启动正常 Chrome + Xvfb，并直接使用该浏览器初始页面；并发默认 1，等待受总任务预算与取消信号约束。profile 默认放在部署目录外的 `~/weauto-browser-profiles/<身份哈希>`，按用户/凭据组/凭据 ID 隔离。配置支持 `WEAUTO_BROWSER_PROFILES`、`WEAUTO_CHROME_PATH`、`WEAUTO_XVFB_PATH`、`WEAUTO_BROWSER_CONCURRENCY`。不关闭沙箱、不使用隐身参数，CDP 使用随机回环端口，生产不启动 VNC。
+
+每轮完成/取消先请求实际 Chrome 正常退出保存 profile，再关闭 CDP 连接；逾时仅清理自己创建的进程组。单纯 `browser.close()` 对 CDP 连接只会断开，不能替代 Chrome 退出。清理完成后才释放锁，清理失败保留锁；旧锁只在旧持有者及浏览器已结束时恢复。浏览器仅继承必要环境；线上缺少 XDG/DBus 时，仅使用实际存在的同用户会话 socket 补齐，不传应用密钥。
+
+`bin/weauto-browser-checkin.mjs --managed --user USER --account LABEL` 使用同一生产 provider 验证。显式 `--seed-profile DIRECTORY` 只接受同账号已绑定、已关闭的 profile，在同机内初始化；保留原目录和目标旧目录备份，不输出 Cookie。源/目标仍运行时拒绝初始化。此操作不由每日调度自动执行。
+
+部署前检查 Chrome/Xvfb 路径，依赖不可用不停止旧服务。退出时调度器关闭新执行闸门，执行器取消并等待浏览器清理和记录落库，再关闭数据库；`restart.sh` 给旧进程最多 35 秒。
+
+**验证边界**：已成功读取今日已签到，也观察到重复冷启动仍可能被 Cloudflare 挑战拦截。持久化 profile 不保证验证或登录态跨天有效，强制人工验证仍返回 `blocked`；沿用原窗口失败退避（10/20 分钟，累计三次失败当天停止），不能保证每天签到成功。旧 JSONL CLI 仍不装配浏览器。
 
 ---
 

@@ -173,8 +173,16 @@ export async function runBrowser({ browser, secrets, signal, log }) {
     message: `${stage}遇到 Cloudflare 验证或页面未就绪，本轮停止`,
     data: { transport: 'browser', stage, ...(httpStatus ? { httpStatus } : {}) },
   });
-  let stage = '访问账户页';
+  let stage = '打开登录页';
   try {
+    signal.throwIfAborted();
+    if (page.url() !== `${BASE}/auth/login`) await page.goto(`${BASE}/auth/login`, { waitUntil: 'domcontentloaded' });
+    if (!await browserState(page, signal)) {
+      signal.throwIfAborted();
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      if (!await browserState(page, signal)) return blocked(stage);
+    }
+    stage = '访问账户页';
     signal.throwIfAborted();
     await page.goto(`${BASE}/user`, { waitUntil: 'domcontentloaded' });
     let state = await browserState(page, signal);

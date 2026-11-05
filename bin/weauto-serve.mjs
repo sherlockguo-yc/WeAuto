@@ -14,6 +14,7 @@ import { DB_FILE, openDb } from '../src/db.mjs';
 import { bootstrapTenancy, migrateCredentials, pickOwnerId } from '../src/bootstrap.mjs';
 import { createExecutor } from '../src/executor.mjs';
 import { createInvites } from '../src/invites.mjs';
+import { configureBrowserTasks, createManagedBrowserProvider, within } from '../src/managed-browser.mjs';
 import { loadTasks } from '../src/registry.mjs';
 import { createScheduler } from '../src/scheduler.mjs';
 import { createServer } from '../src/server.mjs';
@@ -67,7 +68,8 @@ async function main() {
   const config = loadConfig();
   const db = openDb();
   const store = createStore(db, { limits: TENANT_LIMITS });
-  const tasks = await loadTasks();
+  const tasks = configureBrowserTasks(await loadTasks(), config.browser);
+  const browserProvider = config.browser.mode === 'managed' ? createManagedBrowserProvider(config.browser) : null;
 
   const auth = createAuth({ db, jwtSecret: config.jwtSecret, tokenTtl: config.tokenTtl });
 
@@ -93,16 +95,17 @@ async function main() {
   // v7：任务下的凭据 → 可被多个任务引用的独立账号（保守 1:1，幂等）
   migrateCredentials({ db, tasks, log: (m) => console.log(m) });
 
+  const execute = createExecutor({
+    store,
+    secretsLoader: secretsLoaderFor(userSecrets),
+    browserProvider,
+    quotaPerDay: TENANT_LIMITS.quotaPerDay,
+    log: (m) => console.log(m),
+  });
   const scheduler = createScheduler({
     store,
     tasks,
-    execute: createExecutor({
-      store,
-      // 每用户凭据：只给任务引用的那个账号、且只给任务声明过的字段
-      secretsLoader: secretsLoaderFor(userSecrets),
-      quotaPerDay: TENANT_LIMITS.quotaPerDay,
-      log: (m) => console.log(m),
-    }),
+    execute,
     maxConcurrent: TENANT_LIMITS.maxConcurrent,
     log: (m) => console.log(m),
   });
@@ -115,6 +118,7 @@ async function main() {
     const built = process.env.WEAUTO_BUILD_TIME ? `（构建于 ${process.env.WEAUTO_BUILD_TIME}）` : '';
   console.log(`[weauto] 版本 ${process.env.WEAUTO_VERSION}${built}，任务 ${tasks.size} 个，账号 ${users} 个`);
     console.log(`[weauto] 数据库 ${DB_FILE}`);
+    console.log(`[weauto] v2free 执行模式 ${config.browser.mode}，浏览器并发 ${config.browser.maxConcurrent}`);
     if (users === 0) console.log('[weauto] 还没有账号：打开首页会引导创建第一个管理员');
   });
 
@@ -139,17 +143,20 @@ async function main() {
   setInterval(pruneAll, DAY_MS).unref();
 
   let closing = false;
-  const shutdown = (signal) => {
+  const shutdown = async (signal) => {
     if (closing) return;
     closing = true;
     console.log(`[weauto] 收到 ${signal}，正在退出`);
     scheduler.stop();
     server.close();
+    execute.cancelAll();
     try {
-      db.close();
+      await within(scheduler.waitForIdle(), 20_000, '等待任务清理超时');
+      if (browserProvider) await within(browserProvider.close(), 7000, '等待浏览器退出超时');
     } catch {
-      /* 忽略 */
+      console.error('[weauto] 退出清理未完成，保留占用锁，禁止重复复用 profile');
     }
+    try { db.close(); } catch {}
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

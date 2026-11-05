@@ -8,6 +8,7 @@ import { BrowserError, createBrowserProvider } from '../src/browser.mjs';
 import { loadConfig, MASTER_KEY_FILE } from '../src/config.mjs';
 import { DB_FILE } from '../src/db.mjs';
 import { createExecutor } from '../src/executor.mjs';
+import { createManagedBrowserProvider, seedBrowserProfile } from '../src/managed-browser.mjs';
 import { loadTasks } from '../src/registry.mjs';
 import { createStore } from '../src/store.mjs';
 import { createUserSecrets, secretsLoaderFor } from '../src/user-secrets.mjs';
@@ -28,13 +29,13 @@ async function main() {
   const { values } = parseArgs({ options: {
     user: { type: 'string' }, account: { type: 'string' },
     'profile-dir': { type: 'string' }, endpoint: { type: 'string', default: 'http://127.0.0.1:19222' },
-    help: { type: 'boolean' },
+    help: { type: 'boolean' }, managed: { type: 'boolean' }, 'seed-profile': { type: 'string' },
   } });
   if (values.help) {
-    console.log('Usage: node bin/weauto-browser-checkin.mjs --user USER --account LABEL --profile-dir DIRECTORY');
+    console.log('Usage: node bin/weauto-browser-checkin.mjs --user USER --account LABEL [--managed | --profile-dir DIRECTORY]');
     return 0;
   }
-  if (!values.user || !values.account || !values['profile-dir']) throw new BrowserError('必须指定用户、站点账号名称和独立 profile 目录');
+  if (!values.user || !values.account || (!values.managed && !values['profile-dir'])) throw new BrowserError('必须指定用户、站点账号名称和浏览器模式');
   if (!fs.existsSync(DB_FILE) || (!process.env.WEAUTO_MASTER_KEY && !fs.existsSync(MASTER_KEY_FILE))) {
     throw new BrowserError('仅允许使用已有的 WeAuto 数据库和凭据主密钥，不初始化新数据');
   }
@@ -46,14 +47,29 @@ async function main() {
     const task = tasks.get('v2free-checkin');
     if (!task) throw new BrowserError('未找到 v2free 签到模板');
     const target = resolveBrowserTarget(db, store, { username: values.user, label: values.account, task });
-    const browserProvider = createBrowserProvider({
+    const config = loadConfig();
+    if (values['seed-profile']) {
+      if (!values.managed) throw new BrowserError('初始化 profile 只允许用于 managed 模式');
+      seedBrowserProfile({ source: values['seed-profile'], profileRoot: config.browser.profileRoot,
+        ...target, groupName: task.credentialGroup });
+    }
+    const browserProvider = values.managed ? createManagedBrowserProvider(config.browser) : createBrowserProvider({
       endpoint: values.endpoint, profileDir: path.resolve(values['profile-dir']),
       ...target, groupName: task.credentialGroup,
     });
-    const config = loadConfig();
     const userSecrets = createUserSecrets(db, config.masterKey);
     const execute = createExecutor({ store, secretsLoader: secretsLoaderFor(userSecrets), browserProvider });
-    const run = await execute({ ...task, timeoutMs: 180_000 }, { ...target, trigger: 'manual' });
+    const cancel = () => execute.cancelAll();
+    process.on('SIGTERM', cancel);
+    process.on('SIGINT', cancel);
+    let run;
+    try {
+      run = await execute({ ...task, browserRequired: true, timeoutMs: 180_000 }, { ...target, trigger: 'manual' });
+    } finally {
+      if (values.managed) await browserProvider.close();
+      process.removeListener('SIGTERM', cancel);
+      process.removeListener('SIGINT', cancel);
+    }
     console.log(JSON.stringify({ runId: run.id, status: run.status, message: run.message,
       date: run.date, transport: run.data?.transport ?? 'browser',
       lastCheckin: run.data?.lastCheckin ?? null }, null, 2));
