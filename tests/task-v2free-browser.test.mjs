@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import task, { runBrowser } from '../tasks/v2free-checkin.mjs';
+import { createPageDiagnostics } from '../src/browser-diagnostics.mjs';
 
 const sessionHtml = (traffic = '1GB', signed = false) => `<script>crispSessionData = [[["traffic","${traffic}"]]];</script><b>上次签到</b>:2026-11-05 09:00:00${signed ? '今日已签到' : ''}`;
 const response = (json, status = 200, challenge = false) => ({
@@ -12,9 +13,12 @@ function fixture({ login = false, signed = false, loginResponses = [response({ r
   let atLogin = login;
   let signedNow = signed;
   const calls = [];
+  const logs = [];
   const signal = new AbortController().signal;
   const page = {
     goto: async () => calls.push('goto'),
+    evaluate: async () => ({ pageKind: challengePage ? 'challenge' : 'site', route: atLogin ? 'login' : 'user',
+      loginReady: atLogin && !challengePage, userReady: !atLogin && !challengePage, navigationStatus: challengePage ? 403 : 200 }),
     url: () => `https://v2free.net/${atLogin ? 'auth/login' : 'user'}`,
     waitForFunction: async () => { if (challengePage) throw new Error('not ready'); },
     content: async () => sessionHtml(signedNow ? '1.4GB' : '1GB', signedNow),
@@ -35,7 +39,8 @@ function fixture({ login = false, signed = false, loginResponses = [response({ r
       click: async () => calls.push(`click:${selector}`),
     }),
   };
-  return { ctx: { browser: { page }, secrets: { V2FREE_EMAIL: 'private@example.test', V2FREE_PASSWORD: 'private-password' }, signal, log: () => {} }, calls, page };
+  const diagnostics = createPageDiagnostics(page, { log: (line) => logs.push(JSON.parse(line.slice('[browser] '.length))), signal });
+  return { ctx: { browser: { page, diagnostics }, secrets: { V2FREE_EMAIL: 'private@example.test', V2FREE_PASSWORD: 'private-password' }, signal, log: () => {} }, calls, logs, page };
 }
 it('expired session is automatically logged in and signed exactly once', async () => {
   const { ctx, calls } = fixture({ login: true });
@@ -91,6 +96,36 @@ it('raw browser errors are not stored and browser failures do not fallback to HT
   const result = await task.run({ ...ctx, request: () => { throw new Error('HTTP must not run'); } });
   assert.equal(result.status, 'network-error');
   assert.ok(!JSON.stringify(result).includes('private-password'));
+});
+it('blocked login page records both readiness waits and the sole reload without submitting', async () => {
+  const { ctx, calls, logs } = fixture({ challengePage: true });
+  const result = await runBrowser(ctx);
+  assert.equal(result.data.reason, 'cf_challenge');
+  assert.equal(result.data.httpStatus, 403);
+  assert.equal(result.data.checkinSubmitted, false);
+  assert.equal(logs.filter((line) => line.op === 'wait_ready' && line.event === 'operation_failed').length, 2);
+  assert.equal(logs.filter((line) => line.event === 'page_state').length, 2);
+  assert.equal(calls.filter((call) => call === 'reload').length, 1);
+  assert.ok(!JSON.stringify(logs).includes('private-'));
+});
+it('JSON decoding and password fill failures log distinct reasons without secret values', async () => {
+  const invalid = fixture({ checkResponse: response(null) });
+  assert.equal((await runBrowser(invalid.ctx)).data.reason, 'json_decode_failed');
+  assert.ok(invalid.logs.some((line) => line.op === 'checkin_response' && line.jsonParsed === false));
+  const fill = fixture({ login: true });
+  fill.page.locator = () => ({ fill: async () => { throw new Error('private-password'); } });
+  await runBrowser(fill.ctx);
+  assert.ok(fill.logs.some((line) => line.op === 'fill_email' && line.event === 'operation_failed'));
+  assert.ok(!JSON.stringify(fill.logs).includes('private-'));
+});
+it('successful checkin remains successful when readback fails, with observable error', async () => {
+  const { ctx, page, logs, calls } = fixture();
+  page.reload = async () => { throw Object.assign(new Error('private-token'), { name: 'TimeoutError' }); };
+  const result = await runBrowser(ctx);
+  assert.equal(result.status, 'success');
+  assert.ok(logs.some((line) => line.op === 'reload_account' && line.errorKind === 'timeout'));
+  assert.equal(calls.filter((call) => call === 'click:#checkin').length, 1);
+  assert.ok(!JSON.stringify(logs).includes('private-'));
 });
 it('cancelled browser never navigates or submits', async () => {
   const { ctx, calls } = fixture();

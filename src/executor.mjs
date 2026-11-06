@@ -11,6 +11,7 @@
  * 那条路，不动它以免打断线上；等 P2c 把历史导入数据库后统一成一条。
  */
 import { CookieJar, createRequester } from './http.mjs';
+import { createPageDiagnostics } from './browser-diagnostics.mjs';
 import { SecretsError, loadSecrets } from './secrets.mjs';
 import { STATUS, isSuccess, normalizeResume } from './task-contract.mjs';
 import { dateInTZ } from './util.mjs';
@@ -141,8 +142,12 @@ export function createExecutor({
 
     const lines = [];
     const controller = new AbortController();
+    let sealed = false;
+    const diagnosticLog = (msg) => {
+      if (!sealed && lines.length < MAX_LOG_LINES) lines.push(String(msg).slice(0, MAX_LOG_LINE_LEN));
+    };
     const record = (msg) => {
-      if (!controller.signal.aborted && lines.length < MAX_LOG_LINES) lines.push(String(msg).slice(0, MAX_LOG_LINE_LEN));
+      if (!controller.signal.aborted && lines.length < MAX_LOG_LINES - 20) diagnosticLog(msg);
     };
 
     const ctx = {
@@ -172,6 +177,7 @@ export function createExecutor({
     let result;
     let lease;
     let acquiring;
+    let diagnostics;
     controllers.add(controller);
     const deadlineAt = Date.now() + task.timeoutMs;
     try {
@@ -186,10 +192,11 @@ export function createExecutor({
           ? await secretsLoader({ userId, taskName: task.name, credentialId, requires: task.requires }) : {};
         ctx.signal.throwIfAborted();
         if (useBrowser) {
-          acquiring = browserProvider.acquire({ ...identity, signal: ctx.signal, deadlineAt });
+          acquiring = browserProvider.acquire({ ...identity, signal: ctx.signal, deadlineAt, log: diagnosticLog });
           lease = await acquiring;
           ctx.signal.throwIfAborted();
-          ctx.browser = { page: lease.page };
+          diagnostics = createPageDiagnostics(lease.page, { log: diagnosticLog, signal: ctx.signal });
+          ctx.browser = { page: lease.page, diagnostics };
         }
         return task.run(ctx);
       };
@@ -206,6 +213,8 @@ export function createExecutor({
       try { if (lease) await lease.release(); } catch {
         result = { status: STATUS.NETWORK, message: '浏览器资源清理失败，停止复用该 profile' };
       }
+      if (diagnostics) await diagnostics.stop();
+      sealed = true;
       controllers.delete(controller);
     }
     result = redact(result, ctx.secrets);

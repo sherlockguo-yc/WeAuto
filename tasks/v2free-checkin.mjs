@@ -136,13 +136,13 @@ export function successMessage({ gain, remain } = {}) {
   return parts.length ? `签到成功，${parts.join('，')}` : '签到成功';
 }
 
-async function browserState(page, signal) {
+async function browserState(page, signal, operation) {
   signal.throwIfAborted();
   try {
-    await page.waitForFunction(() =>
+    await operation('wait_ready', () => page.waitForFunction(() =>
       (location.pathname.startsWith('/user') && (document.querySelector('#checkin') || /今日已签到/.test(document.body.innerText))) ||
       (location.pathname === '/auth/login' && document.querySelector('#login') && document.querySelector('#passwd')),
-    null, { timeout: 35_000 });
+    null, { timeout: 35_000 }));
   } catch {
     signal.throwIfAborted();
     return null;
@@ -168,42 +168,58 @@ function browserResponse(path) {
 
 export async function runBrowser({ browser, secrets, signal, log }) {
   const page = browser.page;
-  const blocked = (stage, httpStatus) => ({
-    status: 'blocked',
-    message: `${stage}遇到 Cloudflare 验证或页面未就绪，本轮停止`,
-    data: { transport: 'browser', stage, ...(httpStatus ? { httpStatus } : {}) },
-  });
+  const diagnostics = browser.diagnostics;
   let stage = '打开登录页';
+  let failure = { reason: 'page_not_ready' };
+  let checkinSubmitted = false;
+  const operation = (op, fn, attempt) => diagnostics ? diagnostics.operation(stage, op, fn, attempt) : fn();
+  const ready = async () => {
+    const state = await browserState(page, signal, operation);
+    if (!state) failure = await diagnostics?.snapshot(stage) ?? { reason: 'page_not_ready' };
+    return state;
+  };
+  const jsonResponse = async (pending, op) => {
+    const response = await operation(op, async () => browserJson(await pending));
+    diagnostics?.record({ event: 'response', stage, op, httpStatus: response.httpStatus,
+      challenge: response.challenge === true, jsonParsed: !!response.json, retOk: response.json?.ret === 1 });
+    if (response.challenge || !response.json) failure = { reason: response.challenge ? 'cf_challenge' : 'json_decode_failed' };
+    return response;
+  };
+  const blocked = (stage, httpStatus = failure.httpStatus) => ({
+    status: 'blocked',
+    message: `${stage}${failure.reason === 'cf_challenge' ? '遇到 Cloudflare 挑战且未通过' : failure.reason === 'json_decode_failed' ? '响应不是有效 JSON' : '页面未就绪'}，本轮停止`,
+    data: { transport: 'browser', stage, reason: failure.reason, checkinSubmitted, ...(httpStatus ? { httpStatus } : {}) },
+  });
   try {
     signal.throwIfAborted();
-    if (page.url() !== `${BASE}/auth/login`) await page.goto(`${BASE}/auth/login`, { waitUntil: 'domcontentloaded' });
-    if (!await browserState(page, signal)) {
+    if (page.url() !== `${BASE}/auth/login`) await operation('open_login', () => page.goto(`${BASE}/auth/login`, { waitUntil: 'domcontentloaded' }));
+    if (!await ready()) {
       signal.throwIfAborted();
-      await page.reload({ waitUntil: 'domcontentloaded' });
-      if (!await browserState(page, signal)) return blocked(stage);
+      await operation('reload_login', () => page.reload({ waitUntil: 'domcontentloaded' }));
+      if (!await ready()) return blocked(stage);
     }
     stage = '访问账户页';
     signal.throwIfAborted();
-    await page.goto(`${BASE}/user`, { waitUntil: 'domcontentloaded' });
-    let state = await browserState(page, signal);
+    await operation('open_user', () => page.goto(`${BASE}/user`, { waitUntil: 'domcontentloaded' }));
+    let state = await ready();
     if (!state) return blocked(stage);
     if (state === 'login') {
       for (let attempt = 0; attempt < 2; attempt++) {
         stage = '登录';
         signal.throwIfAborted();
-        await page.locator('#email').fill(secrets.V2FREE_EMAIL);
-        await page.locator('#passwd').fill(secrets.V2FREE_PASSWORD);
+        await operation('fill_email', () => page.locator('#email').fill(secrets.V2FREE_EMAIL), attempt + 1);
+        await operation('fill_password', () => page.locator('#passwd').fill(secrets.V2FREE_PASSWORD), attempt + 1);
         signal.throwIfAborted();
         const pending = page.waitForResponse(browserResponse('/auth/login'), { timeout: 30_000 });
         pending.catch(() => {});
-        await page.locator('#login').click();
-        const response = await browserJson(await pending);
+        await operation('click_login', () => page.locator('#login').click(), attempt + 1);
+        const response = await jsonResponse(pending, 'login_response');
         log(`浏览器登录响应 HTTP ${response.httpStatus}`);
         if (response.challenge) {
           if (attempt > 0) return blocked(stage, response.httpStatus);
           signal.throwIfAborted();
-          await page.reload({ waitUntil: 'domcontentloaded' });
-          state = await browserState(page, signal);
+          await operation('reload_login', () => page.reload({ waitUntil: 'domcontentloaded' }));
+          state = await ready();
           if (!state) return blocked(stage, response.httpStatus);
           if (state === 'user') break;
           continue;
@@ -211,8 +227,8 @@ export async function runBrowser({ browser, secrets, signal, log }) {
         if (!response.json) return blocked(stage, response.httpStatus);
         if (response.json.ret !== 1) return { status: 'failed', message: '浏览器登录未成功，请检查账号或站点提示', data: { transport: 'browser' } };
         stage = '等待登录跳转';
-        await page.waitForURL(`${BASE}/user**`, { waitUntil: 'domcontentloaded', timeout: 35_000 });
-        if (await browserState(page, signal) !== 'user') return blocked(stage);
+        await operation('login_redirect', () => page.waitForURL(`${BASE}/user**`, { waitUntil: 'domcontentloaded', timeout: 35_000 }));
+        if (await ready() !== 'user') return blocked(stage);
         break;
       }
       log('浏览器登录成功');
@@ -231,8 +247,9 @@ export async function runBrowser({ browser, secrets, signal, log }) {
     signal.throwIfAborted();
     const pending = page.waitForResponse(browserResponse('/user/checkin'), { timeout: 30_000 });
     pending.catch(() => {});
-    await page.locator('#checkin').click();
-    const response = await browserJson(await pending);
+    await operation('click_checkin', () => page.locator('#checkin').click());
+    checkinSubmitted = true;
+    const response = await jsonResponse(pending, 'checkin_response');
     log(`浏览器签到响应 HTTP ${response.httpStatus}`);
     if (response.challenge || !response.json) return blocked(stage, response.httpStatus);
     const json = response.json;
@@ -244,15 +261,20 @@ export async function runBrowser({ browser, secrets, signal, log }) {
     const fromCheckin = remainFromCheckin(json);
     let latest = info;
     let lastAfter = null;
+    stage = '回读账户页';
     try {
       signal.throwIfAborted();
-      await page.reload({ waitUntil: 'domcontentloaded' });
-      if (await browserState(page, signal) === 'user') {
-        const html = await page.content();
+      await operation('reload_account', () => page.reload({ waitUntil: 'domcontentloaded' }));
+      if (await ready() === 'user') {
+        const html = await operation('readback', () => page.content());
         latest = parseSessionData(html) ?? info;
         lastAfter = parseLastCheckin(html);
+      } else {
+        diagnostics?.record({ event: 'operation_failed', stage, op: 'readback', reason: 'readback_not_user' });
       }
-    } catch {}
+    } catch {
+      await diagnostics?.snapshot(stage);
+    }
     const remain = fromCheckin ?? latest?.remainTraffic;
     const gain = gainedTraffic({ msg: json.msg, before: info?.remainTraffic, after: latest?.remainTraffic });
     return {
@@ -261,8 +283,9 @@ export async function runBrowser({ browser, secrets, signal, log }) {
         ...(gain ? { gainedTraffic: gain } : {}), lastCheckin: lastAfter ?? lastCheckin, transport: 'browser' },
     };
   } catch {
+    await diagnostics?.snapshot(stage);
     return signal.aborted ? { status: 'network-error', message: '浏览器任务已取消' } :
-      { status: 'network-error', message: `${stage}浏览器操作失败，未自动重试`, data: { transport: 'browser', stage } };
+      { status: 'network-error', message: `${stage}浏览器操作失败，未自动重试`, data: { transport: 'browser', stage, checkinSubmitted } };
   }
 }
 

@@ -139,6 +139,33 @@ it('managed close rejects future execution', async () => {
   await provider.close();
   await assert.rejects(acquire(provider), /正在退出/);
 });
+it('lifecycle diagnostics preserve failure phase and cleanup outcome without raw exceptions', async () => {
+  const logs = [];
+  const { provider } = fixture({ connect: async () => { throw new Error('private-password'); } });
+  await assert.rejects(acquire(provider, { log: (line) => logs.push(JSON.parse(line.slice('[browser] '.length))) }));
+  assert.ok(logs.some((line) => line.event === 'operation_failed' && line.phase === 'connect'));
+  assert.ok(logs.some((line) => line.phase === 'cleanup_done' && line.lockReleased));
+  assert.ok(!JSON.stringify(logs).includes('private-'));
+});
+it('successful release logs cleanup even after the abort signal fires', async () => {
+  const logs = [];
+  const { provider } = fixture();
+  const controller = new AbortController();
+  const lease = await acquire(provider, { signal: controller.signal, log: (line) => logs.push(JSON.parse(line.slice('[browser] '.length))) });
+  controller.abort();
+  await lease.release();
+  assert.ok(logs.some((line) => line.phase === 'cancel'));
+  assert.ok(logs.some((line) => line.phase === 'cleanup_done' && line.lockReleased));
+});
+it('acquire failure and cleanup failure are both retained', async () => {
+  const logs = [];
+  const { provider } = fixture({ connect: async () => { throw new Error('private-first'); },
+    launch: async () => ({ pid: 123, ready: async () => 'http://127.0.0.1:12345', terminate: async () => { throw new Error('private-cleanup'); } }) });
+  await assert.rejects(acquire(provider, { log: (line) => logs.push(JSON.parse(line.slice('[browser] '.length))) }));
+  assert.ok(logs.some((line) => line.event === 'operation_failed' && line.phase === 'connect'));
+  assert.ok(logs.some((line) => line.phase === 'cleanup_failed' && !line.lockReleased));
+  assert.ok(!JSON.stringify(logs).includes('private-'));
+});
 it('late page after cancellation is never returned to a task', async () => {
   let finish;
   const creating = new Promise((resolve) => { finish = resolve; });

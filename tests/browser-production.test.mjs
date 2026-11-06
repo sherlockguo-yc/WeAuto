@@ -38,7 +38,7 @@ it('required browser rejects unavailable provider before decrypting or calling H
 });
 it('scheduler executes production browser daily, deduplicates today and preserves explicit timeout', async () => {
   const { store, task } = fixture();
-  let now = Date.parse('2026-11-05T10:29:00+08:00');
+  let now = Date.parse('2026-11-05T10:29:59+08:00');
   const dates = [];
   let releases = 0;
   const tasks = configureBrowserTasks(new Map([[template.name, { ...template, run: async (ctx) => {
@@ -57,7 +57,7 @@ it('scheduler executes production browser daily, deduplicates today and preserve
   assert.equal(scheduler.tick().started.length, 1);
   await scheduler.waitForIdle();
   assert.equal(scheduler.tick().started.length, 0);
-  now = Date.parse('2026-11-06T10:29:00+08:00');
+  now = Date.parse('2026-11-06T10:29:59+08:00');
   assert.equal(scheduler.tick().started.length, 1);
   await scheduler.waitForIdle();
   assert.equal(dates.length, 2);

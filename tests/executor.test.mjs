@@ -386,13 +386,17 @@ describe('浏览器能力', () => {
     let released = 0;
     const ex = createExecutor({ store, browserProvider: { matches: () => true, acquire: async (args) => {
       signal = args.signal;
-      return { page: {}, release: async () => { released++; } };
+      return { page: {}, release: async () => {
+        released++;
+        args.log('[browser] {"event":"lifecycle","phase":"cleanup_done","lockReleased":true}');
+      } };
     } }, now: () => NOW });
     const run = await ex({ ...task, browser: true, timeoutMs: 10, run: () => new Promise(() => {}) }, { userId: USER_ID, trigger: 'manual' });
     assert.equal(run.status, 'network-error');
     assert.match(run.message, /超时/);
     assert.ok(signal.aborted);
     assert.equal(released, 1);
+    assert.ok(store.forUser(USER_ID).logsOfRun(run.id).some((entry) => entry.line.includes('cleanup_done')));
   });
 
   it('获取阶段超时后晚到租约也会释放，不会开始登录任务', async () => {

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import { BrowserError, prepareBrowserProfile } from './browser.mjs';
+import { browserErrorKind, createDiagnosticLogger } from './browser-diagnostics.mjs';
 
 export function browserProfilePath(root, { userId, credentialId, groupName }) {
   if (!Number.isInteger(userId) || userId <= 0 || !Number.isInteger(credentialId) || credentialId <= 0 ||
@@ -119,7 +120,8 @@ export function browserEnvironment(env = process.env, runtimeDir = `/run/user/${
   return out;
 }
 
-export async function launchManagedChrome({ executablePath, xvfbPath, profileDir, signal, deadlineAt }) {
+export async function launchManagedChrome({ executablePath, xvfbPath, profileDir, signal, deadlineAt, log }) {
+  const emit = createDiagnosticLogger(log);
   for (const file of [executablePath, xvfbPath]) {
     try { fs.accessSync(file, fs.constants.X_OK); } catch { throw new BrowserError('浏览器或虚拟屏幕依赖不可用'); }
   }
@@ -131,7 +133,8 @@ export async function launchManagedChrome({ executablePath, xvfbPath, profileDir
     '--window-size=1280,900', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', 'https://v2free.net/auth/login'],
   { detached: true, stdio: 'ignore', env: browserEnvironment() });
   let failed = false;
-  child.on('error', () => { failed = true; });
+  child.on('error', (error) => { failed = true; emit({ event: 'lifecycle', phase: 'spawn_error', errorKind: browserErrorKind(error) }); });
+  child.on('exit', (exitCode, exitSignal) => emit({ event: 'lifecycle', phase: 'startup_exit', exitCode, exitSignal }));
   let closing;
   const terminate = () => {
     if (closing) return closing;
@@ -140,8 +143,10 @@ export async function launchManagedChrome({ executablePath, xvfbPath, profileDir
       const send = (sig) => { try { process.kill(-child.pid, sig); } catch (err) { if (err.code !== 'ESRCH') throw err; } };
       send('SIGTERM');
       for (let i = 0; i < 20 && groupAlive(child.pid); i++) await delay(100);
-      if (groupAlive(child.pid)) send('SIGKILL');
+      const forcedKill = groupAlive(child.pid);
+      if (forcedKill) send('SIGKILL');
       for (let i = 0; i < 20 && groupAlive(child.pid); i++) await delay(100);
+      emit({ event: 'lifecycle', phase: 'terminate', forcedKill });
       if (groupAlive(child.pid)) throw new BrowserError('浏览器进程清理未完成，保留 profile 锁', 'network-error');
     })();
     return closing;
@@ -189,7 +194,12 @@ export function createManagedBrowserProvider({ profileRoot, executablePath = '/o
     matches({ groupName, userId, credentialId }) {
       return groupName === 'v2free' && Number.isInteger(userId) && userId > 0 && Number.isInteger(credentialId) && credentialId > 0;
     },
-    async acquire({ signal, deadlineAt = Date.now() + 180_000, ...identity }) {
+    async acquire({ signal, deadlineAt = Date.now() + 180_000, log, ...identity }) {
+      const emit = createDiagnosticLogger(log);
+      const started = Date.now();
+      let phase = 'queue';
+      const mark = (next) => { phase = next; emit({ event: 'lifecycle', phase, elapsedMs: Date.now() - started }); };
+      mark('queue');
       if (!this.matches(identity)) throw new BrowserError('浏览器账号与任务凭据不匹配');
       while (active >= maxConcurrent && !stopped) {
         signal.throwIfAborted();
@@ -207,17 +217,23 @@ export function createManagedBrowserProvider({ profileRoot, executablePath = '/o
       const release = () => {
         if (closing) return closing;
         closing = (async () => {
+          const cleanupStarted = Date.now();
+          emit({ event: 'lifecycle', phase: 'cleanup_start' });
           try {
             if (browser?.newBrowserCDPSession) {
               await within((async () => {
                 const protocol = await browser.newBrowserCDPSession();
                 await protocol.send('Browser.close');
-              })(), 1500, '正常关闭 Chrome 超时').catch(() => {});
+              })(), 1500, '正常关闭 Chrome 超时').catch((error) => emit({ event: 'lifecycle', phase: 'chrome_close', errorKind: browserErrorKind(error) }));
               if (session?.waitForExit) await session.waitForExit();
             }
-            if (browser) await within(browser.close(), 1500, '关闭浏览器连接超时').catch(() => {});
+            if (browser) await within(browser.close(), 1500, '关闭浏览器连接超时').catch((error) => emit({ event: 'lifecycle', phase: 'disconnect', errorKind: browserErrorKind(error) }));
             if (session) await session.terminate();
             if (lock) lock.release();
+            emit({ event: 'lifecycle', phase: 'cleanup_done', elapsedMs: Date.now() - cleanupStarted, lockReleased: !!lock });
+          } catch (error) {
+            emit({ event: 'lifecycle', phase: 'cleanup_failed', errorKind: browserErrorKind(error), lockReleased: false });
+            throw error;
           } finally {
             signal.removeEventListener('abort', onAbort);
             leases.delete(release);
@@ -227,6 +243,7 @@ export function createManagedBrowserProvider({ profileRoot, executablePath = '/o
         return closing;
       };
       const onAbort = () => {
+        emit({ event: 'lifecycle', phase: 'cancel', aborted: true });
         if (page && !page.isClosed()) page.close({ runBeforeUnload: false }).catch(() => {});
         if (!page && session) session.terminate().catch(() => {});
       };
@@ -234,20 +251,27 @@ export function createManagedBrowserProvider({ profileRoot, executablePath = '/o
       signal.addEventListener('abort', onAbort, { once: true });
       try {
         const directory = browserProfilePath(root, identity);
+        emit({ event: 'lifecycle', phase: 'profile_lock', profileReused: fs.existsSync(directory) });
+        mark('profile_lock');
         try { fs.mkdirSync(directory, { mode: 0o700 }); } catch (err) { if (err.code !== 'EEXIST') throw err; }
         if (fs.lstatSync(directory).isSymbolicLink()) throw new BrowserError('浏览器 profile 不允许符号链接');
         prepareBrowserProfile({ profileDir: directory, ...identity });
         lock = takeLock(directory);
         signal.throwIfAborted();
-        session = await launch({ executablePath, xvfbPath, profileDir: directory, signal, deadlineAt });
+        mark('launch');
+        session = await launch({ executablePath, xvfbPath, profileDir: directory, signal, deadlineAt, log });
         lock.update(session.pid);
         signal.throwIfAborted();
+        mark('ready');
         const endpoint = await session.ready();
+        mark('connect');
         const remaining = () => Math.max(1, Math.min(15_000, deadlineAt - Date.now()));
         const connecting = connect(endpoint, remaining());
         connecting.then((value) => { if (signal.aborted || closing) value.close().catch(() => {}); }, () => {});
         browser = await within(connecting, remaining(), '连接浏览器超时');
         signal.throwIfAborted();
+        browser.on?.('disconnected', () => emit({ event: 'browser_disconnected' }));
+        mark('page');
         const contexts = browser.contexts();
         if (contexts.length !== 1) throw new BrowserError('浏览器必须只有一个独立 profile');
         page = contexts[0].pages?.()[0] ?? await within(contexts[0].newPage(), remaining(), '创建浏览器页面超时');
@@ -256,6 +280,7 @@ export function createManagedBrowserProvider({ profileRoot, executablePath = '/o
         page.setDefaultNavigationTimeout(45_000);
         return { page, release };
       } catch (err) {
+        emit({ event: 'operation_failed', phase, errorKind: browserErrorKind(err, signal), elapsedMs: Date.now() - started });
         await release();
         if (err instanceof BrowserError) throw err;
         throw new BrowserError(signal.aborted ? '浏览器执行已取消' : '浏览器生命周期操作失败', 'network-error');
