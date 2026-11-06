@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
@@ -120,17 +121,40 @@ export function browserEnvironment(env = process.env, runtimeDir = `/run/user/${
   return out;
 }
 
-export async function launchManagedChrome({ executablePath, xvfbPath, profileDir, signal, deadlineAt, log }) {
+/**
+ * 选一个当前空闲的回环端口作为 Chrome 调试端口。
+ *
+ * 为什么不用 `--remote-debugging-port=0`：2026-11-06 在 N150 上做了单因素对照，
+ * 其它条件（profile、窗口、环境变量、VNC、父进程）都不影响结果，只有「端口 0」与
+ * 「具体端口」不同——端口 0 启动的 Chrome 14 次中 14 次停在 Cloudflare 挑战页，
+ * 具体端口 12 次中 12 次进入登录页（含固定 19222 与随机 20000-50000）。
+ * 原因没有查明，这是经验性结论；仍用随机端口而不是固定端口，避免调试入口可预测。
+ */
+export async function pickLoopbackPort({ attempts = 20, random = Math.random, listen = net.createServer } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    const port = 20_000 + Math.floor(random() * 30_000);
+    const free = await new Promise((resolve) => {
+      const server = listen();
+      server.once('error', () => resolve(false));
+      server.listen({ host: '127.0.0.1', port, exclusive: true }, () => server.close(() => resolve(true)));
+    });
+    if (free) return port;
+  }
+  throw new BrowserError('找不到可用的浏览器调试端口', 'network-error');
+}
+
+export async function launchManagedChrome({ executablePath, xvfbPath, profileDir, signal, deadlineAt, log, port: requestedPort }) {
   const emit = createDiagnosticLogger(log);
+  const port = requestedPort ?? await pickLoopbackPort();
   for (const file of [executablePath, xvfbPath]) {
     try { fs.accessSync(file, fs.constants.X_OK); } catch { throw new BrowserError('浏览器或虚拟屏幕依赖不可用'); }
   }
   if (chromeProfileOccupied(profileDir)) throw new BrowserError('Chrome 正在使用该 profile', 'blocked');
-  const portFile = path.join(profileDir, 'DevToolsActivePort');
-  try { fs.unlinkSync(portFile); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+  // 清掉上一轮遗留的端口文件，避免其他逻辑把旧端口当成这一轮的
+  try { fs.unlinkSync(path.join(profileDir, 'DevToolsActivePort')); } catch (err) { if (err.code !== 'ENOENT') throw err; }
   const child = spawn(xvfbPath, ['-a', '-s', '-screen 0 1280x900x24 -nolisten tcp', executablePath,
     `--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check', '--lang=en-US',
-    '--window-size=1280,900', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', 'https://v2free.net/auth/login'],
+    '--window-size=1280,900', '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${port}`, 'https://v2free.net/auth/login'],
   { detached: true, stdio: 'ignore', env: browserEnvironment() });
   let failed = false;
   child.on('error', (error) => { failed = true; emit({ event: 'lifecycle', phase: 'spawn_error', errorKind: browserErrorKind(error) }); });
@@ -159,13 +183,22 @@ export async function launchManagedChrome({ executablePath, xvfbPath, profileDir
         signal.throwIfAborted();
         if (failed || child.exitCode !== null || child.signalCode !== null) throw new BrowserError('浏览器启动失败', 'network-error');
         try {
-          const lines = fs.readFileSync(portFile, 'utf8').trim().split('\n');
-          const port = Number(lines[0]);
-          if (Number.isInteger(port) && port > 0 && port <= 65535 && lines[1]?.startsWith('/devtools/browser/')) {
+          /*
+           * 指定具体端口时 Chrome 不会写 DevToolsActivePort（2026-11-06 实测：HTTP 端点 1 秒内可用、
+           * 文件始终不出现），所以以调试 HTTP 端点是否应答为就绪信号——这也正是 Playwright 要连的地方。
+           * 必须是 Chrome 的应答，且我们自己启动的进程仍活着。
+           */
+          const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) });
+          const info = response.ok ? await response.json() : null;
+          if (typeof info?.Browser === 'string' && info.Browser.startsWith('Chrome/')) {
             await delay(Math.max(0, Math.min(8000, until - Date.now())), undefined, { signal });
+            signal.throwIfAborted();
+            if (failed || child.exitCode !== null || child.signalCode !== null) throw new BrowserError('浏览器启动失败', 'network-error');
             return `http://127.0.0.1:${port}`;
           }
-        } catch {}
+        } catch (error) {
+          if (error instanceof BrowserError || signal.aborted) throw error;
+        }
         await delay(100, undefined, { signal });
       }
       throw new BrowserError('等待浏览器启动超时', 'network-error');

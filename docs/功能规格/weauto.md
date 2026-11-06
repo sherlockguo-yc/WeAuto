@@ -369,7 +369,9 @@ v2free 先打开登录页并等待正常浏览器自然完成检查（最多一�
 
 **生产模式**：Linux 常驻服务默认 `WEAUTO_BROWSER_MODE=managed`，Mac 开发默认 `http`；显式 `http` 保留原路径。装配层将 v2free 标记为浏览器必选并设模板默认预算 180 秒，任务自设的调度和超时仍优先；缺浏览器/账号匹配失败时不解密、不回退 HTTP。其他任务不使用浏览器。
 
-`src/managed-browser.mjs` 每次执行启动正常 Chrome + Xvfb，并直接使用该浏览器初始页面；并发默认 1，等待受总任务预算与取消信号约束。profile 默认放在部署目录外的 `~/weauto-browser-profiles/<身份哈希>`，按用户/凭据组/凭据 ID 隔离。配置支持 `WEAUTO_BROWSER_PROFILES`、`WEAUTO_CHROME_PATH`、`WEAUTO_XVFB_PATH`、`WEAUTO_BROWSER_CONCURRENCY`。不关闭沙箱、不使用隐身参数，CDP 使用随机回环端口，生产不启动 VNC。
+`src/managed-browser.mjs` 每次执行启动正常 Chrome + Xvfb，并直接使用该浏览器初始页面；并发默认 1，等待受总任务预算与取消信号约束。profile 默认放在部署目录外的 `~/weauto-browser-profiles/<身份哈希>`，按用户/凭据组/凭据 ID 隔离。配置支持 `WEAUTO_BROWSER_PROFILES`、`WEAUTO_CHROME_PATH`、`WEAUTO_XVFB_PATH`、`WEAUTO_BROWSER_CONCURRENCY`。不关闭沙箱、不使用隐身参数，生产不启动 VNC。
+
+**调试端口必须是具体端口，不能是 `--remote-debugging-port=0`**：`pickLoopbackPort()` 在 `127.0.0.1` 上随机选 20000–50000 的空闲端口。2026-11-06 的单因素对照中，profile、窗口位置、环境变量、VNC、父进程都不影响结果，只有「端口 0」与「具体端口」不同——端口 0 的 14 次全部停在 Cloudflare 挑战页，具体端口（固定 19222 与随机端口）的 12 次全部进入登录页。**原因未查明，属经验性结论**，不要据此推断 Cloudflare 的检测规则；若日后挑战复发，这条结论需要重新验证。指定具体端口后 Chrome **不再写 `DevToolsActivePort`**，所以就绪信号是调试 HTTP 端点（`/json/version`）以 `Chrome/` 应答且自己启动的进程仍存活。这仍是正常 Chrome 的正常启动参数，不涉及伪装或隐藏自动化特征。
 
 每轮完成/取消先请求实际 Chrome 正常退出保存 profile，再关闭 CDP 连接；逾时仅清理自己创建的进程组。单纯 `browser.close()` 对 CDP 连接只会断开，不能替代 Chrome 退出。清理完成后才释放锁，清理失败保留锁；旧锁只在旧持有者及浏览器已结束时恢复。浏览器仅继承必要环境；线上缺少 XDG/DBus 时，仅使用实际存在的同用户会话 socket 补齐，不传应用密钥。
 
