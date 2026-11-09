@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import task, { runBrowser } from '../tasks/v2free-checkin.mjs';
+import task, { pauseFor, runBrowser, STEP_PAUSE_MS } from '../tasks/v2free-checkin.mjs';
 import { createPageDiagnostics } from '../src/browser-diagnostics.mjs';
 
 const sessionHtml = (traffic = '1GB', signed = false) => `<script>crispSessionData = [[["traffic","${traffic}"]]];</script><b>上次签到</b>:2026-11-05 09:00:00${signed ? '今日已签到' : ''}`;
@@ -14,7 +14,10 @@ function fixture({ login = false, signed = false, loginResponses = [response({ r
   let signedNow = signed;
   const calls = [];
   const logs = [];
+  const pauses = [];
   const signal = new AbortController().signal;
+  // 生产默认会真实停顿；测试里改成记录时长，既不等真实时间也不掩盖是否插入了停顿
+  const pause = async (ms) => { pauses.push(ms); calls.push(`pause:${ms}`); };
   const page = {
     goto: async () => calls.push('goto'),
     evaluate: async () => ({ pageKind: challengePage ? 'challenge' : 'site', route: atLogin ? 'login' : 'user',
@@ -40,7 +43,7 @@ function fixture({ login = false, signed = false, loginResponses = [response({ r
     }),
   };
   const diagnostics = createPageDiagnostics(page, { log: (line) => logs.push(JSON.parse(line.slice('[browser] '.length))), signal });
-  return { ctx: { browser: { page, diagnostics }, secrets: { V2FREE_EMAIL: 'private@example.test', V2FREE_PASSWORD: 'private-password' }, signal, log: () => {} }, calls, logs, page };
+  return { ctx: { browser: { page, diagnostics }, secrets: { V2FREE_EMAIL: 'private@example.test', V2FREE_PASSWORD: 'private-password' }, signal, pause, log: () => {} }, calls, logs, pauses, page };
 }
 it('expired session is automatically logged in and signed exactly once', async () => {
   const { ctx, calls } = fixture({ login: true });
@@ -51,6 +54,36 @@ it('expired session is automatically logged in and signed exactly once', async (
   assert.equal(result.data.transport, 'browser');
   assert.equal(calls.filter((item) => item === 'click:#login').length, 1);
   assert.equal(calls.filter((item) => item === 'click:#checkin').length, 1);
+});
+it('form steps are separated by fixed pauses instead of tens of milliseconds', async () => {
+  const { ctx, calls, pauses } = fixture({ login: true });
+  assert.equal((await runBrowser(ctx)).status, 'success');
+  assert.deepEqual(pauses, [STEP_PAUSE_MS.beforeFill, STEP_PAUSE_MS.betweenFields, STEP_PAUSE_MS.beforeSubmit, STEP_PAUSE_MS.beforeCheckin]);
+  for (const ms of pauses) assert.ok(ms >= 500, `pause ${ms}ms is too short to avoid a burst`);
+  assert.deepEqual(calls.filter((call) => /^(pause|fill|click):/.test(call)),
+    ['pause:1200', 'fill:#email', 'pause:900', 'fill:#passwd', 'pause:1100', 'click:#login', 'pause:1500', 'click:#checkin']);
+});
+it('pauses are logged with their measured duration', async () => {
+  const { ctx, logs } = fixture({ login: true });
+  await runBrowser(ctx);
+  const pauseOps = logs.filter((line) => line.op?.startsWith('pause_') && line.event === 'operation_done');
+  assert.deepEqual(pauseOps.map((line) => line.op),
+    ['pause_before_fill', 'pause_between_fields', 'pause_before_submit', 'pause_before_checkin']);
+});
+it('pause is abortable and never holds shutdown for the full interval', async () => {
+  const controller = new AbortController();
+  const started = Date.now();
+  const pending = pauseFor(controller.signal, 5_000);
+  setTimeout(() => controller.abort(new Error('stop')), 30);
+  await assert.rejects(pending, /stop/);
+  assert.ok(Date.now() - started < 1_000, 'abort should end the pause immediately');
+  await assert.rejects(pauseFor(AbortSignal.abort(), 10));
+  await pauseFor(new AbortController().signal, 0);
+});
+it('already-signed path inserts no delays', async () => {
+  const { ctx, pauses } = fixture({ signed: true });
+  assert.equal((await runBrowser(ctx)).status, 'already-signed');
+  assert.deepEqual(pauses, []);
 });
 it('already-signed skips login and checkin', async () => {
   const { ctx, calls } = fixture({ signed: true });

@@ -1,7 +1,8 @@
 const EVENTS = new Set(['operation_start', 'operation_done', 'operation_failed', 'page_state', 'response',
   'request_failed', 'resource_http_error', 'page_error', 'page_closed', 'browser_disconnected', 'lifecycle', 'snapshot_failed']);
 const OPERATIONS = new Set(['open_login', 'wait_ready', 'reload_login', 'open_user', 'fill_email', 'fill_password',
-  'click_login', 'login_response', 'login_redirect', 'read_account', 'click_checkin', 'checkin_response', 'reload_account', 'readback']);
+  'click_login', 'login_response', 'login_redirect', 'read_account', 'click_checkin', 'checkin_response', 'reload_account', 'readback',
+  'pause_before_fill', 'pause_between_fields', 'pause_before_submit', 'pause_before_checkin']);
 const PHASES = new Set(['queue', 'profile_lock', 'launch', 'ready', 'connect', 'page', 'acquire_failed', 'cancel',
   'cleanup_start', 'chrome_close', 'disconnect', 'terminate', 'cleanup_done', 'cleanup_failed', 'spawn_error', 'startup_exit']);
 const STAGES = new Set(['打开登录页', '访问账户页', '登录', '等待登录跳转', '签到', '回读账户页']);

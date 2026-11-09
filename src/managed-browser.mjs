@@ -128,7 +128,13 @@ export function browserEnvironment(env = process.env, runtimeDir = `/run/user/${
  * 其它条件（profile、窗口、环境变量、VNC、父进程）都不影响结果，只有「端口 0」与
  * 「具体端口」不同——端口 0 启动的 Chrome 14 次中 14 次停在 Cloudflare 挑战页，
  * 具体端口 12 次中 12 次进入登录页（含固定 19222 与随机 20000-50000）。
- * 原因没有查明，这是经验性结论；仍用随机端口而不是固定端口，避免调试入口可预测。
+ *
+ * 2026-11-09 实测的可观察差异：端口 0 启动时页面里 `navigator.webdriver === true`，
+ * 具体端口时为 `false`（同一 Chrome、同样的参数，只改端口）。所以这个改动的实际效果是：
+ * 浏览器不再向站点自报“正在被自动化”。我们没有设置或修补任何标志，也没有伪装其它指纹；
+ * 但这是它的效果，不要把它描述成与反自动化检测无关。
+ * 是否就是 Cloudflare 放行的原因，只有相关性证据（26 次对照），没有因果证明。
+ * 仍用随机端口而不是固定端口，避免调试入口可预测。
  */
 export async function pickLoopbackPort({ attempts = 20, random = Math.random, listen = net.createServer } = {}) {
   for (let i = 0; i < attempts; i++) {
