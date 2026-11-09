@@ -167,21 +167,35 @@ function browserResponse(path) {
 }
 
 /**
- * 表单步骤之间的固定停顿（毫秒）。
+ * 表单步骤之间的停顿区间（毫秒，闭区间）。
  *
  * 为什么要有：2026-11-09 的执行日志里，填邮箱 50ms、填密码 22ms、点登录 82ms —— 一整串
- * 操作挤在几十毫秒内，这不是人手的速度。这里只做「把间隔拉开」这一件事，用固定值而不是
- * 随机值、不模拟鼠标轨迹或逐字符输入：随机化与行为合成是为了骗过行为检测，不在这个任务的范围内。
+ * 操作挤在几十毫秒内，这不是人手的速度。
  *
- * 四个停顿时长按「人看页面 → 填两项 → 确认」的粗略节奏取，总和约 3.2 秒（签到前再加 1.5 秒），
- * 相对 180 秒的执行预算可以忽略；全部响应取消信号，退出时不会卡住。
+ * 为什么用区间而不是固定值：固定间隔意味着每次执行的时间戳序列完全等长，这是很容易被
+ * 统计出来的机器特征。项目本来就把每日触发时刻做了随机化（见 schedule.mjs 的 seed），
+ * 这里沿用同一个思路：**只随机化时间，不碰任何身份或指纹属性**。
+ *
+ * 明确不做的事：不合成鼠标轨迹、不逐字符模拟输入、不修补 navigator.webdriver 之类的属性。
+ * 那些是在伪造“人的行为与身份”以规避验证，与“把间隔拉开并加抖动”不是一回事。
+ * 也要清楚：随机化只是修掉一个弱信号，不可能让检测结论反转；剩下的大差异（无鼠标移动、
+ * WebGL 不可用、语言时区不一致）仍在，不要把它当成过验证的手段。
+ *
+ * 区间按「人看页面 → 填两项 → 确认」的粗略范围取，最坏情况合计约 7.6 秒，相对 180 秒的
+ * 执行预算可以忽略；全部响应取消信号，退出时不会卡住。
  */
-export const STEP_PAUSE_MS = Object.freeze({
-  beforeFill: 1_200,
-  betweenFields: 900,
-  beforeSubmit: 1_100,
-  beforeCheckin: 1_500,
+export const STEP_PAUSE_RANGE = Object.freeze({
+  beforeFill: Object.freeze([900, 1_800]),
+  betweenFields: Object.freeze([600, 1_500]),
+  beforeSubmit: Object.freeze([800, 1_800]),
+  beforeCheckin: Object.freeze([1_000, 2_500]),
 });
+
+/** 在区间内取一个整数毫秒。random 可注入，让测试能断言“确实用了随机值”而不是碰运气。 */
+export function pauseMsFor([min, max], random = Math.random) {
+  if (!(max >= min)) throw new Error('停顿区间非法');
+  return min + Math.floor(random() * (max - min + 1));
+}
 
 /** 可取消的停顿：取消时立即结束，不会让退出等待整个间隔。 */
 export async function pauseFor(signal, ms) {
@@ -202,7 +216,7 @@ export async function pauseFor(signal, ms) {
   });
 }
 
-export async function runBrowser({ browser, secrets, signal, log, pause = (ms) => pauseFor(signal, ms) }) {
+export async function runBrowser({ browser, secrets, signal, log, pause = (ms) => pauseFor(signal, ms), random = Math.random }) {
   const page = browser.page;
   const diagnostics = browser.diagnostics;
   let stage = '打开登录页';
@@ -243,12 +257,12 @@ export async function runBrowser({ browser, secrets, signal, log, pause = (ms) =
       for (let attempt = 0; attempt < 2; attempt++) {
         stage = '登录';
         signal.throwIfAborted();
-        await operation('pause_before_fill', () => pause(STEP_PAUSE_MS.beforeFill), attempt + 1);
+        await operation('pause_before_fill', () => pause(pauseMsFor(STEP_PAUSE_RANGE.beforeFill, random)), attempt + 1);
         await operation('fill_email', () => page.locator('#email').fill(secrets.V2FREE_EMAIL), attempt + 1);
-        await operation('pause_between_fields', () => pause(STEP_PAUSE_MS.betweenFields), attempt + 1);
+        await operation('pause_between_fields', () => pause(pauseMsFor(STEP_PAUSE_RANGE.betweenFields, random)), attempt + 1);
         await operation('fill_password', () => page.locator('#passwd').fill(secrets.V2FREE_PASSWORD), attempt + 1);
         signal.throwIfAborted();
-        await operation('pause_before_submit', () => pause(STEP_PAUSE_MS.beforeSubmit), attempt + 1);
+        await operation('pause_before_submit', () => pause(pauseMsFor(STEP_PAUSE_RANGE.beforeSubmit, random)), attempt + 1);
         const pending = page.waitForResponse(browserResponse('/auth/login'), { timeout: 30_000 });
         pending.catch(() => {});
         await operation('click_login', () => page.locator('#login').click(), attempt + 1);
@@ -286,7 +300,7 @@ export async function runBrowser({ browser, secrets, signal, log, pause = (ms) =
     signal.throwIfAborted();
     const pending = page.waitForResponse(browserResponse('/user/checkin'), { timeout: 30_000 });
     pending.catch(() => {});
-    await operation('pause_before_checkin', () => pause(STEP_PAUSE_MS.beforeCheckin));
+    await operation('pause_before_checkin', () => pause(pauseMsFor(STEP_PAUSE_RANGE.beforeCheckin, random)));
     await operation('click_checkin', () => page.locator('#checkin').click());
     checkinSubmitted = true;
     const response = await jsonResponse(pending, 'checkin_response');
@@ -388,8 +402,8 @@ export default {
    * request 由执行器注入（绑定到本账号的 UA），默认值只为「直接调 task.run」的场景兜底。
    * 不要在这里 import 模块级 request 来用——那样多个账号会共用同一个 UA。
    */
-  async run({ secrets, log, request = defaultRequest, browser, signal, pause }) {
-    if (browser) return runBrowser({ secrets, log, browser, signal, pause });
+  async run({ secrets, log, request = defaultRequest, browser, signal, pause, random }) {
+    if (browser) return runBrowser({ secrets, log, browser, signal, pause, random });
     const jar = new CookieJar();
 
     /* ── 1. 登录 ── */

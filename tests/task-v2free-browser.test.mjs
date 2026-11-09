@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import task, { pauseFor, runBrowser, STEP_PAUSE_MS } from '../tasks/v2free-checkin.mjs';
+import task, { pauseFor, pauseMsFor, runBrowser, STEP_PAUSE_RANGE } from '../tasks/v2free-checkin.mjs';
 import { createPageDiagnostics } from '../src/browser-diagnostics.mjs';
 
 const sessionHtml = (traffic = '1GB', signed = false) => `<script>crispSessionData = [[["traffic","${traffic}"]]];</script><b>上次签到</b>:2026-11-05 09:00:00${signed ? '今日已签到' : ''}`;
@@ -18,6 +18,9 @@ function fixture({ login = false, signed = false, loginResponses = [response({ r
   const signal = new AbortController().signal;
   // 生产默认会真实停顿；测试里改成记录时长，既不等真实时间也不掩盖是否插入了停顿
   const pause = async (ms) => { pauses.push(ms); calls.push(`pause:${ms}`); };
+  // 固定随机序列：既能确定性断言，也能证明取值确实在变，而不是退回固定值
+  const randomValues = [0, 0.5, 0.9999, 0.25];
+  const random = () => randomValues.shift() ?? 0.5;
   const page = {
     goto: async () => calls.push('goto'),
     evaluate: async () => ({ pageKind: challengePage ? 'challenge' : 'site', route: atLogin ? 'login' : 'user',
@@ -43,7 +46,7 @@ function fixture({ login = false, signed = false, loginResponses = [response({ r
     }),
   };
   const diagnostics = createPageDiagnostics(page, { log: (line) => logs.push(JSON.parse(line.slice('[browser] '.length))), signal });
-  return { ctx: { browser: { page, diagnostics }, secrets: { V2FREE_EMAIL: 'private@example.test', V2FREE_PASSWORD: 'private-password' }, signal, pause, log: () => {} }, calls, logs, pauses, page };
+  return { ctx: { browser: { page, diagnostics }, secrets: { V2FREE_EMAIL: 'private@example.test', V2FREE_PASSWORD: 'private-password' }, signal, pause, random, log: () => {} }, calls, logs, pauses, page };
 }
 it('expired session is automatically logged in and signed exactly once', async () => {
   const { ctx, calls } = fixture({ login: true });
@@ -55,13 +58,28 @@ it('expired session is automatically logged in and signed exactly once', async (
   assert.equal(calls.filter((item) => item === 'click:#login').length, 1);
   assert.equal(calls.filter((item) => item === 'click:#checkin').length, 1);
 });
-it('form steps are separated by fixed pauses instead of tens of milliseconds', async () => {
+it('form steps are separated by randomized pauses instead of tens of milliseconds', async () => {
   const { ctx, calls, pauses } = fixture({ login: true });
   assert.equal((await runBrowser(ctx)).status, 'success');
-  assert.deepEqual(pauses, [STEP_PAUSE_MS.beforeFill, STEP_PAUSE_MS.betweenFields, STEP_PAUSE_MS.beforeSubmit, STEP_PAUSE_MS.beforeCheckin]);
-  for (const ms of pauses) assert.ok(ms >= 500, `pause ${ms}ms is too short to avoid a burst`);
+  // random 序列 [0, 0.5, 0.999, 0.25] 对应的取值：下界、中点、上界、1/4 处
+  assert.deepEqual(pauses, [900, 1_050, 1_800, 1_375]);
+  for (const ms of pauses) assert.ok(ms >= 600, `pause ${ms}ms is too short to avoid a burst`);
+  assert.ok(new Set(pauses).size > 1, 'pauses must vary, not be a fixed constant');
   assert.deepEqual(calls.filter((call) => /^(pause|fill|click):/.test(call)),
-    ['pause:1200', 'fill:#email', 'pause:900', 'fill:#passwd', 'pause:1100', 'click:#login', 'pause:1500', 'click:#checkin']);
+    ['pause:900', 'fill:#email', 'pause:1050', 'fill:#passwd', 'pause:1800', 'click:#login', 'pause:1375', 'click:#checkin']);
+});
+it('pause values stay inside their ranges and differ across random inputs', () => {
+  for (const range of Object.values(STEP_PAUSE_RANGE)) {
+    assert.equal(pauseMsFor(range, () => 0), range[0]);
+    assert.equal(pauseMsFor(range, () => 0.999999), range[1]);
+    const sampled = [0.1, 0.4, 0.75, 0.95].map((r) => pauseMsFor(range, () => r));
+    for (const ms of sampled) {
+      assert.ok(Number.isInteger(ms), 'pause must be whole milliseconds');
+      assert.ok(ms >= range[0] && ms <= range[1], `${ms} outside ${range}`);
+    }
+    assert.ok(new Set(sampled).size > 1, 'sampling must not collapse to one value');
+  }
+  assert.throws(() => pauseMsFor([10, 5]), /停顿区间非法/);
 });
 it('pauses are logged with their measured duration', async () => {
   const { ctx, logs } = fixture({ login: true });
