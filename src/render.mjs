@@ -185,7 +185,7 @@ export function layout({ title, active, body, user = null, banner = '', settings
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <script>${THEME_BOOT}</script>
-<title>${esc(title)} · WeAuto</title>
+<title>WeAuto · ${esc(title)}</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
@@ -222,7 +222,7 @@ export function authPage({ mode, error = '', redirect = '/', hasUsers = true }) 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <script>${THEME_BOOT}</script>
-<title>${esc(title)} · WeAuto</title>
+<title>WeAuto · ${esc(title)}</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
@@ -280,7 +280,7 @@ export function registerPage({ code = '', error = '', fatal = '', username = '' 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <script>${THEME_BOOT}</script>
-<title>注册 · WeAuto</title>
+<title>WeAuto · 注册</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
