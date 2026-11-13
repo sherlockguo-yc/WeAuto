@@ -563,11 +563,29 @@ export function createServer({
       includeSkipped,
     });
     const lastCompleted = runs.find((r) => r.status !== 'skipped') ?? null;
+    /*
+     * 活跃图的数据：按天汇总最近一年。
+     *
+     * 起点取「任务创建日」与「一年前」里更晚的那个——建了三天的任务不必扫整年，
+     * 画布那边同样按创建日把左边的格子留空（新任务不该先看到一整年虚假的「没跑」）。
+     * 创建时间理论上不晚于当前时刻；时钟回拨时会变成「未来」，那时按今天算，
+     * 否则整张图都会被判成「还没建」而全空。
+     */
+    const startedAt = Math.min(t.createdAt ?? now(), now());
+    const activity = {
+      today: summary.today,
+      createdOn: dateInTZ(new Date(startedAt)),
+      days: mine.dailyActivity(t.taskName, {
+        accountKey: historyAccountKey,
+        from: dateInTZ(new Date(Math.max(startedAt, now() - 364 * 86_400_000))),
+      }),
+    };
     return {
       task,
       summary,
       view: renderView(summary.view, lastCompleted?.data ?? {}),
       runs,
+      activity,
       // 「最近 50 条里被隐藏掉的 skipped 有几条」——点 ?all=1 显示的就是这 50 条
       hiddenSkipped: window.filter((r) => r.status === 'skipped').length,
       includeSkipped,
@@ -643,6 +661,7 @@ export function createServer({
           },
           view: d.view,
           runs: pageRuns,
+          activity: d.activity,
           hasMoreRuns: d.runs.length > pageRuns.length,
           runsCursor: runCursor(pageRuns[pageRuns.length - 1]),
           hiddenSkipped: d.hiddenSkipped,

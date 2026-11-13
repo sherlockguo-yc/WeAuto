@@ -240,7 +240,8 @@ export function createStore(db, { limits = {} } = {}) {
        AND trigger = 'schedule'`,
     ),
     allRunsForPrune: db.prepare(
-      'SELECT id, date, status, ts FROM runs WHERE user_id = ? AND task_name = ? ORDER BY ts ASC',
+      `SELECT id, date, account_key, status, ts FROM runs
+        WHERE user_id = ? AND task_name = ? ORDER BY ts ASC`,
     ),
     deleteRun: db.prepare('DELETE FROM runs WHERE id = ?'),
     deleteRunsOfUser: db.prepare('DELETE FROM runs WHERE user_id = ?'),
@@ -314,15 +315,37 @@ export function createStore(db, { limits = {} } = {}) {
       'SELECT * FROM run_stats_daily WHERE user_id = ? AND task_name = ? ORDER BY date DESC LIMIT ?',
     ),
     addStat: db.prepare(
-      `INSERT INTO run_stats_daily (user_id, task_name, date, success, failed, skipped, total)
-       VALUES (@user_id, @task_name, @date, @success, @failed, @skipped, @total)
-       ON CONFLICT(user_id, task_name, date) DO UPDATE SET
+      `INSERT INTO run_stats_daily (user_id, task_name, account_key, date, success, failed, skipped, total)
+       VALUES (@user_id, @task_name, @account_key, @date, @success, @failed, @skipped, @total)
+       ON CONFLICT(user_id, task_name, account_key, date) DO UPDATE SET
          success = success + excluded.success,
          failed  = failed  + excluded.failed,
          skipped = skipped + excluded.skipped,
          total   = total   + excluded.total`,
     ),
     deleteStatsOfUser: db.prepare('DELETE FROM run_stats_daily WHERE user_id = ?'),
+
+    /*
+     * 活跃图的数据源有两个，必须相加，不能只查一个：
+     *   · runs：还在保留期内的明细，按任务实例（account_key）分；
+     *   · run_stats_daily：明细被保留策略清理时累加下来的计数（先累加、再删，
+     *     所以两张表在同一个日期上不会重叠，相加不会算重）。
+     * 只查明细，超过保留期的日子会伪装成「没跑过」；只查统计，最近的日子还没被汇总。
+     */
+    runsDailyOfTask: db.prepare(
+      `SELECT date,
+              SUM(CASE WHEN status IN (${inClause}) THEN 1 ELSE 0 END) AS success,
+              SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped,
+              COUNT(*) AS total
+         FROM runs
+        WHERE user_id = ? AND task_name = ? AND account_key = ? AND date >= ?
+        GROUP BY date`,
+    ),
+    statsDailyOfTask: db.prepare(
+      `SELECT date, success, skipped, total FROM run_stats_daily
+        WHERE user_id = ? AND task_name = ? AND account_key = ? AND date >= ?
+        ORDER BY date`,
+    ),
 
     /* ───────── 平台视角（/admin 用，跨用户只读统计） ───────── */
     statusesOnDate: db.prepare('SELECT status, COUNT(*) AS n FROM runs WHERE date = ? GROUP BY status'),
@@ -620,6 +643,42 @@ export function createStore(db, { limits = {} } = {}) {
     }
 
     /**
+     * 每天的执行结果（活跃图用它）——「这个任务在哪些天成功、哪些天失败」。
+     *
+     * 与 statsOfTask 的区别：那个是模板级的累计计数，这里是**任务实例级**的
+     * 逐日结果，且把还在保留期内的明细一起算进来（见 runsDailyOfTask 的注释）。
+     *
+     * @param {string} taskName 模板名
+     * @param {{accountKey?: string, from?: string}} [opts]
+     *   from 是「最早要哪一天」（YYYY-MM-DD，含当天），用来把扫描收窄到图上能画到的范围
+     * @returns {{date: string, success: number, failed: number, skipped: number, total: number}[]}
+     *   按日期升序，中间没有记录的日子**不出现**（画布自己补空档）
+     */
+    function dailyActivity(taskName, { accountKey = '', from = '' } = {}) {
+      const merged = new Map();
+      const add = (date, success, skipped, total) => {
+        const cur = merged.get(date) ?? { date, success: 0, failed: 0, skipped: 0, total: 0 };
+        const ok = Number(success ?? 0);
+        const skip = Number(skipped ?? 0);
+        const all = Number(total ?? 0);
+        cur.success += ok;
+        cur.skipped += skip;
+        cur.total += all;
+        // 失败是「剩下的」：不把状态名硬编码进来，新增一个失败类状态不用回来改这里
+        cur.failed += Math.max(0, all - ok - skip);
+        merged.set(date, cur);
+      };
+      for (const r of s.statsDailyOfTask.all(userId, taskName, accountKey, from)) {
+        add(r.date, r.success, r.skipped, r.total);
+      }
+      // successList 展开在参数表最前面：它们占的是 SELECT 里那组占位符
+      for (const r of s.runsDailyOfTask.all(...successList, userId, taskName, accountKey, from)) {
+        add(r.date, r.success, r.skipped, r.total);
+      }
+      return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    /**
      * 保留策略：先聚合、再删明细。
      * 两个维度都要：只按天数删挡不住 interval 类任务；只按条数删会留着陈年记录。
      */
@@ -636,19 +695,30 @@ export function createStore(db, { limits = {} } = {}) {
 
       if (!drop.length) return { dropped: 0, aggregated: 0 };
 
-      const byDate = new Map();
+      // 分组键要带上 account_key：同一个模板的多个任务各有各的活跃图，
+      // 合成一行的话 A 的成功会画进 B 的图里
+      const byDay = new Map();
       for (const r of drop) {
-        const acc = byDate.get(r.date) ?? { success: 0, failed: 0, skipped: 0, total: 0 };
+        const accountKey = r.account_key ?? '';
+        const key = `${r.date}\u0000${accountKey}`;
+        const acc = byDay.get(key) ?? {
+          account_key: accountKey,
+          date: r.date,
+          success: 0,
+          failed: 0,
+          skipped: 0,
+          total: 0,
+        };
         if (SUCCESS_STATUSES.has(r.status)) acc.success += 1;
         else if (r.status === 'skipped') acc.skipped += 1;
         else acc.failed += 1;
         acc.total += 1;
-        byDate.set(r.date, acc);
+        byDay.set(key, acc);
       }
 
       const tx = db.transaction(() => {
-        for (const [date, acc] of byDate) {
-          s.addStat.run({ user_id: userId, task_name: taskName, date, ...acc });
+        for (const acc of byDay.values()) {
+          s.addStat.run({ user_id: userId, task_name: taskName, ...acc });
         }
         for (const r of drop) s.deleteRun.run(r.id);
       });
@@ -658,7 +728,8 @@ export function createStore(db, { limits = {} } = {}) {
       const logCutoff = nowMs - (retention.logDays ?? retention.days) * DAY_MS;
       const { changes } = s.deleteLogsBefore.run(userId, taskName, logCutoff);
 
-      return { dropped: drop.length, aggregated: byDate.size, logsDropped: changes };
+      // aggregated 的口径是「写进统计的条目数」（日期 × 任务实例），不再是纯天数
+      return { dropped: drop.length, aggregated: byDay.size, logsDropped: changes };
     }
 
     return {
@@ -688,6 +759,7 @@ export function createStore(db, { limits = {} } = {}) {
       appendLogs,
       logsOfRun: (runId) => s.logsOfRun.all(runId),
       getRun: (id) => rowToRun(s.runById.get(id)),
+      dailyActivity,
       stateOf,
       saveState,
       statsOfTask,

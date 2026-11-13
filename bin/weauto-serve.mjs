@@ -131,7 +131,8 @@ async function main() {
         try {
           const res = store.forUser(userId).pruneTask(task.name, task.retention);
           if (res.dropped) {
-            console.log(`[prune] #${userId} ${task.name} 清理 ${res.dropped} 条明细，聚合 ${res.aggregated} 天`);
+            // aggregated 是「日期 × 任务实例」的条目数，不再是纯天数
+            console.log(`[prune] #${userId} ${task.name} 清理 ${res.dropped} 条明细，聚合 ${res.aggregated} 条日统计`);
           }
         } catch (err) {
           console.error(`[prune] #${userId} ${task.name} 清理失败：${err.message}`);

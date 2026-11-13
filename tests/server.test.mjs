@@ -901,6 +901,38 @@ describe('执行历史默认隐藏跳过记录', () => {
 });
 
 /* ───────────────────────────────────────────────────────
+   活跃图：历史是一条条列出来的，看不出「哪几天没办成」。
+   这里只验「数据真的到了页面上」——对位与状态映射由 render-heat 单测兜。
+   ------------------------------------------------------ */
+describe('执行活跃图', () => {
+  it('任务页按天铺开执行结果，成功与失败各自成格', async () => {
+    const { base, store, db } = await startServer();
+    // 任务创建日要早于下面写的记录，否则会被「建之前的日子不画」挡掉。
+    // 真实环境里 created_at 就是建任务那一刻，这里直接改行是为了对齐测试时钟
+    db.prepare('UPDATE subscriptions SET created_at = ? WHERE id = 1').run(NOW - 30 * 86_400_000);
+    const mine = store.forUser(USER_ID);
+    mine.appendRun({ taskName: DEMO_TASK.name, date: '2026-10-12', ts: NOW - 2 * 86_400_000, status: 'success' });
+    mine.appendRun({ taskName: DEMO_TASK.name, date: '2026-10-13', ts: NOW - 86_400_000, status: 'failed' });
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+
+    assert.match(html, /class="heat"/);
+    assert.match(html, /近一年/);
+    assert.match(html, /class="heat-cell is-ok" title="10-12 · 成功 1 次"/);
+    assert.match(html, /class="heat-cell is-bad" title="10-13 · 失败 1 次"/);
+    assert.match(html, /class="heat-legend"/);
+  });
+
+  it('还没有执行记录时不渲染（历史区的空态已经说明问题）', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    assert.equal(html.includes('class="heat"'), false);
+  });
+});
+
+/* ───────────────────────────────────────────────────────
    历史按需加载：首屏只铺一屏，剩下的滚到底再取。
    以前一次铺 50 条，任务跑上几个月后进任务页要先滑过几屏「昨天成功」。
    ------------------------------------------------------ */

@@ -394,6 +394,54 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 9,
+    description: '每日统计补上任务实例维度：活跃图按「这个任务」算，不能把同模板的另一个账号混进来',
+    up(db) {
+      /*
+       * 统计原来只按 (user, 模板, 日期) 记。任务页讲的是「我这个任务」——
+       * 同一个模板可以建多个任务（不同账号），按模板汇总的话 A 的成功会画进 B 的图里。
+       *
+       * 老数据没有账号维度，只能尽力还原：该模板下恰好只有一个任务时归给它，
+       * 否则留在 ''（宁可图上少几天，也不能张冠李戴）。
+       *
+       * 注意主键变了，SQLite 不支持改主键，只能建新表搬过去。
+       */
+      const rows = db.prepare('SELECT * FROM run_stats_daily').all();
+      const ownerOf = db.prepare(
+        `SELECT COUNT(*) AS n, MAX(account_key) AS account_key FROM subscriptions
+          WHERE user_id = ? AND task_name = ?`,
+      );
+
+      db.exec(`
+        CREATE TABLE run_stats_daily_new (
+          user_id     INTEGER NOT NULL DEFAULT 1,
+          task_name   TEXT    NOT NULL,
+          account_key TEXT    NOT NULL DEFAULT '',
+          date        TEXT    NOT NULL,
+          success     INTEGER NOT NULL DEFAULT 0,
+          failed      INTEGER NOT NULL DEFAULT 0,
+          skipped     INTEGER NOT NULL DEFAULT 0,
+          total       INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (user_id, task_name, account_key, date)
+        );
+      `);
+      const insert = db.prepare(
+        `INSERT INTO run_stats_daily_new
+           (user_id, task_name, account_key, date, success, failed, skipped, total)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const r of rows) {
+        const owner = ownerOf.get(r.user_id, r.task_name);
+        const accountKey = owner.n === 1 ? owner.account_key ?? '' : '';
+        insert.run(r.user_id, r.task_name, accountKey, r.date, r.success, r.failed, r.skipped, r.total);
+      }
+      db.exec(`
+        DROP TABLE run_stats_daily;
+        ALTER TABLE run_stats_daily_new RENAME TO run_stats_daily;
+      `);
+    },
+  },
 ];
 
 /** 用 meta 表记录 schema 版本（用户表之外的第一张表，永远存在） */

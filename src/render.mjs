@@ -84,6 +84,164 @@ export function historyRows(runs) {
     : '<p class="empty">还没有执行记录</p>';
 }
 
+/* ─────────────────── 执行活跃图 ───────────────────
+   历史是一条条列出来的，读得出「最近几次」，读不出「这两个月是不是一直不顺」。
+   所以再加一张按天铺开的图：一列一周、七行是周一到周日。
+
+   和 GitHub 的贡献图同一个读法，但三处刻意不同：
+     · 颜色表达**结果**而不是次数。每日任务一天就跑一次，深浅只会让人盯着
+       色阶猜；「这天有没有失败」才是这张图要回答的问题。
+     · 任务创建之前、今天之后不画格子：新任务不该先看到一整年虚假的「没跑」。
+     · 今天那格套一圈强调色，不用数最后一列在哪。
+   ------------------------------------------------------ */
+
+/**
+ * 时间窗 = 53 周（含本周）。
+ *
+ * 不是「今天往前 365 天」：按自然周对齐，每一列正好是一周，扫一眼能与日历对上；
+ * 半列起头会让第一个月标签和格子的对应关系变得可疑。
+ */
+const HEAT_WEEKS = 53;
+const HEAT_DAY_MS = 86_400_000;
+/** 行序：周一到周日。与中文日历一致，不跟 GitHub 的周日开头 */
+const HEAT_ROWS = ['一', '二', '三', '四', '五', '六', '日'];
+/** 七行全标会挤成一片小字，只标一/三/五（与 GitHub 同款取舍） */
+const HEAT_LABELED_ROWS = [0, 2, 4];
+/** 图例。跳过只在真的出现过时才列，平时少一个噪音 */
+const HEAT_KEYS = [
+  ['ok', '成功'],
+  ['mixed', '部分成功'],
+  ['bad', '失败'],
+  ['skip', '跳过'],
+  ['none', '未执行'],
+];
+
+/** 'YYYY-MM-DD' → UTC 零点毫秒。只用于日期算术，不参与展示（展示一律用字符串） */
+function ymdToMs(ymd) {
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  return Date.UTC(y, m - 1, d);
+}
+
+const msToYmd = (ms) => new Date(ms).toISOString().slice(0, 10);
+/** 周一 = 0 … 周日 = 6 */
+const mondayIndex = (ms) => (new Date(ms).getUTCDay() + 6) % 7;
+
+/**
+ * 一格的颜色 = 那天发生了什么，不是发生了多少次。
+ *
+ * 失败由 total - success - skipped 推出，所以「新增一个失败类状态」不需要回来改这里。
+ */
+function heatStateOf(day) {
+  if (!day) return 'none';
+  if (day.success > 0) return day.failed > 0 ? 'mixed' : 'ok';
+  if (day.failed > 0) return 'bad';
+  return day.skipped > 0 ? 'skip' : 'none';
+}
+
+/** 悬停提示：日期 + 那天的结果构成。没有记录也说清楚，别让人以为是渲染丢了 */
+function heatTitle(date, day) {
+  const bits = [];
+  if (day?.success) bits.push(`成功 ${day.success} 次`);
+  if (day?.failed) bits.push(`失败 ${day.failed} 次`);
+  if (day?.skipped) bits.push(`跳过 ${day.skipped} 次`);
+  return `${date.slice(5)} · ${bits.length ? bits.join('，') : '没有执行'}`;
+}
+
+/**
+ * 活跃图。
+ *
+ * @param {{days: object[], today: string, createdOn?: string|null}} opts
+ *   days 来自 store.dailyActivity（按日期升序，只含有记录的日子）；
+ *   createdOn 是任务创建日（北京时间），它之前的格子留空。
+ */
+export function activityHeat({ days = [], today, createdOn = null }) {
+  const todayMs = ymdToMs(today);
+  // 没有记录就不画：一屏灰格子在空任务上只会被读成「坏了」
+  if (!days.length || !Number.isFinite(todayMs)) return '';
+
+  const windowStart = todayMs - (HEAT_WEEKS * 7 - 1) * HEAT_DAY_MS;
+  const gridStart = windowStart - mondayIndex(windowStart) * HEAT_DAY_MS;
+  // 最后一列必须是含今天的那一周
+  const cols = Math.floor((todayMs - gridStart) / HEAT_DAY_MS / 7) + 1;
+
+  const byDate = new Map(days.map((d) => [d.date, d]));
+  // 创建日晚于今天（时钟回拨 / 测试替身）时按今天算，否则整张图会被判成「还没建」
+  const createdMs = createdOn ? Math.min(ymdToMs(createdOn), todayMs) : -Infinity;
+
+  const cells = [];
+  const months = [];
+  let prevMonth = -1;
+  for (let c = 0; c < cols; c++) {
+    const colMs = gridStart + c * 7 * HEAT_DAY_MS;
+    const month = new Date(colMs).getUTCMonth();
+    // 月标签落在「这一列的周一」上，与格子的列一一对应（GitHub 也是这个规则）
+    if (month !== prevMonth) {
+      months.push({ col: c + 1, text: `${month + 1}月` });
+      prevMonth = month;
+    }
+    for (let r = 0; r < 7; r++) {
+      const ms = colMs + r * HEAT_DAY_MS;
+      if (ms > todayMs || ms < createdMs) {
+        cells.push('<span class="heat-cell is-void"></span>');
+        continue;
+      }
+      const date = msToYmd(ms);
+      const day = byDate.get(date) ?? null;
+      const cls = `heat-cell is-${heatStateOf(day)}${ms === todayMs ? ' is-today' : ''}`;
+      cells.push(`<span class="${cls}" title="${esc(heatTitle(date, day))}"></span>`);
+    }
+  }
+
+  const monthHtml = months
+    .map((m, i) => {
+      const span = (months[i + 1]?.col ?? cols + 1) - m.col;
+      // 月底只剩一两列时不标：文字比格子宽，会把整行撑出横向滚动条
+      if (span < 3) return '';
+      return `<span class="heat-month" style="grid-column:${m.col} / span ${span}">${m.text}</span>`;
+    })
+    .join('');
+
+  const dayHtml = HEAT_LABELED_ROWS.map(
+    (r) => `<span style="grid-row:${r + 1}">${HEAT_ROWS[r]}</span>`,
+  ).join('');
+
+  const count = { ok: 0, mixed: 0, bad: 0, skip: 0 };
+  let runs = 0;
+  for (const d of days) {
+    const state = heatStateOf(d);
+    if (state in count) count[state] += 1;
+    // skipped 不算「执行过一次」：它代表没真的发出请求
+    runs += Math.max(0, d.total - d.skipped);
+  }
+
+  // 「部分成功」在窄屏上省掉（连同它的分隔符）：一行放不下会折成两行，
+  // 而它本来就是少数情况，图例和黄色格子都还在
+  const extra = count.mixed
+    ? `<span class="heat-sum-extra"> · 部分成功 <b class="wait">${count.mixed}</b> 天</span>`
+    : '';
+  const bad = count.bad ? ` · 失败 <b class="bad">${count.bad}</b> 天` : '';
+  const sum = `执行 <b>${runs}</b> 次 · 成功 <b class="ok">${count.ok}</b> 天${extra}${bad}`;
+
+  const legend = HEAT_KEYS.filter(([key]) => key !== 'skip' || count.skip)
+    .map(([key, text]) => `<span class="heat-key"><span class="heat-cell is-${key}"></span>${text}</span>`)
+    .join('');
+
+  return `<div class="heat">
+  <p class="heat-sum">近一年 ${sum}</p>
+  <div class="heat-body">
+    <div class="heat-days" aria-hidden="true">${dayHtml}</div>
+    <div class="heat-scroll" data-heat-scroll>
+      <div class="heat-inner">
+        <div class="heat-months" aria-hidden="true" style="grid-template-columns:repeat(${cols}, var(--cell))">${monthHtml}</div>
+        <div class="heat-grid" role="img" style="grid-template-columns:repeat(${cols}, var(--cell))"
+          aria-label="近一年每天的执行结果：成功 ${count.ok} 天，失败 ${count.bad + count.mixed} 天">${cells.join('')}</div>
+      </div>
+    </div>
+  </div>
+  <div class="heat-legend">${legend}</div>
+</div>`;
+}
+
 /* ── 图标 ────────────────────────────────────────────────
    全部内联 SVG，不引外部资源也不装图标库：部署时少一个失效点。
    统一 24 视口、描边风格，颜色跟着 currentColor 走。
@@ -594,6 +752,8 @@ export function pageTaskDetail({
   /** 下一页的游标，回传给 /api/tasks/:id/runs */
   runsCursor = '',
   credential = null,
+  /** 活跃图的数据（见 activityHeat）。没有记录时为 null，整块不渲染 */
+  activity = null,
   /** 由 UA 判断：Windows 给可直接双击的 .cmd，其它平台给 .mjs + 一行命令 */
   isWindows = false,
 }) {
@@ -641,6 +801,7 @@ ${taskConfigBody({ task: task, credential: credential, isWindows: isWindows })}
 
 <section class="card">
   <h2>执行历史</h2>
+  ${activity ? activityHeat(activity) : ''}
   <!-- 首屏只铺一屏，剩下的由「加载更多」按需取：data-cursor 是下一页的游标，
        滚动到底时 app.js 用它请求 /api/tasks/:id/runs，把返回的行追加到这个容器里 -->
   <div class="rows" data-history data-task="${esc(task.id)}" data-cursor="${esc(runsCursor)}" data-all="${

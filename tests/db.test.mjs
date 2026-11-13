@@ -86,6 +86,60 @@ describe('openDb', () => {
     }
   });
 
+  it('run_stats_daily 带上任务实例维度（同模板两个账号各存一行，不互相覆盖）', () => {
+    const db = openDb(freshPath());
+    openDbs.push(db);
+    const cols = db.prepare('PRAGMA table_info(run_stats_daily)').all().map((c) => c.name);
+    assert.ok(cols.includes('account_key'), 'run_stats_daily 缺少 account_key 列');
+
+    const ins = db.prepare(
+      `INSERT INTO run_stats_daily (user_id, task_name, account_key, date, success, failed, skipped, total)
+       VALUES (1, 't', ?, '2026-10-14', 1, 0, 0, 1)`,
+    );
+    ins.run('a-1');
+    ins.run('a-2');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM run_stats_daily').get().n, 2);
+  });
+
+  it('升级 v8 的老库：统计行归给唯一那个任务，同模板有多个任务时留空（不张冠李戴）', () => {
+    const file = freshPath();
+    // 手工建一个停在 v8 的库：迁移 1..8 原样跑一遍，再写入那个年代的数据
+    const old = new Database(file);
+    old.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    for (const m of MIGRATIONS.filter((x) => x.version <= 8)) m.up(old);
+    old.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', '8')").run();
+
+    const insUser = old.prepare(
+      'INSERT INTO users (id, username, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+    insUser.run(1, 'u1', 'h', 'user', 'active', 0);
+    insUser.run(2, 'u2', 'h', 'user', 'active', 0);
+    const insSub = old.prepare(
+      `INSERT INTO subscriptions (user_id, task_name, account_key, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, 1, 0, 0)`,
+    );
+    insSub.run(1, 'solo', 'a-solo'); // 该模板下只有一个任务 → 可以确定归属
+    insSub.run(2, 'twice', 'a-x'); // 同模板两个任务 → 归属不可知
+    insSub.run(2, 'twice', 'a-y');
+    const insStat = old.prepare(
+      `INSERT INTO run_stats_daily (user_id, task_name, date, success, failed, skipped, total)
+       VALUES (?, ?, '2026-10-01', 1, 0, 0, 1)`,
+    );
+    insStat.run(1, 'solo');
+    insStat.run(2, 'twice');
+    old.close();
+
+    const db = openDb(file);
+    openDbs.push(db);
+    assert.deepEqual(
+      db.prepare('SELECT task_name, account_key FROM run_stats_daily ORDER BY task_name').all(),
+      [
+        { task_name: 'solo', account_key: 'a-solo' },
+        { task_name: 'twice', account_key: '' },
+      ],
+    );
+  });
+
   it('runs 已为多账号预留 account_key（后加列便宜，后改契约要动每个任务）', () => {
     const db = openDb(freshPath());
     openDbs.push(db);

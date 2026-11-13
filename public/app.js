@@ -1096,4 +1096,13 @@
       return;
     }
   });
+
+  /* ── 活跃图：窄屏放不下一整年 ──────────────────────────
+     默认滚到最右（最近的日子）。不这样的话手机上打开看到的是「一年前的空白」，
+     还得先往右滑才知道图在哪。宽屏时根本不溢出，这次赋值是空操作。
+     ------------------------------------------------------ */
+  var heatScrolls = document.querySelectorAll('[data-heat-scroll]');
+  for (var hs = 0; hs < heatScrolls.length; hs++) {
+    heatScrolls[hs].scrollLeft = heatScrolls[hs].scrollWidth;
+  }
 })();

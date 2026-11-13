@@ -488,6 +488,7 @@ describe('保留策略：先聚合、再删明细', () => {
     assert.deepEqual(stats['2026-01-01'], {
       user_id: USER_ID, // 统计也是按用户分开的
       task_name: 't',
+      account_key: '', // 也按任务实例分开：同模板的多个任务不能合成一行
       date: '2026-01-01',
       success: 1,
       failed: 1,
@@ -543,5 +544,84 @@ describe('保留策略：先聚合、再删明细', () => {
     run(store, { ts: NOW });
     const res = store.pruneTask('t', { days: 90, maxRows: 2000, logDays: 30 }, NOW);
     assert.equal(res.dropped, 0);
+  });
+});
+
+/* ───────────────────────────────────────────────────────
+   每日执行结果 = 活跃图的数据源。
+   两个要求：① 只算「这个任务」，同模板的另一个账号不能混进来；
+   ② 明细被清理之后那天仍然要在图上（否则会被读成「那天没跑」）。
+   ─────────────────────────────────────────────────────── */
+describe('每日执行结果（活跃图数据源）', () => {
+  const NOW = Date.parse('2026-10-14T12:00:00+08:00');
+  const daysAgo = (n) => NOW - n * 86_400_000;
+
+  it('同一天的多条记录合成一格，失败由「剩下的」推出', () => {
+    const store = fresh();
+    run(store, { date: '2026-10-12', ts: daysAgo(2), status: 'success' });
+    run(store, { date: '2026-10-12', ts: daysAgo(2) + 1, status: 'failed' });
+    run(store, { date: '2026-10-12', ts: daysAgo(2) + 2, status: 'skipped' });
+
+    assert.deepEqual(store.dailyActivity('t'), [
+      { date: '2026-10-12', success: 1, failed: 1, skipped: 1, total: 3 },
+    ]);
+  });
+
+  it('明细被保留策略清理后，那一天仍然在（来自日统计）', () => {
+    const store = fresh();
+    run(store, { date: '2026-01-01', ts: daysAgo(300), status: 'success' });
+    store.pruneTask('t', { days: 90, maxRows: 2000, logDays: 30 }, NOW);
+    assert.equal(store.runsOfTask('t', { limit: 10 }).length, 0, '明细确实被删了');
+
+    assert.deepEqual(store.dailyActivity('t'), [
+      { date: '2026-01-01', success: 1, failed: 0, skipped: 0, total: 1 },
+    ]);
+  });
+
+  it('明细与日统计落在同一天时相加，不重复也不遗漏', () => {
+    const store = fresh();
+    run(store, { date: '2026-01-01', ts: daysAgo(300), status: 'success' });
+    store.pruneTask('t', { days: 90, maxRows: 2000, logDays: 30 }, NOW);
+    // 清理之后同一天又写进一条（补跑 / 导入）：两张表各有一份
+    run(store, { date: '2026-01-01', ts: daysAgo(299), status: 'failed' });
+
+    assert.deepEqual(store.dailyActivity('t'), [
+      { date: '2026-01-01', success: 1, failed: 1, skipped: 0, total: 2 },
+    ]);
+  });
+
+  it('按任务实例分开：同模板的另一个账号不混进来', () => {
+    const store = fresh();
+    run(store, { accountKey: 'a-1', date: '2026-10-12', status: 'success' });
+    run(store, { accountKey: 'a-2', date: '2026-10-12', status: 'failed' });
+
+    assert.deepEqual(store.dailyActivity('t', { accountKey: 'a-1' }), [
+      { date: '2026-10-12', success: 1, failed: 0, skipped: 0, total: 1 },
+    ]);
+    assert.deepEqual(store.dailyActivity('t', { accountKey: 'a-2' }), [
+      { date: '2026-10-12', success: 0, failed: 1, skipped: 0, total: 1 },
+    ]);
+  });
+
+  it('保留策略写出的日统计同样按任务实例分开', () => {
+    const store = fresh();
+    run(store, { accountKey: 'a-1', date: '2026-01-01', ts: daysAgo(300), status: 'success' });
+    run(store, { accountKey: 'a-2', date: '2026-01-01', ts: daysAgo(300) + 1, status: 'failed' });
+    store.pruneTask('t', { days: 90, maxRows: 2000, logDays: 30 }, NOW);
+
+    const stats = Object.fromEntries(store.statsOfTask('t').map((s) => [s.account_key, s]));
+    assert.equal(stats['a-1'].success, 1);
+    assert.equal(stats['a-2'].failed, 1);
+  });
+
+  it('from 之前的日期不返回（扫描范围就是画布能画到的范围）', () => {
+    const store = fresh();
+    run(store, { date: '2026-01-01', ts: 1 });
+    run(store, { date: '2026-10-12', ts: 2 });
+
+    assert.deepEqual(
+      store.dailyActivity('t', { from: '2026-10-01' }).map((d) => d.date),
+      ['2026-10-12'],
+    );
   });
 });
