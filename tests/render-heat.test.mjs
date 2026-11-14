@@ -56,17 +56,17 @@ describe('活跃图', () => {
       ],
       today: TODAY,
     });
-    const byDate = new Map(gridCells(html).filter((c) => c.title).map((c) => [c.title.slice(0, 5), c]));
+    const byDate = new Map(gridCells(html).filter((c) => c.title).map((c) => [c.title.slice(0, 10), c]));
 
-    assert.equal(byDate.get('11-02').state, 'ok');
-    assert.equal(byDate.get('11-03').state, 'mixed', '既有成功又有失败 → 部分成功');
-    assert.equal(byDate.get('11-04').state, 'bad');
-    assert.equal(byDate.get('11-05').state, 'skip');
-    assert.equal(byDate.get('11-06').state, 'none', '范围内没跑过的那天仍是空档，不是 void');
+    assert.equal(byDate.get('2026-11-02').state, 'ok');
+    assert.equal(byDate.get('2026-11-03').state, 'mixed', '既有成功又有失败 → 部分成功');
+    assert.equal(byDate.get('2026-11-04').state, 'bad');
+    assert.equal(byDate.get('2026-11-05').state, 'skip');
+    assert.equal(byDate.get('2026-11-06').state, 'none', '范围内没跑过的那天仍是空档，不是 void');
 
     // 提示里要写清构成，否则「部分成功」看不出是哪几次失败
-    assert.equal(byDate.get('11-03').title, '11-03 · 成功 1 次，失败 2 次');
-    assert.equal(byDate.get('11-06').title, '11-06 · 没有执行');
+    assert.equal(byDate.get('2026-11-03').title, '2026-11-03 · 成功 1 次，失败 2 次');
+    assert.equal(byDate.get('2026-11-06').title, '2026-11-06 · 没有执行');
   });
 
   it('任务创建之前与今天之后的格子留空，不会被读成「那天没跑」', () => {
@@ -80,7 +80,7 @@ describe('活跃图', () => {
     // 11-01 → 11-13 共 13 天可能落在图上，其余（更早 + 今天之后）都是 void
     const drawn = cells.filter((c) => c.state !== 'void');
     assert.equal(drawn.length, 13);
-    assert.equal(drawn[0].title, '11-01 · 没有执行');
+    assert.equal(drawn[0].title, '2026-11-01 · 没有执行');
     assert.equal(drawn.at(-1).state, 'none');
     assert.equal(drawn.at(-1).today, true);
   });
@@ -108,6 +108,62 @@ describe('活跃图', () => {
     assert.ok(html.includes('执行 <b>3</b> 次'), '2 次成功 + 1 次失败，5 条跳过不算');
     assert.ok(html.includes('成功 <b class="ok">1</b> 天'));
     assert.ok(html.includes('失败 <b class="bad">1</b> 天'));
+  });
+
+  /* ── 合并模式：一格 = 那天所有任务的结果 ── */
+  const mergedDay = (date, ok, mixed, bad, skip, failedNames = []) => ({
+    date,
+    success: ok + mixed,
+    failed: mixed + bad,
+    skipped: skip,
+    runs: ok + mixed * 2 + bad,
+    breakdown: { ok, mixed, bad, skip },
+    failedNames,
+  });
+
+  it('合并模式：一格说「几个任务」，悬停点名一次都没成的那些', () => {
+    const html = activityHeat({
+      unit: 'task',
+      today: TODAY,
+      days: [
+        mergedDay('2026-11-02', 2, 0, 0, 0),
+        mergedDay('2026-11-03', 1, 0, 1, 0, ['小号签到']),
+        mergedDay('2026-11-04', 0, 0, 2, 0, ['A', 'B']),
+        mergedDay('2026-11-05', 1, 1, 0, 0, []),
+      ],
+    });
+    const byDate = new Map(gridCells(html).filter((c) => c.title).map((c) => [c.title.slice(0, 10), c]));
+
+    assert.equal(byDate.get('2026-11-02').state, 'ok');
+    assert.equal(byDate.get('2026-11-03').state, 'mixed', '有一个任务失败就不是绿的');
+    assert.equal(byDate.get('2026-11-04').state, 'bad');
+    assert.equal(byDate.get('2026-11-05').state, 'mixed', '部分成功的任务也算那天出过失败');
+
+    assert.equal(byDate.get('2026-11-02').title, '2026-11-02 · 成功 2');
+    assert.equal(byDate.get('2026-11-03').title, '2026-11-03 · 成功 1，失败 1（小号签到）');
+    assert.equal(byDate.get('2026-11-04').title, '2026-11-04 · 失败 2（A、B）');
+    assert.equal(byDate.get('2026-11-05').title, '2026-11-05 · 成功 1，部分成功 1');
+  });
+
+  it('合并模式：失败任务多到列不下时只说数量', () => {
+    const html = activityHeat({
+      unit: 'task',
+      today: TODAY,
+      days: [mergedDay('2026-11-03', 0, 0, 4, 0, ['A', 'B', 'C', 'D'])],
+    });
+    const [, cell] = gridCells(html).map((c) => [c.title, c]).find(([t]) => t.includes('2026-11-03'));
+    assert.equal(cell.title, '2026-11-03 · 失败 4（A、B、C 等 4 个）');
+  });
+
+  it('合并模式的摘要是「顺利 / 出问题」，不是「成功 / 失败」', () => {
+    const html = activityHeat({
+      unit: 'task',
+      today: TODAY,
+      days: [mergedDay('2026-11-02', 2, 0, 0, 0), mergedDay('2026-11-03', 1, 0, 1, 0, ['x'])],
+    });
+    assert.ok(html.includes('执行 <b>4</b> 次'), '次数取 store 算好的 runs');
+    assert.ok(html.includes('顺利 <b class="ok">1</b> 天'));
+    assert.ok(html.includes('出问题 <b class="bad">1</b> 天'));
   });
 
   it('窗口两端都对齐到自然周：第一格是周一、最后一格是周日', () => {

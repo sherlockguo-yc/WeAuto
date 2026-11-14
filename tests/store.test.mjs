@@ -625,3 +625,103 @@ describe('每日执行结果（活跃图数据源）', () => {
     );
   });
 });
+
+/* ───────────────────────────────────────────────────────
+   概览那张合并图：要先按任务归并，再按天汇总。
+   一个任务重试三次失败是「1 个任务出问题」，不是「3 个任务出问题」——
+   这两者在列表里长得一样，在图上是两回事。
+   ─────────────────────────────────────────────────────── */
+describe('每日执行结果 · 跨任务（合并图数据源）', () => {
+  it('一天两个任务：一个成一个败，各算一个', () => {
+    const store = fresh();
+    run(store, { accountKey: 'a-1', date: '2026-10-12', status: 'success' });
+    run(store, { accountKey: 'a-2', date: '2026-10-12', ts: 1001, status: 'failed' });
+
+    assert.deepEqual(store.dailyActivityOfUser(), [
+      {
+        date: '2026-10-12',
+        success: 1,
+        failed: 1,
+        skipped: 0,
+        runs: 2,
+        breakdown: { ok: 1, mixed: 0, bad: 1, skip: 0 },
+        failedTasks: [{ taskName: 't', accountKey: 'a-2' }],
+      },
+    ]);
+  });
+
+  it('同一个任务失败三次，仍然只是一个任务出问题', () => {
+    const store = fresh();
+    for (const ts of [1000, 1001, 1002]) {
+      run(store, { date: '2026-10-12', ts, status: 'failed' });
+    }
+
+    const [day] = store.dailyActivityOfUser();
+    assert.equal(day.failed, 1);
+    assert.equal(day.runs, 3, '次数照样是 3');
+    assert.deepEqual(day.failedTasks, [{ taskName: 't', accountKey: '' }]);
+  });
+
+  it('先失败后成功：算「部分成功」，成功与失败两个口径都记（与单任务图同色）', () => {
+    const store = fresh();
+    run(store, { date: '2026-10-12', status: 'failed' });
+    run(store, { date: '2026-10-12', ts: 1001, status: 'success' });
+
+    const [day] = store.dailyActivityOfUser();
+    assert.deepEqual(day.breakdown, { ok: 0, mixed: 1, bad: 0, skip: 0 });
+    assert.equal(day.success, 1);
+    assert.equal(day.failed, 1);
+    assert.deepEqual(day.failedTasks, [], '最终办成了，就不点名');
+  });
+
+  it('只有跳过的任务进 skip 档，也不算「跑过一次」', () => {
+    const store = fresh();
+    run(store, { date: '2026-10-12', status: 'skipped' });
+
+    const [day] = store.dailyActivityOfUser();
+    assert.equal(day.breakdown.skip, 1);
+    assert.equal(day.skipped, 1);
+    assert.equal(day.runs, 0);
+  });
+
+  it('同模板的两个账号是两个任务（任务实例包含账号）', () => {
+    const store = fresh();
+    run(store, { accountKey: 'a-1', status: 'success' });
+    run(store, { accountKey: 'a-2', ts: 1001, status: 'success' });
+
+    const [day] = store.dailyActivityOfUser();
+    assert.equal(day.breakdown.ok, 2);
+    assert.equal(day.runs, 2);
+  });
+
+  it('明细被清理后，那天仍然算得出来（来自日统计）', () => {
+    const store = fresh();
+    run(store, { date: '2026-01-01', ts: 1, status: 'success' });
+    store.pruneTask('t', { days: 1, maxRows: 1, logDays: 1 }, 90 * 86_400_000);
+
+    const [day] = store.dailyActivityOfUser();
+    assert.equal(day?.breakdown.ok, 1);
+  });
+
+  it('from 之前的日期不返回', () => {
+    const store = fresh();
+    run(store, { date: '2026-01-01', ts: 1 });
+    run(store, { date: '2026-10-12', ts: 2 });
+
+    assert.deepEqual(
+      store.dailyActivityOfUser({ from: '2026-10-01' }).map((d) => d.date),
+      ['2026-10-12'],
+    );
+  });
+
+  it('只算自己这个用户的', () => {
+    const db = freshDb();
+    const a = createStore(db).forUser(USER_ID);
+    const b = createStore(db).forUser(OTHER_USER_ID);
+    run(a, { status: 'success' });
+    run(b, { status: 'failed' });
+
+    assert.equal(a.dailyActivityOfUser()[0].breakdown.ok, 1);
+    assert.equal(b.dailyActivityOfUser()[0].breakdown.bad, 1);
+  });
+});

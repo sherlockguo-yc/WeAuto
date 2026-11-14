@@ -346,6 +346,20 @@ export function createStore(db, { limits = {} } = {}) {
         WHERE user_id = ? AND task_name = ? AND account_key = ? AND date >= ?
         ORDER BY date`,
     ),
+    /* 概览那张合并图：同一份数据，去掉任务过滤，按 (日期 × 任务实例) 取 */
+    runsDailyOfUser: db.prepare(
+      `SELECT date, task_name, COALESCE(account_key, '') AS account_key,
+              SUM(CASE WHEN status IN (${inClause}) THEN 1 ELSE 0 END) AS success,
+              SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped,
+              COUNT(*) AS total
+         FROM runs
+        WHERE user_id = ? AND date >= ?
+        GROUP BY date, task_name, account_key`,
+    ),
+    statsDailyOfUser: db.prepare(
+      `SELECT date, task_name, account_key, success, skipped, total FROM run_stats_daily
+        WHERE user_id = ? AND date >= ?`,
+    ),
 
     /* ───────── 平台视角（/admin 用，跨用户只读统计） ───────── */
     statusesOnDate: db.prepare('SELECT status, COUNT(*) AS n FROM runs WHERE date = ? GROUP BY status'),
@@ -679,6 +693,79 @@ export function createStore(db, { limits = {} } = {}) {
     }
 
     /**
+     * 每天每个任务的结果（概览那张合并图用它）。
+     *
+     * 与 dailyActivity 的区别是粒度：那个已经把一天折成「成功几次/失败几次」，
+     * 这里是「这一天有几个任务成、几个没成」。合并多个任务时必须先按任务归并——
+     * 一个任务重试三次失败，是「1 个任务出问题」，不是「3 个任务出问题」。
+     *
+     * 任务实例 = (task_name, account_key)：同一个模板的两个账号是两个任务。
+     *
+     * 颜色仍按「那天有没有成功、有没有失败」判定（success/failed 互相允许重叠），
+     * 这样和单任务图对同一天给出同一个结论：只要那天出过失败就不是绿的。
+     *
+     * @returns {{
+     *   date: string, success: number, failed: number, skipped: number, runs: number,
+     *   breakdown: {ok: number, mixed: number, bad: number, skip: number},
+     *   failedTasks: {taskName: string, accountKey: string}[]
+     * }[]}
+     *   success/failed/skipped 是**任务数**（mixed 那个任务两边都算），
+     *   breakdown 是互斥的四档（四者相加 = 那天有记录的任务数），
+     *   runs 是真实执行次数（跳过不算），failedTasks 只收**一次都没成**的任务
+     */
+    function dailyActivityOfUser({ from = '' } = {}) {
+      const perTask = new Map();
+      const bump = (r) => {
+        const accountKey = r.account_key ?? '';
+        const key = `${r.date}\u0000${r.task_name}\u0000${accountKey}`;
+        const cur =
+          perTask.get(key) ??
+          { date: r.date, taskName: r.task_name, accountKey, success: 0, failed: 0, skipped: 0 };
+        const ok = Number(r.success ?? 0);
+        const skip = Number(r.skipped ?? 0);
+        const all = Number(r.total ?? 0);
+        cur.success += ok;
+        cur.skipped += skip;
+        // 失败是「剩下的」：新增一个失败类状态不用回来改这里
+        cur.failed += Math.max(0, all - ok - skip);
+        perTask.set(key, cur);
+      };
+      for (const r of s.statsDailyOfUser.all(userId, from)) bump(r);
+      for (const r of s.runsDailyOfUser.all(...successList, userId, from)) bump(r);
+
+      const days = new Map();
+      for (const t of perTask.values()) {
+        const day =
+          days.get(t.date) ??
+          {
+            date: t.date,
+            success: 0,
+            failed: 0,
+            skipped: 0,
+            runs: 0,
+            breakdown: { ok: 0, mixed: 0, bad: 0, skip: 0 },
+            failedTasks: [],
+          };
+        // 真实执行次数 = 成功 + 失败（跳过不算「跑过一次」）
+        day.runs += t.success + t.failed;
+        if (t.success > 0) day.success += 1;
+        if (t.failed > 0) day.failed += 1;
+
+        if (t.success > 0 && t.failed > 0) day.breakdown.mixed += 1;
+        else if (t.success > 0) day.breakdown.ok += 1;
+        else if (t.failed > 0) {
+          day.breakdown.bad += 1;
+          day.failedTasks.push({ taskName: t.taskName, accountKey: t.accountKey });
+        } else {
+          day.breakdown.skip += 1;
+          day.skipped += 1;
+        }
+        days.set(t.date, day);
+      }
+      return [...days.values()].sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    /**
      * 保留策略：先聚合、再删明细。
      * 两个维度都要：只按天数删挡不住 interval 类任务；只按条数删会留着陈年记录。
      */
@@ -760,6 +847,7 @@ export function createStore(db, { limits = {} } = {}) {
       logsOfRun: (runId) => s.logsOfRun.all(runId),
       getRun: (id) => rowToRun(s.runById.get(id)),
       dailyActivity,
+      dailyActivityOfUser,
       stateOf,
       saveState,
       statsOfTask,

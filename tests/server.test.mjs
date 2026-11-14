@@ -919,8 +919,8 @@ describe('执行活跃图', () => {
 
     assert.match(html, /class="heat"/);
     assert.match(html, /近一年/);
-    assert.match(html, /class="heat-cell is-ok" title="10-12 · 成功 1 次"/);
-    assert.match(html, /class="heat-cell is-bad" title="10-13 · 失败 1 次"/);
+    assert.match(html, /class="heat-cell is-ok" title="2026-10-12 · 成功 1 次"/);
+    assert.match(html, /class="heat-cell is-bad" title="2026-10-13 · 失败 1 次"/);
     assert.match(html, /class="heat-legend"/);
   });
 
@@ -929,6 +929,33 @@ describe('执行活跃图', () => {
     const cookie = await login(base);
     const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
     assert.equal(html.includes('class="heat"'), false);
+  });
+
+  /* ── 概览：多个任务合成一张 ── */
+  it('概览把各任务合成一张图，失败的会被点名', async () => {
+    const { base, store, db } = await startServer();
+    db.prepare('UPDATE subscriptions SET created_at = ? WHERE id = 1').run(NOW - 30 * 86_400_000);
+    const mine = store.forUser(USER_ID);
+    mine.appendRun({ taskName: DEMO_TASK.name, date: '2026-10-12', ts: NOW - 2 * 86_400_000, status: 'success' });
+    mine.appendRun({ taskName: DEMO_TASK.name, date: '2026-10-13', ts: NOW - 86_400_000, status: 'failed', message: '挂了' });
+    const cookie = await login(base);
+
+    const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+
+    assert.match(html, /执行活跃/);
+    assert.match(html, /class="heat"/);
+    // 一格说的是「几个任务」，所以文案里不再有「次」
+    assert.match(html, /class="heat-cell is-ok" title="2026-10-12 · 成功 1"/);
+    assert.match(html, /class="heat-cell is-bad" title="2026-10-13 · 失败 1（演示任务）"/);
+    assert.match(html, /顺利 <b class="ok">1<\/b> 天/);
+    assert.match(html, /出问题 <b class="bad">1<\/b> 天/);
+  });
+
+  it('概览没有任何执行记录时不出现活跃图', async () => {
+    const { base } = await startServer();
+    const cookie = await login(base);
+    const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    assert.equal(html.includes('执行活跃'), false);
   });
 });
 

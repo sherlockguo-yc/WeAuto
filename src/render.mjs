@@ -138,23 +138,48 @@ function heatStateOf(day) {
   return day.skipped > 0 ? 'skip' : 'none';
 }
 
-/** 悬停提示：日期 + 那天的结果构成。没有记录也说清楚，别让人以为是渲染丢了 */
-function heatTitle(date, day) {
+/**
+ * 悬停提示：日期 + 那天的结果构成。没有记录也说清楚，别让人以为是渲染丢了。
+ *
+ * 日期带年份：窗口是 53 周（371 天）且起点对齐到自然周，最早那几天会落在去年，
+ * 只写「11-03」时同一天会出现两次，悬停就分不清是今年还是去年。
+ */
+function heatTitle(date, day, unit = 'run') {
+  if (!day) return `${date} · 没有执行`;
+
+  // 合并图的一格是「一天里的多个任务」，说「几次」会让人以为一个任务跑了多次
+  if (unit === 'task') {
+    const b = day.breakdown ?? {};
+    const bits = [];
+    if (b.ok) bits.push(`成功 ${b.ok}`);
+    if (b.mixed) bits.push(`部分成功 ${b.mixed}`);
+    if (b.bad) bits.push(`失败 ${b.bad}`);
+    if (b.skip) bits.push(`跳过 ${b.skip}`);
+    const names = day.failedNames ?? [];
+    // 只列「一次都没成」的任务名：部分成功的那些当天已经办成了，不需要点名
+    const who = names.length
+      ? `（${names.slice(0, 3).join('、')}${names.length > 3 ? ` 等 ${names.length} 个` : ''}）`
+      : '';
+    return `${date} · ${bits.join('，')}${who}`;
+  }
+
   const bits = [];
   if (day?.success) bits.push(`成功 ${day.success} 次`);
   if (day?.failed) bits.push(`失败 ${day.failed} 次`);
   if (day?.skipped) bits.push(`跳过 ${day.skipped} 次`);
-  return `${date.slice(5)} · ${bits.length ? bits.join('，') : '没有执行'}`;
+  return `${date} · ${bits.length ? bits.join('，') : '没有执行'}`;
 }
 
 /**
  * 活跃图。
  *
- * @param {{days: object[], today: string, createdOn?: string|null}} opts
- *   days 来自 store.dailyActivity（按日期升序，只含有记录的日子）；
- *   createdOn 是任务创建日（北京时间），它之前的格子留空。
+ * @param {{days: object[], today: string, createdOn?: string|null, unit?: 'run'|'task'}} opts
+ *   days 来自 store.dailyActivity（单任务）或 dailyActivityOfUser（概览的合并图），
+ *   按日期升序、只含有记录的日子；
+ *   createdOn 是任务创建日（北京时间），它之前的格子留空；
+ *   unit='task' 时一格表示「那天各任务的结果」，摘要与悬停文案改成任务口径。
  */
-export function activityHeat({ days = [], today, createdOn = null }) {
+export function activityHeat({ days = [], today, createdOn = null, unit = 'run' }) {
   const todayMs = ymdToMs(today);
   // 没有记录就不画：一屏灰格子在空任务上只会被读成「坏了」
   if (!days.length || !Number.isFinite(todayMs)) return '';
@@ -188,7 +213,7 @@ export function activityHeat({ days = [], today, createdOn = null }) {
       const date = msToYmd(ms);
       const day = byDate.get(date) ?? null;
       const cls = `heat-cell is-${heatStateOf(day)}${ms === todayMs ? ' is-today' : ''}`;
-      cells.push(`<span class="${cls}" title="${esc(heatTitle(date, day))}"></span>`);
+      cells.push(`<span class="${cls}" title="${esc(heatTitle(date, day, unit))}"></span>`);
     }
   }
 
@@ -210,17 +235,28 @@ export function activityHeat({ days = [], today, createdOn = null }) {
   for (const d of days) {
     const state = heatStateOf(d);
     if (state in count) count[state] += 1;
-    // skipped 不算「执行过一次」：它代表没真的发出请求
-    runs += Math.max(0, d.total - d.skipped);
+    // skipped 不算「执行过一次」：它代表没真的发出请求。
+    // 合并图的次数在 store 里算（那边知道每个任务跑了几次），单任务图用 total - skipped
+    runs += d.runs ?? Math.max(0, (d.total ?? 0) - d.skipped);
   }
 
-  // 「部分成功」在窄屏上省掉（连同它的分隔符）：一行放不下会折成两行，
-  // 而它本来就是少数情况，图例和黄色格子都还在
-  const extra = count.mixed
-    ? `<span class="heat-sum-extra"> · 部分成功 <b class="wait">${count.mixed}</b> 天</span>`
-    : '';
-  const bad = count.bad ? ` · 失败 <b class="bad">${count.bad}</b> 天` : '';
-  const sum = `执行 <b>${runs}</b> 次 · 成功 <b class="ok">${count.ok}</b> 天${extra}${bad}`;
+  let sum;
+  if (unit === 'task') {
+    // 一格是「那天所有任务」，所以说「天」的形容词换成顺利/出问题：
+    // 一片里只要有一格黄，那天就不算顺利
+    sum = `执行 <b>${runs}</b> 次 · 顺利 <b class="ok">${count.ok}</b> 天`;
+    if (count.mixed + count.bad) {
+      sum += ` · 出问题 <b class="bad">${count.mixed + count.bad}</b> 天`;
+    }
+  } else {
+    // 「部分成功」在窄屏上省掉（连同它的分隔符）：一行放不下会折成两行，
+    // 而它本来就是少数情况，图例和黄色格子都还在
+    const extra = count.mixed
+      ? `<span class="heat-sum-extra"> · 部分成功 <b class="wait">${count.mixed}</b> 天</span>`
+      : '';
+    const bad = count.bad ? ` · 失败 <b class="bad">${count.bad}</b> 天` : '';
+    sum = `执行 <b>${runs}</b> 次 · 成功 <b class="ok">${count.ok}</b> 天${extra}${bad}`;
+  }
 
   const legend = HEAT_KEYS.filter(([key]) => key !== 'skip' || count.skip)
     .map(([key, text]) => `<span class="heat-key"><span class="heat-cell is-${key}"></span>${text}</span>`)
@@ -494,6 +530,23 @@ export function pageOverview(data) {
     : '<p class="empty">还没有执行记录</p>';
 
   /*
+   * 活跃图放「需要处理」之后、「最近执行」之前：
+   * 上面回答「现在怎么样」，这张回答「这一年哪段不顺利」，最后才是逐条流水。
+   * 一条记录都没有时整块不出现——「最近执行」的空态已经说明问题。
+   */
+  const heat = data.activity?.days?.length
+    ? `<section class="card">
+  <h2>执行活跃</h2>
+  ${activityHeat({
+    days: data.activity.days,
+    today: data.activity.today,
+    createdOn: data.activity.createdOn,
+    unit: 'task',
+  })}
+</section>`
+    : '';
+
+  /*
    * 四张卡必须能加出任务总数，否则用户对不上数就会怀疑统计坏了。
    * 「已错过」与失败是同一类事实（今天没办成），所以并进 bad 那张，文案也写出来。
    */
@@ -508,6 +561,7 @@ export function pageOverview(data) {
   <h2>需要处理</h2>
   ${attention}
 </section>
+${heat}
 <section class="card">
   <h2>最近执行</h2>
   ${recent}

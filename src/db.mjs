@@ -442,6 +442,21 @@ export const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 10,
+    description: '概览的合并活跃图按「用户 × 日期」扫 runs，补一条索引',
+    up(db) {
+      /*
+       * 任务页那张图是 (user, 任务, 日期)，走 idx_runs_user_task_ts 就够。
+       * 概览问的是「这个人这一年每一天」，没有任务维度，上面那几条索引的第一列
+       * 都用不上，于是补一条 (user_id, date)。
+       *
+       * 只在 reads 上多一条索引：runs 本来就被保留策略限制在 90 天内，
+       * 写入放大的代价可以忽略。
+       */
+      db.exec('CREATE INDEX IF NOT EXISTS idx_runs_user_date ON runs(user_id, date);');
+    },
+  },
 ];
 
 /** 用 meta 表记录 schema 版本（用户表之外的第一张表，永远存在） */

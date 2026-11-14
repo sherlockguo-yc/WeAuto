@@ -238,6 +238,50 @@ export function createServer({
     return data;
   };
 
+  /**
+   * 「模板名 + 任务实例」→ 界面上的名字。
+   *
+   * 同一个模板建了两个任务时补上账号名，否则两行长得一模一样——
+   * 与「最近执行」的 `multiAccount` 是同一个规则。
+   */
+  const taskDisplayNames = (data) => {
+    const perTemplate = new Map();
+    for (const it of data.items) perTemplate.set(it.name, (perTemplate.get(it.name) ?? 0) + 1);
+    const out = new Map();
+    for (const it of data.items) {
+      const base = it.label || it.displayName;
+      const name = perTemplate.get(it.name) > 1 && it.accountLabel ? `${base} · ${it.accountLabel}` : base;
+      out.set(`${it.name}\u0000${it.accountKey ?? ''}`, name);
+    }
+    return out;
+  };
+
+  /**
+   * 概览那张合并图的数据：这个人的全部任务，按天归并成一张。
+   *
+   * 起点取「最早那个任务的创建日」，理由与任务页相同：刚建的任务不该先看到
+   * 一整年「没跑」的空格子。名字在这里补上，store 只认 (模板名, 账号) 这对 key。
+   */
+  const overviewActivity = (req, data) => {
+    const myTasks = mine(req).listTasks();
+    if (!myTasks.length) return null;
+    const nowMs = now();
+    const startedAt = Math.min(
+      Math.min(...myTasks.map((t) => t.createdAt ?? nowMs)),
+      nowMs,
+    );
+    const nameOf = taskDisplayNames(data);
+    const days = mine(req)
+      .dailyActivityOfUser({ from: dateInTZ(new Date(nowMs - 364 * 86_400_000)) })
+      .map((d) => ({
+        ...d,
+        failedNames: d.failedTasks.map(
+          (t) => nameOf.get(`${t.taskName}\u0000${t.accountKey}`) ?? t.taskName,
+        ),
+      }));
+    return { today: data.today, createdOn: dateInTZ(new Date(startedAt)), days };
+  };
+
   /* ───────── 登录 / 首次初始化 ───────── */
   app.get('/login', (req, res) => {
     if (req.user) return res.redirect('/');
@@ -435,7 +479,8 @@ export function createServer({
 
   app.get('/', requireLogin, (req, res) => {
     const data = summarizeFor(req);
-    res.type('html').send(shell(req, { title: '概览', active: 'home', body: render.pageOverview(data) }));
+    const body = render.pageOverview({ ...data, activity: overviewActivity(req, data) });
+    res.type('html').send(shell(req, { title: '概览', active: 'home', body }));
   });
 
   app.get('/tasks', requireLogin, (req, res) => {
