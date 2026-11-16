@@ -957,6 +957,28 @@ describe('执行活跃图', () => {
     const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     assert.equal(html.includes('执行活跃'), false);
   });
+
+  /* 两张图的分工：任务页只画这个任务，概览画的是它们的汇聚。
+     用「同模板两个任务」来验，是因为一旦漏了 account_key 维度，
+     两个任务会被当成一个，这条断言就会红。 */
+  it('任务页只画自己那个任务，别的任务失败不会染到它的图上', async () => {
+    const { base, store, db } = await startServer();
+    db.prepare('UPDATE subscriptions SET created_at = ? WHERE id = 1').run(NOW - 30 * 86_400_000);
+    store.forUser(USER_ID).createTask(DEMO_TASK.name, { label: '第二个任务', accountKey: 'a-2' });
+    db.prepare('UPDATE subscriptions SET created_at = ? WHERE id = 2').run(NOW - 30 * 86_400_000);
+
+    const mine = store.forUser(USER_ID);
+    mine.appendRun({ taskName: DEMO_TASK.name, accountKey: '', date: '2026-10-12', ts: NOW - 2 * 86_400_000, status: 'success' });
+    mine.appendRun({ taskName: DEMO_TASK.name, accountKey: 'a-2', date: '2026-10-12', ts: NOW - 2 * 86_400_000, status: 'failed' });
+    const cookie = await login(base);
+
+    const own = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
+    assert.match(own, /class="heat-cell is-ok" title="2026-10-12 · 成功 1 次"/);
+    assert.equal(own.includes('第二个任务'), false, '任务页不该出现别的任务的名字');
+
+    const all = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    assert.match(all, /class="heat-cell is-mixed" title="2026-10-12 · 成功 1，失败 1（第二个任务）"/);
+  });
 });
 
 /* ───────────────────────────────────────────────────────
