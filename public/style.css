@@ -536,6 +536,9 @@ a.row:hover .row-main { color: var(--accent); }
   font-size: 13px;
   line-height: 1.5;
 }
+/* 副标题里的失败原因：与「配置错误」徽章同色，扫一眼就能对上，
+   不必进任务页才知道是 token 过期还是密码错了 */
+.row-fail { color: var(--bad); }
 .row-plain { grid-template-columns: 1fr auto; }
 /* 执行历史的「加载更多」：首屏只铺一屏，这个按钮是「后面还有」的唯一标记。
    占满整行、描边而非填充——它是续读，不该比上面的记录更抢眼。

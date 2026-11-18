@@ -629,6 +629,22 @@ function templateCard(t) {
   </a>`;
 }
 
+/** 副标题里值得给出原因的几种「今天没成」的状态 */
+const FAILURE_STATUSES = new Set(['failed', 'blocked', 'network-error', 'config-error']);
+
+/**
+ * 卡片副标题里的失败原因。
+ *
+ * 只认今天的失败：`lastRun` 可能是昨天那次，而今天还没到点（pending）。
+ * 把昨天的话贴到今天的卡上，会让人以为今天也失败了。
+ *
+ * 换行压成空格——执行记录允许多行，副标题是一行话。
+ */
+function failureNote(t) {
+  if (!FAILURE_STATUSES.has(t.todayStatus)) return '';
+  return String(t.lastRun?.message ?? '').replace(/\s+/g, ' ').trim();
+}
+
 /**
  * 任务列表里的一行：**操作就地完成，不用进详情**。
  *
@@ -641,6 +657,16 @@ function taskRow(t) {
   const href = taskHref(t);
   // 没填凭据就直接标出来：取消凭据页之后，这是唯一能一眼看出哪些任务没配好的地方
   const credBadge = t.missingCredentials?.length ? '<span class="badge badge-off">待填凭据</span>' : '';
+  /*
+   * 失败原因直接写在副标题里：只看见一颗「配置错误」的徽章，用户还得点进任务页
+   * 才知道是 token 过期还是密码错了——而前者只需要换一次凭据。
+   * 站点的原文长度不可控，副标题不是日志区，所以长消息截断，全文放 title。
+   */
+  const failNote = failureNote(t);
+  const failShort = failNote.length > 120 ? `${failNote.slice(0, 120)}…` : failNote;
+  const failHtml = failNote
+    ? ` · <span class="row-fail"${failShort === failNote ? '' : ` title="${esc(failNote)}"`}>失败原因：${esc(failShort)}</span>`
+    : '';
   return `<div class="row task-row">
         <a class="row-main" href="${href}">${esc(title)}</a>
         <span class="badges">${statusBadge(t.todayStatus)}${credBadge}</span>
@@ -648,7 +674,7 @@ function taskRow(t) {
           t.accountLabel ? ` · 账号 ${esc(t.accountLabel)}` : ''
         } · ${esc(t.scheduleLabel)}${
           t.todayTargetLabel ? ` · 今日 ${esc(t.todayTargetLabel)}` : ''
-        }</span>
+        }${failHtml}</span>
         <span class="row-actions">
           <button type="button" class="primary btn-sm" data-action="run" data-task="${esc(
             t.id,

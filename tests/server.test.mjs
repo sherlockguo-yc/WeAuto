@@ -1226,6 +1226,32 @@ describe('配置错误的提示', () => {
     const html = await (await fetch(`${base}/tasks/1`, { headers: { cookie } })).text();
     assert.match(html, /去填写或更新凭据/);
   });
+
+  it('任务列表的副标题直接给出最近一次失败原因', async () => {
+    const { base, store } = await startServer();
+    const cookie = await login(base);
+    store.forUser(USER_ID).appendRun({
+      taskName: 'demo-task',
+      date: '2026-10-14',
+      ts: NOW,
+      status: 'config-error',
+      message: '凭据已于 2026-10-13 09:00:00 过期（1 天前），请重新获取 DEMO_TOKEN',
+    });
+
+    const html = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.match(html, /失败原因：凭据已于 2026-10-13 09:00:00 过期/);
+
+    // 今天成功之后，失败原因不该继续挂在副标题上
+    store.forUser(USER_ID).appendRun({
+      taskName: 'demo-task',
+      date: '2026-10-14',
+      ts: NOW + 60_000,
+      status: 'success',
+      message: '签到成功',
+    });
+    const after = await (await fetch(`${base}/tasks`, { headers: { cookie } })).text();
+    assert.equal(after.includes('失败原因：'), false);
+  });
 });
 
 describe('不存在的任务', () => {
